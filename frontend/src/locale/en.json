@@ -1,0 +1,58 @@
+{
+  "app": {
+    "title": "Universal Booking",
+    "login": "Login",
+    "logout": "Logout",
+    "register": "Register",
+    "welcome": "Welcome",
+    "role": "Role",
+    "switch_role": "Switch",
+    "balance": "Balance",
+    "credit": "Credit Score"
+  },
+  "login": {
+      "username": "Username",
+      "password": "Password",
+      "username_placeholder": "Choose a username",
+      "password_placeholder": "Set a password",
+      "role_select": "I am a...",
+      "create_account": "Create Account",
+      "has_account": "Already have account? Login"
+  },
+  "role": {
+      "owner": "Owner",
+      "agent": "Agent",
+      "consumer": "Consumer"
+  },
+  "menu": {
+    "my_schedules": "My Schedules",
+    "my_orders": "My Orders",
+    "manage_orders": "Manage Orders",
+    "agent_dashboard": "Agent Dashboard",
+    "admin_users": "User Management"
+  },
+  "schedule": {
+    "title": "Title",
+    "price": "Price",
+    "duration": "Duration (min)",
+    "buffer": "Buffer (min)",
+    "working_hours": "Working Hours",
+    "create": "Create Schedule"
+  },
+  "order": {
+    "status": "Status",
+    "confirm": "Confirm",
+    "complete": "Complete",
+    "no_show": "No Show",
+    "book_now": "Book Now"
+  },
+  "agent": {
+    "create_link": "Create Link",
+    "markup": "Markup",
+    "revenue": "Est. Revenue",
+    "total_orders": "Total Orders"
+  },
+  "admin": {
+    "adjust_credit": "Adjust Credit"
+  }
+}

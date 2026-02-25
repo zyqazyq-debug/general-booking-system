@@ -1,0 +1,99 @@
+{
+	"pages": [ 
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationBarTitleText": "通用预约系统",
+                "navigationStyle": "custom"
+			}
+		},
+        {
+            "path": "pages/schedule/list",
+            "style": {
+                "navigationBarTitleText": "我的日程"
+            }
+        },
+        {
+            "path": "pages/schedule/create",
+            "style": {
+                "navigationBarTitleText": "新建日程"
+            }
+        },
+        {
+            "path": "pages/schedule/edit",
+            "style": {
+                "navigationBarTitleText": "编辑日程"
+            }
+        },
+        {
+            "path": "pages/agent/create-link",
+            "style": {
+                "navigationBarTitleText": "生成分销链接"
+            }
+        },
+        {
+            "path": "pages/agent/dashboard",
+            "style": {
+                "navigationBarTitleText": "代理看板"
+            }
+        },
+        {
+            "path": "pages/booking/detail",
+            "style": {
+                "navigationBarTitleText": "预约详情"
+            }
+        },
+        {
+            "path": "pages/login/login",
+            "style": {
+                "navigationBarTitleText": "登录",
+                "navigationStyle": "custom"
+            }
+        },
+        {
+            "path": "pages/login/register",
+            "style": {
+                "navigationBarTitleText": "注册"
+            }
+        },
+        {
+            "path": "pages/order/list",
+            "style": {
+                "navigationBarTitleText": "我的订单",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/order/manage",
+            "style": {
+                "navigationBarTitleText": "订单管理"
+            }
+        },
+        {
+            "path": "pages/user/profile",
+            "style": {
+                "navigationBarTitleText": "个人中心",
+                "navigationStyle": "custom"
+            }
+        },
+        {
+            "path": "pages/schedule/collection",
+            "style": {
+                "navigationBarTitleText": "我的收藏",
+                "navigationStyle": "custom"
+            }
+        },
+        {
+            "path": "pages/admin/users",
+            "style": {
+                "navigationBarTitleText": "用户管理"
+            }
+        }
+	],
+	"globalStyle": {
+		"navigationBarTextStyle": "black",
+		"navigationBarTitleText": "通用预约系统",
+		"navigationBarBackgroundColor": "#F8F8F8",
+		"backgroundColor": "#F8F8F8"
+	}
+}

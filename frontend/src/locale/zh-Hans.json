@@ -1,0 +1,58 @@
+{
+  "app": {
+    "title": "通用预约系统",
+    "login": "登录",
+    "logout": "退出登录",
+    "register": "注册",
+    "welcome": "欢迎",
+    "role": "角色",
+    "switch_role": "切换",
+    "balance": "余额",
+    "credit": "信用分"
+  },
+  "login": {
+      "username": "用户名",
+      "password": "密码",
+      "username_placeholder": "请输入用户名",
+      "password_placeholder": "请输入密码",
+      "role_select": "我是...",
+      "create_account": "创建账户",
+      "has_account": "已有账户？去登录"
+  },
+  "role": {
+      "owner": "商家",
+      "agent": "中介",
+      "consumer": "消费者"
+  },
+  "menu": {
+    "my_schedules": "我的日程",
+    "my_orders": "我的订单",
+    "manage_orders": "订单管理",
+    "agent_dashboard": "中介看板",
+    "admin_users": "用户管理"
+  },
+  "schedule": {
+    "title": "标题",
+    "price": "价格",
+    "duration": "时长 (分钟)",
+    "buffer": "缓冲 (分钟)",
+    "working_hours": "工作时间",
+    "create": "创建日程"
+  },
+  "order": {
+    "status": "状态",
+    "confirm": "确认",
+    "complete": "完成",
+    "no_show": "爽约",
+    "book_now": "立即预订"
+  },
+  "agent": {
+    "create_link": "生成链接",
+    "markup": "加价",
+    "revenue": "预估收益",
+    "total_orders": "总订单数"
+  },
+  "admin": {
+    "adjust_credit": "调整信用分"
+  }
+}
