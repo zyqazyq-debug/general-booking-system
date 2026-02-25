@@ -1,0 +1,6 @@
+{
+  "watch": ["src"],
+  "ext": "js,mjs",
+  "exec": "node ./src/index.js",
+  "delay": "1000"
+}
