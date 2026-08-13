@@ -19,7 +19,7 @@ const RUNTIME_IMPORT_ALLOWED_FROM = [
 
 const crossDomainRules = domainNames.map((domain) => ({
   name: `no-cross-domain-imports:${domain}`,
-  severity: 'warn',
+  severity: 'error',
   from: { path: `^src/domains/${domain}/` },
   to: {
     path: `^src/domains/(?!${domain}/).+`,
@@ -40,7 +40,7 @@ module.exports = {
     ...crossDomainRules,
     {
       name: 'runtime-imports-should-stay-contained',
-      severity: 'warn',
+      severity: 'error',
       from: {
         path: '^src/',
         pathNot: RUNTIME_IMPORT_ALLOWED_FROM,
@@ -49,7 +49,7 @@ module.exports = {
     },
     {
       name: 'no-circular',
-      severity: 'warn',
+      severity: 'error',
       from: {},
       to: {
         circular: true,
@@ -57,13 +57,13 @@ module.exports = {
     },
     {
       name: 'no-shared-depends-on-domains',
-      severity: 'warn',
+      severity: 'error',
       from: { path: '^src/shared/' },
       to: { path: '^src/domains/' },
     },
     {
       name: 'platforms-should-only-depend-on-ports',
-      severity: 'warn',
+      severity: 'error',
       from: { path: '^src/platforms/' },
       to: {
         path: '^src/domains/(?![^/]+/(ports/|index\\.ts)).+',
