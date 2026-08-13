@@ -74,5 +74,11 @@ jobs:
       - name: Backend build
         run: cd backend && npm run build
 
+      - name: Backend architecture boundary checks (lint:arch)
+        run: cd backend && npm run lint:arch
+
       - name: Backend tests
         run: cd backend && npm test
+
+      - name: Backend SQLite E2E tests (zero infra dependency)
+        run: cd backend && npx jest --config test/jest-e2e.json --testPathIgnorePatterns='app.e2e-spec.ts'
