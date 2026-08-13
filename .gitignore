@@ -9,6 +9,8 @@ database/pg_data/
 *.log
 .trae/runtime/
 
+**/.adminjs/bundle.js
+
 .venv/
 venv/
 *.pyc
@@ -25,6 +27,8 @@ backup/
 *.tar.gz
 *.tgz
 *.jar
+
+*.baiduyun.uploading.cfg
 
 spec.md
 tasks.md
