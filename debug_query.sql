@@ -1,1 +1,0 @@
-SELECT * FROM commission_records ORDER BY created_at DESC LIMIT 10;

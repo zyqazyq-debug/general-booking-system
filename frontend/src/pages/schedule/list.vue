@@ -12,7 +12,7 @@
     <view class="content-wrapper">
         <!-- Filter Bar -->
         <view class="filter-bar">
-            <input class="form-control search-input" v-model="keyword" placeholder="搜索服务..." confirm-type="search" @confirm="onSearch" />
+            <input v-model="keyword" class="form-control search-input" placeholder="搜索服务..." confirm-type="search" @confirm="onSearch" />
         </view>
 
         <!-- Owner: Add Button -->
@@ -27,7 +27,7 @@
                 <text class="empty-text">暂无数据</text>
             </view>
             
-            <view class="card schedule-card" v-for="item in list" :key="item.id">
+            <view v-for="item in list" :key="item.id" class="card schedule-card">
                 <view class="card-body">
                     <view class="card-top">
                         <view class="info-main">
@@ -49,7 +49,7 @@
                             <text class="icon">⏱️</text>
                             <text>{{ item.duration_minutes }} 分钟</text>
                         </view>
-                        <view class="info-item" v-if="item.rules">
+                        <view v-if="item.rules" class="info-item">
                             <text class="icon">🕒</text>
                             <text>{{ item.rules.start_hour }}:00 - {{ item.rules.end_hour }}:00</text>
                         </view>
@@ -82,43 +82,43 @@
           </view>
             <view>
               <text class="form-label">标题</text>
-              <input class="form-control" v-model="editForm.title" placeholder="服务标题" />
+              <input v-model="editForm.title" class="form-control" placeholder="服务标题" />
               <view class="row-2col">
                 <view class="col">
                   <text class="form-label">价格(元)</text>
-                  <input class="form-control" type="number" v-model="editForm.base_price" />
+                  <input v-model="editForm.base_price" class="form-control" type="number" />
                 </view>
                 <view class="col">
                   <text class="form-label">时长(分钟)</text>
-                  <input class="form-control" type="number" v-model="editForm.duration_minutes" />
+                  <input v-model="editForm.duration_minutes" class="form-control" type="number" />
                 </view>
               </view>
               
               <view class="row-2col">
                   <view class="col">
                       <text class="form-label">缓冲(分钟)</text>
-                      <input class="form-control" type="number" v-model="editForm.buffer_minutes" />
+                      <input v-model="editForm.buffer_minutes" class="form-control" type="number" />
                   </view>
                   <view class="col">
                     <text class="form-label">所需积分</text>
-                    <input class="form-control" type="number" v-model="editForm.deposit_points" />
+                    <input v-model="editForm.deposit_points" class="form-control" type="number" />
                   </view>
               </view>
 
               <view class="row-2col">
                   <view class="col">
                       <text class="form-label">开始时间(点)</text>
-                      <input class="form-control" type="number" v-model="editForm.rules.start_hour" />
+                      <input v-model="editForm.rules.start_hour" class="form-control" type="number" />
                   </view>
                   <view class="col">
                       <text class="form-label">结束时间(点)</text>
-                      <input class="form-control" type="number" v-model="editForm.rules.end_hour" />
+                      <input v-model="editForm.rules.end_hour" class="form-control" type="number" />
                   </view>
               </view>
 
               <view style="margin-bottom:12px;">
                   <text class="form-label">工作日 (1=周一)</text>
-                  <checkbox-group @change="onEditWeekdayChange" class="weekday-group">
+                  <checkbox-group class="weekday-group" @change="onEditWeekdayChange">
                       <label v-for="day in 7" :key="day" class="weekday-item">
                           <checkbox :value="String(day)" :checked="editForm.rules.weekdays.includes(day)" color="#0d6efd" style="transform:scale(0.8)" /> 
                           <text class="ml-1">{{ day }}</text>
@@ -129,7 +129,7 @@
               <view class="row-2col">
                 <view class="col" style="display:flex;align-items:flex-end;">
                   <label style="display:flex;align-items:center;width:100%;">
-                    <switch :checked="editForm.is_active" @change="(e: any)=> editForm.is_active = e.detail.value" style="transform:scale(0.8);margin-right:6px;" />
+                    <switch :checked="editForm.is_active" style="transform:scale(0.8);margin-right:6px;" @change="(e: any)=> editForm.is_active = e.detail.value" />
                     <text>上架</text>
                   </label>
                 </view>
@@ -144,8 +144,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed, reactive } from 'vue';
-import { getMySchedules, getSchedules, createSchedule } from '@/api/schedule';
-import { useUserStore } from '@/stores/user';
+import { createService, getMyServices, getServices } from '@/domains/provider';
+import { useUserStore } from '@/shared/stores/user';
 import { onLoad } from '@dcloudio/uni-app';
 import { request } from '@/utils/request';
 
@@ -166,13 +166,15 @@ const pageTitle = computed(() => {
 });
 
 const loadData = async () => {
+  if (!userStore.isLoggedIn) return;
   try {
     if (isOwnerMode.value) {
-        list.value = (await getMySchedules()) as any[];
+        list.value = (await getMyServices()) as any[];
     } else {
         // In real app, this should be getMyCollection()
         // For now, reuse getSchedules but filter or mock
-        list.value = (await getSchedules()) as any[]; 
+        const res = await getServices();
+        list.value = (res.data ? res.data : res) as any[]; 
     }
   } catch (e) {
     console.error(e);
@@ -193,7 +195,7 @@ const onSearch = () => {
 const goBack = () => uni.navigateBack();
 
 const createAgentLink = (id: string) => {
-  uni.navigateTo({ url: `/pages/agent/create-link?schedule_id=${id}` });
+  uni.navigateTo({ url: `/pages/distribution/create-link?schedule_id=${id}` });
 };
 
 const book = (id: string) => {
@@ -289,7 +291,7 @@ const saveEdit = async () => {
         console.log('Saving payload:', payload);
 
         if (modalMode.value === 'create') {
-             await createSchedule({ ...payload, owner_id: userStore.userInfo?.id });
+             await createService({ ...payload, owner_id: userStore.userInfo?.id });
              uni.showToast({ title: '创建成功', icon: 'success' });
              loadData(); // Refresh list
         } else {

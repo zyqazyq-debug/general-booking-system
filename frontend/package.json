@@ -2,8 +2,10 @@
   "name": "uni-preset-vue",
   "version": "0.0.0",
   "scripts": {
+    "dev": "npm run dev:h5",
+    "dev:preflight": "node ../scripts/check_dev_preflight.js",
     "dev:custom": "uni -p",
-    "dev:h5": "uni",
+    "dev:h5": "node --no-deprecation node_modules/@dcloudio/vite-plugin-uni/bin/uni.js",
     "dev:h5:ssr": "uni --ssr",
     "dev:mp-alipay": "uni -p mp-alipay",
     "dev:mp-baidu": "uni -p mp-baidu",
@@ -34,7 +36,14 @@
     "build:quickapp-webview": "uni build -p quickapp-webview",
     "build:quickapp-webview-huawei": "uni build -p quickapp-webview-huawei",
     "build:quickapp-webview-union": "uni build -p quickapp-webview-union",
-    "type-check": "vue-tsc --noEmit"
+    "type-check": "vue-tsc --noEmit",
+    "guard:no-agent-legacy": "node ../scripts/check_no_agent_legacy.js",
+    "lint": "npm run guard:no-agent-legacy && eslint . --ext .js,.ts,.vue --max-warnings 0",
+    "lint:fix": "npm run guard:no-agent-legacy && eslint . --ext .js,.ts,.vue --fix",
+    "lint:arch": "npm run guard:no-agent-legacy && eslint src --ext .js,.ts,.vue --max-warnings 0 && npm run depcruise",
+    "depcruise": "depcruise --config dependency-cruiser.config.cjs src --output-type err",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check"
   },
   "dependencies": {
     "@dcloudio/uni-app": "3.0.0-4080420251103001",
@@ -53,10 +62,11 @@
     "@dcloudio/uni-mp-weixin": "3.0.0-4080420251103001",
     "@dcloudio/uni-mp-xhs": "3.0.0-4080420251103001",
     "@dcloudio/uni-quickapp-webview": "3.0.0-4080420251103001",
+    "@sentry/vue": "^10.44.0",
     "dayjs": "^1.11.19",
-    "pinia": "^2.1.7",
+    "pinia": "^2.3.1",
     "uqrcodejs": "^4.0.7",
-    "vue": "^3.4.21",
+    "vue": "^3.5.29",
     "vue-i18n": "^9.14.5"
   },
   "devDependencies": {
@@ -65,11 +75,19 @@
     "@dcloudio/uni-cli-shared": "3.0.0-4080420251103001",
     "@dcloudio/uni-stacktracey": "3.0.0-4080420251103001",
     "@dcloudio/vite-plugin-uni": "3.0.0-4080420251103001",
-    "@vue/runtime-core": "^3.4.21",
-    "@vue/tsconfig": "^0.8.1",
+    "@eslint/js": "^10.0.1",
+    "@vue/runtime-core": "^3.5.29",
+    "@vue/tsconfig": "^0.9.0",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.8.0",
+    "prettier": "^3.8.1",
     "sass": "^1.97.3",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.1",
     "vite": "5.2.8",
-    "vue-tsc": "^3.2.5"
+    "vue-eslint-parser": "^10.4.0",
+    "vue-tsc": "^3.2.5",
+    "dependency-cruiser": "^16.3.0"
   }
 }

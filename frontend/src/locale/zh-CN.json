@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "通用预约系统",
+    "login": "登录",
+    "register": "注册",
+    "welcome": "欢迎",
+    "balance": "余额",
+    "credit": "信用分",
+    "role": "当前角色",
+    "switch_role": "切换角色",
+    "logout": "退出登录"
+  },
+  "menu": {
+    "my_schedules": "我的日程",
+    "my_orders": "我的订单"
+  },
+  "role": {
+    "CONSUMER": "消费者",
+    "OWNER": "商家",
+    "AGENT": "中介"
+  },
+  "common": {
+    "submit": "提交",
+    "cancel": "取消",
+    "loading": "加载中..."
+  },
+  "uni": {
+    "picker": {
+      "cancel": "取消",
+      "done": "完成"
+    }
+  }
+}

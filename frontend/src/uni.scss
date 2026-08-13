@@ -14,6 +14,8 @@
 
 /* 颜色变量 - Bookly Pro Inspired */
 $uni-color-primary: #4E97FC; /* 现代专业蓝 */
+$uni-color-primary-light: #e8f2ff;
+$uni-color-primary-dark: #2f7ef6;
 $uni-color-success: #28a745;
 $uni-color-warning: #ffc107;
 $uni-color-error: #dc3545;
@@ -26,6 +28,15 @@ $uni-text-color-grey: #64748b;
 $uni-text-color-placeholder: #94a3b8;
 $uni-text-color-disable: #cbd5e1;
 
+/* 字体大小 */
+$uni-font-size-sm: 12px;
+$uni-font-size-body: 14px;
+$uni-font-size-h2: 16px;
+$uni-font-size-h1: 18px;
+
+/* 字重 */
+$uni-font-weight-bold: 700;
+
 /* 背景颜色 */
 $uni-bg-color: #ffffff;
 $uni-bg-color-grey: #f1f5f9; /* 浅蓝灰背景 */
@@ -34,6 +45,10 @@ $uni-bg-color-mask: rgba(15, 23, 42, 0.6);
 
 /* 边框颜色 */
 $uni-border-color: #e2e8f0;
+$uni-border-color-light: $uni-border-color;
+
+/* 文字颜色补充 */
+$uni-text-color-secondary: $uni-text-color-grey;
 
 /* 圆角 */
 $uni-border-radius-sm: 4px;
@@ -41,11 +56,36 @@ $uni-border-radius-base: 8px;
 $uni-border-radius-lg: 12px;
 $uni-border-radius-xl: 16px;
 $uni-border-radius-circle: 50%;
+$uni-radius-sm: $uni-border-radius-sm;
+$uni-radius-base: $uni-border-radius-base;
+$uni-radius-lg: $uni-border-radius-lg;
+$uni-radius-xl: $uni-border-radius-xl;
+$uni-radius-circle: $uni-border-radius-circle;
 
 /* 阴影 */
 $uni-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 $uni-shadow-base: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 $uni-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+
+/* 层级 */
+$uni-z-base: 1;
+$uni-z-sticky: 100;
+$uni-z-navbar: 500;
+$uni-z-float: 800;
+$uni-z-overlay: 1000;
+$uni-z-mask: 1000;
+$uni-z-drawer: 1100;
+$uni-z-modal: 1200;
+$uni-z-confirm: 1300;
+$uni-z-popover: 1400;
+$uni-z-message: 1500;
+$uni-z-toast: 1500;
+$uni-z-debug: 9999;
+
+/* 弹窗尺寸 */
+$uni-modal-workspace-width: 900rpx;
+$uni-modal-workspace-height: 80vh;
+$uni-modal-workspace-max-height: 90vh;
 
 /* 间距 */
 $uni-spacing-xs: 4px;

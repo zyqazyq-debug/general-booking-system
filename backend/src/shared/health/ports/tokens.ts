@@ -1,0 +1,1 @@
+export const HEALTH_TELEGRAM_PORT = Symbol('HEALTH_TELEGRAM_PORT');

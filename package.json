@@ -1,0 +1,34 @@
+{
+  "scripts": {
+    "dev": "npm run dev:h5",
+    "dev:h5": "npm run dev:h5 --prefix frontend",
+    "debug:browser": "node scripts/launch-browser-with-proxy.js",
+    "ops:menu": "powershell -ExecutionPolicy Bypass -File ./ops/deploy/deploy-menu.ps1",
+    "ops:deploy": "npm run ops:menu",
+    "ops:guard": "node ./ops/check/validate-shell-chain.js",
+    "ops:history": "node ./ops/check/deploy-history.js",
+    "ops:smoke:shortlink": "node ./ops/check/shortlink-smoke.js",
+    "ops:watch:shortlink404": "node ./ops/check/shortlink-404-watch.js",
+    "ops:check:db": "node ./ops/check/db-connectivity.js",
+    "ops:check:runtime": "node ./ops/check/runtime-consistency.js",
+    "ops:drill": "powershell -ExecutionPolicy Bypass -File ./ops/check/recovery-drill.ps1",
+    "prepare": "husky install",
+    "lint:arch:backend": "node scripts/backend/run-arch-check.js",
+    "lint:arch:frontend": "node scripts/frontend/run-arch-check.js",
+    "lint:arch": "npm run lint:arch:backend && npm run lint:arch:frontend"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "dotenv": "^16.4.5",
+    "execa": "^8.0.1",
+    "node-ssh": "^13.2.0",
+    "pm2": "^5.3.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0",
+    "local-web-server": "^5.4.0",
+    "puppeteer": "^24.39.1"
+  }
+}

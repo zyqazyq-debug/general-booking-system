@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "name": "部署 - 开发环境",
+      "command": "powershell -ExecutionPolicy Bypass -Command \"cd frontend; npm run dev:h5\"",
+      "cwd": "{{ workspaceRoot }}",
+      "env": {},
+      "group": "部署",
+      "icon": "play"
+    },
+    {
+      "name": "部署 - 生产环境（快速发布）",
+      "command": "powershell -ExecutionPolicy Bypass -File ops/deploy-prod.ps1",
+      "cwd": "{{ workspaceRoot }}",
+      "env": {},
+      "group": "部署",
+      "icon": "play"
+    },
+    {
+      "name": "停止 - 开发环境",
+      "command": "powershell -ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -State Listen | ? { $_.LocalPort -in 3000,3001,3005,5173,8080 } | Format-Table -AutoSize\"",
+      "cwd": "{{ workspaceRoot }}",
+      "env": {},
+      "group": "管理",
+      "icon": "stop"
+    },
+    {
+      "name": "停止 - 生产环境",
+      "command": "powershell -ExecutionPolicy Bypass -File ops/stop-prod.ps1",
+      "cwd": "{{ workspaceRoot }}",
+      "env": {},
+      "group": "管理",
+      "icon": "stop"
+    },
+    {
+      "name": "检查 - 服务状态",
+      "command": "ssh realzyq@192.168.3.5 'sudo /var/packages/ContainerManager/target/usr/bin/docker ps'",
+      "cwd": "{{ workspaceRoot }}",
+      "env": {},
+      "group": "管理",
+      "icon": "terminal"
+    }
+  ]
+}

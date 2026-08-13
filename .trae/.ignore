@@ -1,0 +1,15 @@
+**/node_modules/
+backups*/
+_backup/
+**/dist/
+**/build/
+**/.output/
+**/coverage/
+**/logs/
+**/tmp/
+**/temp/
+.venv/
+**/__pycache__/
+**/.adminjs/
+.trae/runtime/
+database/pg_data/

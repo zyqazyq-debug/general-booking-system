@@ -1,46 +1,30 @@
 <template>
-  <view class="page-container">
-    <view class="top-nav">
-       <view class="nav-left" @click="goBack">
-          <text class="arrow-left">←</text>
-       </view>
-       <text class="page-title">代理看板</text>
-       <view class="nav-right"></view>
-    </view>
-
-    <view class="content-wrapper">
+  <AppPage title="分销看板" :with-navbar="true" :show-back="true" :padding="'16px'">
+    <view class="agent-dashboard-page">
         <view class="row mb-4">
             <view class="col-6">
-                <view class="card stat-card">
-                    <view class="card-body">
-                        <view class="stat-label">总收益</view>
+                <AppCard :padding="'16px'" class="stat-card">
+                        <view class="stat-label">总回馈</view>
                         <text class="stat-value text-success">¥{{ stats.totalRevenue || 0 }}</text>
-                    </view>
-                </view>
+                </AppCard>
             </view>
             <view class="col-6">
-                <view class="card stat-card">
-                    <view class="card-body">
-                        <view class="stat-label">推广订单</view>
+                <AppCard :padding="'16px'" class="stat-card">
+                        <view class="stat-label">分享预约</view>
                         <text class="stat-value text-primary">{{ stats.totalOrders || 0 }}</text>
-                    </view>
-                </view>
+                </AppCard>
             </view>
         </view>
 
-        <view class="card">
-            <view class="card-header">
-                <text class="card-title">收益明细</text>
-            </view>
-            <view class="card-body p-0">
+        <AppCard title="回馈明细" :padding="'0'">
                 <view v-if="!stats.orders || stats.orders.length === 0" class="empty-state">
                     <text class="empty-icon">💰</text>
-                    <text class="empty-text">暂无收益记录</text>
+                    <text class="empty-text">暂无回馈记录</text>
                 </view>
                 
-                <view class="list-item history-item" v-for="item in stats.orders" :key="item.orderId">
+                <view v-for="item in stats.orders" :key="item.orderId" class="list-item history-item">
                     <view class="left">
-                        <h6 class="item-title">{{ item.scheduleTitle || '未知服务' }}</h6>
+                        <h6 class="item-title">{{ item.serviceTitle || '未知服务' }}</h6>
                         <p class="item-meta">{{ formatDate(item.createdAt) }}</p>
                     </view>
                     <view class="right">
@@ -48,30 +32,59 @@
                         <span :class="['status-tag', item.status.toLowerCase()]">{{ formatStatus(item.status) }}</span>
                     </view>
                 </view>
-            </view>
-        </view>
+        </AppCard>
     </view>
-  </view>
+  </AppPage>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { request } from '@/utils/request';
 import dayjs from 'dayjs';
+import AppPage from '@/shared/components/AppPage.vue';
+import AppCard from '@/shared/components/AppCard.vue';
 
 const stats = ref<any>({ totalOrders: 0, totalRevenue: 0, orders: [] });
 
 const loadData = async () => {
   try {
-    const res = await request({ url: '/agent/stats' });
-    stats.value = res;
+    const res: any = await request({
+      url: '/order/my',
+      method: 'GET',
+      params: { page: 1, limit: 200 },
+    });
+    const list = res?.data || res?.data?.data || [];
+    const orders = Array.isArray(list) ? list : [];
+    const agentOrders = orders.filter((o: any) =>
+      Array.isArray(o?.roles) ? o.roles.includes('AGENT') : false,
+    );
+    const mapped = agentOrders
+      .map((o: any) => {
+        const amount = Number(o?.commission?.AGENT?.markup_amount ?? 0);
+        return {
+          orderId: o?.id,
+          amount: Number.isFinite(amount) ? amount : 0,
+          createdAt: o?.created_at,
+          status: o?.status,
+          serviceTitle: o?.service?.title || o?.service_snapshot?.title,
+        };
+      })
+      .filter((o: any) => o?.orderId);
+    const totalRevenue = mapped.reduce(
+      (sum: number, o: any) => sum + Number(o.amount || 0),
+      0,
+    );
+    stats.value = {
+      totalOrders: mapped.length,
+      totalRevenue: Number(totalRevenue.toFixed(2)),
+      orders: mapped,
+    };
   } catch (e) {
     console.error(e);
   }
 };
 
 const formatDate = (d: string) => dayjs(d).format('MM-DD HH:mm');
-const goBack = () => uni.navigateBack();
 
 const formatStatus = (status: string) => {
     const map: Record<string, string> = {
@@ -87,14 +100,17 @@ onMounted(() => {
 });
 </script>
 
-<style>
+<style lang="scss" scoped>
+.agent-dashboard-page {
+    width: 100%;
+}
 .stat-card {
     border: none;
     box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
 }
 .stat-label {
     font-size: 13px;
-    color: #64748b;
+    color: $uni-text-color-grey;
     margin-bottom: 6px;
 }
 .stat-value {
@@ -104,33 +120,33 @@ onMounted(() => {
 
 .history-item {
     padding: 16px;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid $uni-bg-color-grey;
 }
 .item-title {
     font-size: 15px;
-    color: #334155;
+    color: $uni-text-color-secondary;
     margin-bottom: 4px;
 }
 .item-meta {
     font-size: 12px;
-    color: #94a3b8;
+    color: $uni-text-color-placeholder;
 }
 .amount-plus {
     font-size: 16px;
     font-weight: 600;
-    color: #28a745;
+    color: $uni-color-success;
     display: block;
     text-align: right;
 }
 .status-tag {
     font-size: 11px;
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: $uni-radius-sm;
     margin-top: 4px;
     display: inline-block;
     float: right;
 }
-.status-tag.completed { background: #f0fdf4; color: #28a745; }
+.status-tag.completed { background: #f0fdf4; color: $uni-color-success; }
 .status-tag.pending { background: #fff7ed; color: #f97316; }
-.status-tag.cancelled { background: #fef2f2; color: #ef4444; }
+.status-tag.cancelled { background: #fef2f2; color: $uni-color-error; }
 </style>

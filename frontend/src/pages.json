@@ -26,15 +26,22 @@
             }
         },
         {
-            "path": "pages/agent/create-link",
+            "path": "pages/distribution/create-link",
             "style": {
                 "navigationBarTitleText": "生成分销链接"
             }
         },
         {
-            "path": "pages/agent/dashboard",
+            "path": "pages/distribution/dashboard",
             "style": {
                 "navigationBarTitleText": "代理看板"
+            }
+        },
+        {
+            "path": "pages/provider/dashboard/index",
+            "style": {
+                "navigationBarTitleText": "",
+                "navigationStyle": "custom"
             }
         },
         {
@@ -87,6 +94,50 @@
             "path": "pages/admin/users",
             "style": {
                 "navigationBarTitleText": "用户管理"
+            }
+        },
+        {
+            "path": "pages/library/index",
+            "style": {
+                "navigationBarTitleText": "",
+                "navigationStyle": "custom"
+            }
+        },
+        {
+            "path": "pages/order/detail",
+            "style": {
+                "navigationBarTitleText": "订单详情"
+            }
+        },
+        {
+            "path": "pages/admin/login",
+            "style": {
+                "navigationBarTitleText": "管理员登录"
+            }
+        },
+        {
+            "path": "pages/admin/dashboard",
+            "style": {
+                "navigationBarTitleText": "系统管理后台"
+            }
+        },
+        {
+            "path": "pages/share/view",
+            "style": {
+                "navigationBarTitleText": "分享详情"
+            }
+        },
+        {
+            "path": "pages/s/index",
+            "style": {
+                "navigationBarTitleText": "",
+                "navigationStyle": "custom"
+            }
+        },
+        {
+            "path": "pages/qa/runner",
+            "style": {
+                "navigationBarTitleText": "用例执行器"
             }
         }
 	],

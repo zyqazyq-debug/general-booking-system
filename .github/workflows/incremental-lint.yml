@@ -1,0 +1,78 @@
+name: Incremental Lint
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - 'ops/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'lint-staged.config.js'
+      - 'package.json'
+
+jobs:
+  lint-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史做 diff
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Install backend deps
+        run: cd backend && npm ci
+
+      - name: Lint changed files
+        run: |
+          npx lint-staged --diff="origin/${{ github.base_ref }}...HEAD" --config lint-staged.config.js
+
+  gates:
+    name: Build & Typecheck & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/package-lock.json
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Frontend dependency check
+        run: cd frontend && npm run depcruise
+        
+      - name: Frontend typecheck
+        run: cd frontend && npm run type-check
+
+      - name: Frontend build (h5)
+        run: cd frontend && npm run build:h5
+
+      - name: Install backend deps
+        run: cd backend && npm ci
+
+      - name: Backend lint
+        run: cd backend && npm run lint -- --max-warnings 0 --no-fix
+
+      - name: Backend build
+        run: cd backend && npm run build
+
+      - name: Backend tests
+        run: cd backend && npm test

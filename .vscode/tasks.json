@@ -1,0 +1,116 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Cleanup Ports",
+      "type": "shell",
+      "command": "node scripts/cleanup-ports.js; exit",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "close": true
+      }
+    },
+    {
+      "label": "Dev: Backend (3001)",
+      "type": "shell",
+      "command": "$Host.UI.RawUI.WindowTitle='Dev: Backend (3001)'; Set-Location backend; npm run start:dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": {
+        "owner": "custom-backend",
+        "pattern": {
+          "regexp": "^.*$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Starting",
+          "endsPattern": "Nest application successfully started"
+        }
+      }
+    },
+    {
+      "label": "Test: Telegram Bot",
+      "type": "shell",
+      "command": "$Host.UI.RawUI.WindowTitle='Test: Telegram Bot'; Set-Location backend; npx ts-node ../scripts/backend/test-telegram.ts",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Dev: Frontend (8443)",
+      "type": "shell",
+      "command": "$Host.UI.RawUI.WindowTitle='Dev: Frontend (8443)'; Set-Location frontend; npm run dev:h5",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": {
+        "owner": "custom-frontend",
+        "pattern": {
+          "regexp": "^.*$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "vite",
+          "endsPattern": "ready in"
+        }
+      }
+    },
+    {
+      "label": "Start Dev Services (Parallel)",
+      "dependsOn": [
+        "Dev: Backend (3001)",
+        "Dev: Frontend (8443)"
+      ],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Auto Launch Services",
+      "dependsOn": [
+        "Cleanup Ports",
+        "Start Dev Services (Parallel)"
+      ],
+      "dependsOrder": "sequence",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Switch to PROD Mode",
+      "type": "shell",
+      "command": "$Host.UI.RawUI.WindowTitle='Switch to PROD Mode'; powershell -ExecutionPolicy Bypass -File ./ops/deploy/deploy-menu.ps1",
+      "problemMatcher": [],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    }
+  ]
+}

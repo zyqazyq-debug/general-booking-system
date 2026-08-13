@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "Universal Booking",
+    "login": "Login",
+    "register": "Register",
+    "welcome": "Welcome",
+    "balance": "Balance",
+    "credit": "Credit",
+    "role": "Current Role",
+    "switch_role": "Switch Role",
+    "logout": "Logout"
+  },
+  "menu": {
+    "my_schedules": "My Schedules",
+    "my_orders": "My Orders"
+  },
+  "role": {
+    "CONSUMER": "Consumer",
+    "OWNER": "Owner",
+    "AGENT": "Agent"
+  },
+  "common": {
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "loading": "Loading..."
+  },
+  "uni": {
+    "picker": {
+      "cancel": "Cancel",
+      "done": "Done"
+    }
+  }
+}

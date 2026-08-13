@@ -1,0 +1,49 @@
+@use '@/uni.scss' as *;
+
+@mixin auth-field-spacing {
+  margin-bottom: $uni-spacing-base;
+}
+
+@mixin auth-links-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: $uni-spacing-sm;
+  font-size: $uni-font-size-sm;
+}
+
+@mixin auth-link {
+  color: $uni-color-primary;
+  font-weight: 500;
+}
+
+@mixin auth-form-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: $uni-font-size-body;
+  color: $uni-text-color-secondary;
+  font-weight: 500;
+}
+
+@mixin auth-form-control {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: $uni-radius-base;
+  border: 1px solid $uni-border-color;
+  background: $uni-bg-color;
+  font-size: $uni-font-size-body;
+  color: $uni-text-color;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  box-sizing: border-box;
+}
+
+@mixin auth-form-control-focus {
+  border-color: $uni-color-primary;
+  box-shadow: 0 0 0 2px rgba(78, 151, 252, 0.16);
+}
+
+@mixin auth-primary-button-shadow {
+  margin-top: $uni-spacing-xs;
+  box-shadow: 0 6px 14px -6px rgba(78, 151, 252, 0.45);
+}

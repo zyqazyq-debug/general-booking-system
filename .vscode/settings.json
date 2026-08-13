@@ -1,0 +1,44 @@
+{
+  "task.allowAutomaticTasks": "off",
+  "search.exclude": {
+    "**/.git/**": true,
+    "**/.trae/runtime/**": true,
+    "**/.cache/**": true,
+    "**/coverage/**": true,
+    "**/tmp/**": true,
+    "**/temp/**": true,
+    "**/*.log": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/logs/**": true,
+    "**/.adminjs/**": true,
+    "backups/**": true,
+    "_backup/**": true,
+    "**/.deploy/**": true
+  },
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/.trae/runtime/**": true,
+    "**/.cache/**": true,
+    "**/coverage/**": true,
+    "**/tmp/**": true,
+    "**/temp/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/logs/**": true,
+    "**/.adminjs/**": true,
+    "backups/**": true,
+    "_backup/**": true,
+    "**/.deploy/**": true
+  },
+  "files.exclude": {
+    "**/.adminjs": true,
+    "**/.cache": true,
+    "**/coverage": true,
+    "**/tmp": true,
+    "**/temp": true,
+    "**/.trae/runtime": true,
+    "backups": true,
+    "_backup": true
+  }
+}

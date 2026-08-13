@@ -1,48 +1,61 @@
 <template>
-  <view class="page-container center-content">
-      <view class="card p-4" v-if="loading">
-          <text class="text-muted">正在加载分享内容...</text>
-      </view>
+  <AppPage title="分享详情" :with-navbar="true" :show-back="true">
+      <view class="share-page">
+          <AppCard v-if="loading" :padding="'16px'" class="share-card">
+              <text class="muted-text">正在加载分享内容...</text>
+          </AppCard>
 
-      <view class="card p-4" v-else-if="error">
-          <text class="text-danger mb-2">加载失败</text>
-          <text class="text-muted text-sm">{{ error }}</text>
-          <button class="btn btn-primary mt-4" @click="goHome">返回首页</button>
-      </view>
+          <AppCard v-else-if="error" :padding="'16px'" class="share-card">
+              <text class="error-title">加载失败</text>
+              <text class="muted-text support-text">{{ error }}</text>
+              <AppButton type="primary" block class="error-action-gap" @click="goHome">返回首页</AppButton>
+          </AppCard>
 
-      <view class="card" v-else-if="shareData">
-          <view class="card-header text-center">
-              <text class="h2">{{ shareData.data.title }}</text>
-          </view>
-          <view class="card-body">
-              <view class="d-flex justify-between mb-2">
-                  <text class="text-muted">发布者</text>
-                  <text>{{ shareData.data.owner_name }}</text>
+          <AppCard v-else-if="shareItem" :padding="'0'" class="share-card">
+              <template #header>
+                  <view class="share-header">
+                      <text class="share-title">{{ shareItem.title }}</text>
+                  </view>
+              </template>
+              <view class="share-body">
+                  <view class="info-row info-gap-sm">
+                      <text class="muted-text">发布者</text>
+                      <text>{{ shareItem.owner_name }}</text>
+                  </view>
+                  <view class="info-row info-gap-lg">
+                      <text class="muted-text">价格</text>
+                      <text class="price-highlight text-bold">¥{{ shareItem.base_price }}</text>
+                  </view>
+                  
+                  <AppButton type="primary" block @click="handleImport">添加到我的代理库</AppButton>
+                  <AppButton type="info" outline block class="secondary-action-gap" @click="goHome">返回首页</AppButton>
               </view>
-              <view class="d-flex justify-between mb-4">
-                  <text class="text-muted">价格</text>
-                  <text class="text-primary font-bold">¥{{ shareData.data.price }}</text>
-              </view>
-              
-              <button class="btn btn-primary w-100" @click="handleImport">添加到我的代理库</button>
-              <button class="btn btn-outline mt-2 w-100" @click="goHome">返回首页</button>
-          </view>
+          </AppCard>
       </view>
-  </view>
+  </AppPage>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { computed, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
-import { resolveShareLink } from '@/api/share-link';
+import { getShareLink } from '@/domains/distribution';
 import { request } from '@/utils/request';
-import { useUserStore } from '@/stores/user';
+import { useUserStore } from '@/shared/stores/user';
+import { isCollectionExistsError, isSelfCollectionError } from '@/utils/error-code';
+import AppPage from '@/shared/components/AppPage.vue';
+import AppCard from '@/shared/components/AppCard.vue';
+import AppButton from '@/shared/components/AppButton.vue';
 
 const userStore = useUserStore();
 const token = ref('');
 const loading = ref(true);
 const error = ref('');
 const shareData = ref<any>(null);
+const shareItem = computed(() => {
+    const payload = shareData.value?.data;
+    if (Array.isArray(payload)) return payload[0] || null;
+    return payload || null;
+});
 
 onLoad((options: any) => {
     if (options.token) {
@@ -56,7 +69,7 @@ onLoad((options: any) => {
 
 const loadShareContent = async () => {
     try {
-        const res = await resolveShareLink(token.value);
+        const res = await getShareLink(token.value);
         shareData.value = res;
     } catch (e: any) {
         error.value = e.message || '链接失效或网络错误';
@@ -66,42 +79,113 @@ const loadShareContent = async () => {
 };
 
 const handleImport = async () => {
-    if (!userStore.userInfo) {
-        uni.showToast({ title: '请先登录', icon: 'none' });
-        setTimeout(() => uni.navigateTo({ url: '/pages/login/login' }), 1000);
-        return;
-    }
-
     try {
         uni.showLoading({ title: '正在添加...' });
+
+        const currentUserId = userStore.userInfo?.id;
+        const sourceOwnerId = shareItem.value?.owner_id;
+        const sourceServiceId = shareItem.value?.source_service_id;
+        if (currentUserId && sourceOwnerId && currentUserId === sourceOwnerId) {
+            uni.showToast({ title: '这是你自己的分享，无需收藏', icon: 'none' });
+            return;
+        }
+        if (currentUserId && sourceServiceId) {
+            const collection: any = await request({
+                url: '/agency/collection',
+                method: 'GET',
+                hideLoading: true,
+                hideErrorToast: true,
+            });
+            if (Array.isArray(collection) && collection.some((item: any) => item?.service_id === sourceServiceId && item?.status === 'ACTIVE')) {
+                uni.showToast({ title: '该分享已在你的收藏中', icon: 'none' });
+                return;
+            }
+        }
         
-        // Import via listing ID
-        await request({ 
+        const res: any = await request({ 
             url: '/agency/collection', 
             method: 'POST', 
-            data: { listingId: shareData.value.data.listing_id } 
+            data: { listingId: shareItem.value?.listing_id } 
         });
+
+        if (res?.auth?.access_token && res?.auth?.refresh_token && res?.auth?.user) {
+            userStore.login(res.auth.user, res.auth.access_token, res.auth.refresh_token);
+        }
         
         uni.showToast({ title: '已添加到代理库', icon: 'success' });
-        setTimeout(() => uni.switchTab({ url: '/pages/index/index' }), 1500);
+        setTimeout(() => uni.reLaunch({ url: '/pages/index/index' }), 1500);
 
-    } catch (e) {
+    } catch (e: any) {
+        if (isSelfCollectionError(e)) {
+            uni.showToast({ title: '这是你自己的分享，无需收藏', icon: 'none' });
+            return;
+        }
+        if (isCollectionExistsError(e)) {
+            uni.showToast({ title: '该分享已在你的收藏中', icon: 'none' });
+            return;
+        }
         uni.showToast({ title: '添加失败', icon: 'none' });
     } finally {
         uni.hideLoading();
     }
 };
 
-const goHome = () => uni.switchTab({ url: '/pages/index/index' });
+const goHome = () => uni.reLaunch({ url: '/pages/index/index' });
 </script>
 
-<style>
-.center-content {
+<style lang="scss" scoped>
+.share-page {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
     align-items: center;
-    min-height: 80vh;
+    min-height: calc(100vh - 64px);
+    padding-top: 20px;
 }
-.w-100 { width: 100%; }
-.btn-outline { background: transparent; border: 1px solid #ccc; color: #666; }
+.share-card {
+    width: 100%;
+    max-width: 720rpx;
+}
+.share-header {
+    width: 100%;
+    text-align: center;
+}
+.share-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: $uni-text-color;
+}
+.share-body {
+    padding: 16px;
+}
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.muted-text {
+    color: $uni-text-color-placeholder;
+}
+.support-text {
+    font-size: 12px;
+}
+.error-action-gap {
+    margin-top: 16px;
+}
+.info-gap-sm {
+    margin-bottom: 8px;
+}
+.info-gap-lg {
+    margin-bottom: 16px;
+}
+.price-highlight {
+    color: $uni-color-primary;
+}
+.secondary-action-gap {
+    margin-top: 8px;
+}
+.text-bold { font-weight: 600; }
+.error-title {
+    color: $uni-color-error;
+    margin-bottom: 8px;
+}
 </style>

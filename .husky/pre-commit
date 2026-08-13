@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# 仅对本次 git diff 涉及的文件做 lint，避免历史存量阻塞
+npx lint-staged

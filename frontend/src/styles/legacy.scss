@@ -1,0 +1,136 @@
+@use "sass:color";
+@use "@/uni.scss" as *;
+
+/* 
+ * =========================================================================
+ * LEGACY STYLES (To be deprecated)
+ * These utility classes and generic tags were moved from App.vue.
+ * Do not use these in new components. Use scoped styles and App components instead.
+ * =========================================================================
+ */
+
+/* Utilities */
+.mb-3 { margin-bottom: $uni-spacing-base !important; }
+.mb-4 { margin-bottom: $uni-spacing-lg !important; }
+.mt-2 { margin-top: $uni-spacing-sm !important; }
+.text-center { text-align: center; }
+.text-primary { color: $uni-color-primary !important; }
+.text-success { color: $uni-color-success !important; }
+.text-muted { color: $uni-text-color-grey !important; }
+
+/* Typography */
+h2 { font-size: 24px; font-weight: 700; margin: 8px 0; color: $uni-text-color; }
+h4 { font-size: 18px; font-weight: 600; margin-bottom: 12px; color: $uni-text-color-secondary; }
+h5 { font-size: 16px; font-weight: 600; margin-bottom: 4px; color: $uni-text-color-secondary; }
+h6 { font-size: 14px; font-weight: 600; margin-bottom: 4px; color: $uni-text-color; }
+
+/* Grid */
+.row { display: flex; flex-wrap: wrap; margin: 0 -8px; }
+.col-6 { width: 50%; padding: 0 8px; }
+
+/* List Item */
+.list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: $uni-spacing-base;
+    border-bottom: 1px solid $uni-border-color;
+    background: $uni-bg-color;
+    transition: background-color 0.2s;
+}
+.list-item:active { background-color: $uni-bg-color-hover; }
+.list-item:last-child { border-bottom: none; }
+.list-item .left { flex: 1; }
+.list-item .left p { font-size: 13px; color: $uni-text-color-grey; margin-top: 4px; }
+
+/* Forms */
+.form-control {
+    width: 100%;
+    height: 48px;
+    line-height: 48px;
+    border-radius: $uni-radius-base;
+    padding: 0 16px;
+    font-size: 15px;
+    border: 1px solid $uni-border-color;
+    background: $uni-bg-color;
+    margin-bottom: 12px;
+    transition: border-color 0.2s;
+}
+.form-control:focus {
+    border-color: $uni-color-primary;
+}
+.form-label { display: block; margin-bottom: 8px; font-weight: 500; color: $uni-text-color-secondary; font-size: 14px; }
+
+/* Buttons */
+.btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    border-radius: $uni-radius-base;
+    height: 48px;
+    font-size: 16px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    background-color: $uni-bg-color;
+    color: $uni-text-color-secondary;
+    margin: 0;
+    box-shadow: $uni-shadow-sm;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.btn:active { transform: translateY(1px); box-shadow: none; }
+.btn-primary {
+    background-color: $uni-color-primary !important;
+    color: $uni-bg-color !important;
+    border-color: $uni-color-primary !important;
+    box-shadow: 0 4px 6px -1px rgba(78, 151, 252, 0.3);
+}
+.btn-primary:active {
+    background-color: color.adjust($uni-color-primary, $lightness: -5%) !important;
+}
+.btn-outline-primary {
+    background-color: transparent;
+    color: $uni-color-primary;
+    border-color: $uni-color-primary;
+    box-shadow: none;
+}
+.btn-sm {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+    width: auto;
+    display: inline-flex;
+    margin: 0;
+}
+
+.btn-md {
+    height: 40px;
+    padding: 0 16px;
+    font-size: 14px;
+    width: auto;
+    display: inline-flex;
+    margin: 0;
+}
+
+.btn-group-vertical {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Badges */
+.badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    color: $uni-bg-color;
+    display: inline-block;
+}
+
+.container {
+    padding: $uni-spacing-base;
+}

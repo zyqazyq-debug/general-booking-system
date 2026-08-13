@@ -1,0 +1,6 @@
+dist
+unpackage
+node_modules
+.hbuilderx
+coverage
+package-lock.json

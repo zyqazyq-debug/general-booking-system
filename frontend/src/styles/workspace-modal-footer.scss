@@ -1,0 +1,52 @@
+@use '@/uni.scss' as *;
+
+@mixin workspace-modal-footer-actions {
+  .footer-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .footer-actions .workspace-footer-action {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .footer-actions .workspace-footer-action,
+  .workspace-footer-primary-action {
+    margin-bottom: 0;
+    box-shadow: none;
+    border-radius: 10px;
+    height: 40px;
+    line-height: 40px;
+    font-size: 14px;
+    font-weight: 600;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+  }
+
+  .workspace-footer-primary-action {
+    width: 100%;
+  }
+
+  .footer-actions .workspace-footer-action--primary,
+  .workspace-footer-primary-action.workspace-footer-action--primary {
+    background-color: $uni-color-primary;
+    border-color: $uni-color-primary;
+    color: #ffffff;
+    box-shadow: 0 6px 12px -6px rgba(78, 151, 252, 0.6);
+  }
+
+  .footer-actions .workspace-footer-action--outline-secondary {
+    background-color: #ffffff;
+    border-color: #cbd5e1;
+    color: #475569;
+  }
+
+  .footer-actions .workspace-footer-action--outline-danger {
+    background-color: #fff5f5;
+    border-color: #fecaca;
+    color: #dc2626;
+  }
+}
