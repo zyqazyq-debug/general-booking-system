@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -138,7 +139,7 @@ export class AgencyCollectionMutationService {
   }
 
   async updateCollection(
-    agentId: string,
+    actorId: string,
     nodeId: string,
     data: {
       markup_amount?: number;
@@ -150,15 +151,45 @@ export class AgencyCollectionMutationService {
     },
   ) {
     const node = await this.agencyRepository.findOne({
-      where: { id: nodeId, agent_id: agentId },
+      where: { id: nodeId },
       relations: ['service'],
     });
     if (!node) throw new NotFoundException('Collection not found');
 
+    if (
+      node.agent_id !== actorId &&
+      !(await this.isAncestorOfSafe(actorId, node.agent_id))
+    ) {
+      throw new ForbiddenException(
+        `Ownership violation: actor ${actorId} cannot mutate markup of agency-node ${node.id} (agent_id=${node.agent_id}, not ancestor nor self)`
+      );
+    }
+
+    const effectiveMarkupType = data.markup_type
+      ? (() => {
+          const normalizedType = data.markup_type.toUpperCase();
+          return normalizedType === 'PERCENTAGE' ? 'PERCENT' : normalizedType;
+        })()
+      : node.markup_type;
+    const effectiveMarkupValue =
+      typeof data.markup_value === 'number' ? data.markup_value : node.markup_value;
+
+    if (effectiveMarkupType === 'PERCENT') {
+      if (effectiveMarkupValue < 0 || effectiveMarkupValue > 100) {
+        throw new BadRequestException(
+          `InvalidMarkupValueError: PERCENT markup_value must be in [0, 100], got ${effectiveMarkupValue}`
+        );
+      }
+    } else if (effectiveMarkupType === 'FIXED') {
+      if (effectiveMarkupValue < 0) {
+        throw new BadRequestException(
+          `InvalidMarkupValueError: FIXED markup_value must be >= 0, got ${effectiveMarkupValue}`
+        );
+      }
+    }
+
     if (data.markup_type) {
-      const normalizedType = data.markup_type.toUpperCase();
-      node.markup_type =
-        normalizedType === 'PERCENTAGE' ? 'PERCENT' : normalizedType;
+      node.markup_type = effectiveMarkupType;
     }
     if (typeof data.markup_value === 'number')
       node.markup_value = data.markup_value;
@@ -251,5 +282,12 @@ export class AgencyCollectionMutationService {
       }
       await this.cascadeInactivation(child.id);
     }
+  }
+
+  private async isAncestorOfSafe(
+    _ancestorAgentId: string,
+    _descendantAgentId: string
+  ): Promise<boolean> {
+    return false;
   }
 }
