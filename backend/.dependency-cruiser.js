@@ -3,7 +3,7 @@ const path = require('path');
 const {
   COMPOSITION_ROOTS,
   LEGACY_RUNTIME_IMPORT_ALLOWLIST,
-} = require('../scripts/backend/runtime-import-boundary.config');
+} = require('../tools/lint/runtime-import-boundary.config.js');
 
 const domainsDir = path.join(__dirname, 'src', 'domains');
 const domainNames = fs

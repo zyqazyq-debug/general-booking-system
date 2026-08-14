@@ -2,7 +2,7 @@
   "scripts": {
     "dev": "npm run dev:h5",
     "dev:h5": "npm run dev:h5 --prefix frontend",
-    "debug:browser": "node scripts/launch-browser-with-proxy.js",
+    "debug:browser": "node tools/ops/launch-browser-with-proxy.js",
     "ops:menu": "powershell -ExecutionPolicy Bypass -File ./ops/deploy/deploy-menu.ps1",
     "ops:deploy": "npm run ops:menu",
     "ops:guard": "node ./ops/check/validate-shell-chain.js",
@@ -13,8 +13,8 @@
     "ops:check:runtime": "node ./ops/check/runtime-consistency.js",
     "ops:drill": "powershell -ExecutionPolicy Bypass -File ./ops/check/recovery-drill.ps1",
     "prepare": "husky install",
-    "lint:arch:backend": "node scripts/backend/run-arch-check.js",
-    "lint:arch:frontend": "node scripts/frontend/run-arch-check.js",
+    "lint:arch:backend": "node tools/lint/backend-arch-check.js",
+    "lint:arch:frontend": "node tools/lint/frontend-arch-check.js",
     "lint:arch": "npm run lint:arch:backend && npm run lint:arch:frontend"
   },
   "dependencies": {
