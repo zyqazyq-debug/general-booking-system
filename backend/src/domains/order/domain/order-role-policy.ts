@@ -10,7 +10,9 @@ export class OrderRolePolicy {
   }
 
   static isProvider(order: OrderLifecycleRecord, actorId: string) {
-    return order.owner_id === actorId || order.service?.owner_id === actorId;
+    // Historical order authorization is bound to the immutable owner snapshot.
+    // A later service ownership change must not grant access to existing orders.
+    return order.owner_id === actorId;
   }
 
   static ensureProviderAction(

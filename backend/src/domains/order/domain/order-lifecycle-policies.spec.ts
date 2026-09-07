@@ -3,6 +3,10 @@ import { OrderStatus } from '../entities/order.entity';
 import { OrderCancellationSettlementPolicy } from './order-cancellation-settlement.policy';
 import { OrderRolePolicy } from './order-role-policy';
 import { OrderStatusTransitionPolicy } from './order-status-transition.policy';
+import {
+  ORDER_NO_SHOW_GRACE_PERIOD_MINUTES,
+  OrderNoShowEligibilityPolicy,
+} from './order-no-show-eligibility.policy';
 
 describe('Order lifecycle domain policies', () => {
   describe('OrderCancellationSettlementPolicy', () => {
@@ -63,6 +67,37 @@ describe('Order lifecycle domain policies', () => {
   });
 
   describe('OrderRolePolicy', () => {
+    it('uses the order owner snapshot instead of the service current owner', () => {
+      const historicalOrder = {
+        consumer_id: 'consumer-1',
+        owner_id: 'original-provider',
+        status: OrderStatus.RESERVED,
+        frozen_points: 20,
+        start_time: new Date('2026-03-27T10:00:00.000Z'),
+        service_id: 'service-1',
+        metadata: null,
+        service: {
+          owner_id: 'new-provider',
+          cancellation_policy: null,
+        },
+      };
+
+      expect(() =>
+        OrderRolePolicy.ensureProviderAction(
+          historicalOrder,
+          'new-provider',
+          'forfeit',
+        ),
+      ).toThrow('Not authorized to forfeit this order');
+      expect(() =>
+        OrderRolePolicy.ensureProviderAction(
+          historicalOrder,
+          'original-provider',
+          'forfeit',
+        ),
+      ).not.toThrow();
+    });
+
     it('prefers provider role when an actor matches both provider and consumer constraints', () => {
       const actorRole = OrderRolePolicy.resolveCancellationActorRole(
         {
@@ -82,6 +117,28 @@ describe('Order lifecycle domain policies', () => {
       );
 
       expect(actorRole).toBe('PROVIDER');
+    });
+  });
+
+  describe('OrderNoShowEligibilityPolicy', () => {
+    const startTime = new Date('2026-03-27T10:00:00.000Z');
+
+    it('rejects no-show before the appointment grace period ends', () => {
+      const now = new Date('2026-03-27T10:14:59.999Z');
+
+      expect(OrderNoShowEligibilityPolicy.canForfeit(startTime, now)).toBe(
+        false,
+      );
+    });
+
+    it('allows no-show when the explicit grace period has elapsed', () => {
+      const now = new Date(
+        startTime.getTime() + ORDER_NO_SHOW_GRACE_PERIOD_MINUTES * 60_000,
+      );
+
+      expect(OrderNoShowEligibilityPolicy.canForfeit(startTime, now)).toBe(
+        true,
+      );
     });
   });
 });

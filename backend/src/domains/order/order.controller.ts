@@ -3,7 +3,6 @@ import {
   Get,
   Post,
   Body,
-  Patch,
   Param,
   UseGuards,
   Request,
@@ -15,7 +14,6 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { OrderService } from './order.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { UpdateOrderDto } from './dto/update-order.dto';
 import { OrderFilterDto } from './dto/order-filter.dto';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
@@ -176,14 +174,5 @@ export class OrderController {
   @Get(':id')
   findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.orderService.findOne(id, req.user.id);
-  }
-
-  @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() updateOrderDto: UpdateOrderDto,
-    @Request() req: AuthenticatedRequest,
-  ) {
-    return this.orderService.update(id, updateOrderDto, req.user.id);
   }
 }

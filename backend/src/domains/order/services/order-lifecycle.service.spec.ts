@@ -67,6 +67,7 @@ describe('OrderLifecycleService', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.clearAllMocks();
   });
 
@@ -89,7 +90,7 @@ describe('OrderLifecycleService', () => {
     orderRepository.findOne.mockResolvedValue(pendingOrder);
     orderRepository.save.mockResolvedValue(savedOrder);
 
-    await expect(service.confirm('order-1', 'provider-1')).resolves.toEqual(
+    await expect(service.confirm('order-1', 'provider-2')).resolves.toEqual(
       savedOrder,
     );
 
@@ -124,7 +125,7 @@ describe('OrderLifecycleService', () => {
       ...reservedOrder,
       status: OrderStatus.COMPLETED,
       metadata: {
-        completed_by: 'provider-1',
+        completed_by: 'provider-2',
         completed_role: 'PROVIDER',
       },
     } as Order;
@@ -134,7 +135,7 @@ describe('OrderLifecycleService', () => {
       .mockResolvedValueOnce({ ...reservedOrder });
     queryRunner.manager.save.mockResolvedValue(completedOrder);
 
-    await expect(service.complete('order-2', 'provider-1')).resolves.toEqual(
+    await expect(service.complete('order-2', 'provider-2')).resolves.toEqual(
       completedOrder,
     );
 
@@ -149,7 +150,7 @@ describe('OrderLifecycleService', () => {
         id: 'order-2',
         status: OrderStatus.COMPLETED,
         metadata: expect.objectContaining({
-          completed_by: 'provider-1',
+          completed_by: 'provider-2',
           completed_role: 'PROVIDER',
         }),
       }),
@@ -210,7 +211,7 @@ describe('OrderLifecycleService', () => {
           penalty_percent: 25,
         },
       },
-    } as Order;
+    } as unknown as Order;
     queryRunner.manager.findOne.mockResolvedValue(order);
     queryRunner.manager.save.mockImplementation(
       async (_entity: typeof Order, nextOrder: Order) => nextOrder,
@@ -250,5 +251,34 @@ describe('OrderLifecycleService', () => {
       oldStatus: OrderStatus.RESERVED,
       newStatus: OrderStatus.CANCELLED,
     });
+  });
+
+  it('rejects no-show before the appointment grace period without burning credit', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-27T10:00:00.000Z'));
+    const order = {
+      id: 'order-early-no-show',
+      owner_id: 'provider-early',
+      consumer_id: 'consumer-early',
+      status: OrderStatus.RESERVED,
+      service_id: 'service-early',
+      frozen_points: 40,
+      start_time: new Date('2026-03-27T10:30:00.000Z'),
+      metadata: null,
+      service: {
+        owner_id: 'provider-early',
+      },
+    } as Order;
+    queryRunner.manager.findOne.mockResolvedValue(order);
+
+    await expect(
+      service.forfeit('order-early-no-show', 'provider-early'),
+    ).rejects.toThrow('Order cannot be marked no-show before the grace period');
+
+    expect(orderFinancialService.burnDepositCredit).not.toHaveBeenCalled();
+    expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(
+      orderStatusNotifierService.notifyStatusChange,
+    ).not.toHaveBeenCalled();
   });
 });

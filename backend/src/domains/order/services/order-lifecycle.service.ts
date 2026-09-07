@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Order, OrderStatus } from '../entities/order.entity';
@@ -7,6 +11,10 @@ import { OrderStatusNotifierService } from './order-status-notifier.service';
 import { OrderRolePolicy } from '../domain/order-role-policy';
 import { OrderStatusTransitionPolicy } from '../domain/order-status-transition.policy';
 import { OrderCancellationSettlementPolicy } from '../domain/order-cancellation-settlement.policy';
+import {
+  ORDER_NO_SHOW_GRACE_PERIOD_MINUTES,
+  OrderNoShowEligibilityPolicy,
+} from '../domain/order-no-show-eligibility.policy';
 
 @Injectable()
 export class OrderLifecycleService {
@@ -127,6 +135,11 @@ export class OrderLifecycleService {
 
       OrderRolePolicy.ensureProviderAction(order, actorId, 'forfeit');
       OrderStatusTransitionPolicy.ensureForfeitable(order.status);
+      if (!OrderNoShowEligibilityPolicy.canForfeit(order.start_time)) {
+        throw new BadRequestException(
+          'Order cannot be marked no-show before the grace period',
+        );
+      }
 
       oldStatus = order.status;
       serviceId = order.service_id ?? undefined;
@@ -136,6 +149,12 @@ export class OrderLifecycleService {
         order.frozen_points,
         queryRunner.manager,
       );
+      order.metadata = {
+        ...(order.metadata || {}),
+        forfeited_by: actorId,
+        forfeited_at: new Date(),
+        forfeit_grace_minutes: ORDER_NO_SHOW_GRACE_PERIOD_MINUTES,
+      };
       order.status = OrderStatus.FORFEITED;
       saved = await queryRunner.manager.save(Order, order);
       await queryRunner.commitTransaction();

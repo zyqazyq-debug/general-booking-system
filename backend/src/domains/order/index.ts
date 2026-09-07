@@ -6,6 +6,5 @@ export * from './ports/order-users.port';
 export * from './ports/tokens';
 export * from './dto/create-order.dto';
 export * from './dto/order-filter.dto';
-export * from './dto/update-order.dto';
 export * from './entities/order.entity';
 export * from './events/order-created.event';

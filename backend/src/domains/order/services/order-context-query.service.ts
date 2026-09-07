@@ -50,11 +50,7 @@ export class OrderContextQueryService {
 
     if (actorId) {
       const isConsumer = order.consumer_id === actorId;
-      const serviceOwnerId = (
-        order.service as { owner_id?: string } | null | undefined
-      )?.owner_id;
-      const isProvider =
-        order.owner_id === actorId || serviceOwnerId === actorId;
+      const isProvider = order.owner_id === actorId;
       const myRecord = commissions.find((c) => c.agent_id === actorId) || null;
       const isAgent = !!myRecord;
 
@@ -84,11 +80,8 @@ export class OrderContextQueryService {
             role: last.role,
           };
         } else {
-          const serviceOwner = (
-            order.service as { owner?: unknown } | null | undefined
-          )?.owner;
           const orderOwner = order.owner as unknown;
-          const provider = serviceOwner ?? orderOwner;
+          const provider = orderOwner;
           const providerUser = provider as UserLite | null;
           upstream = {
             id: providerUser?.id || 'unknown',

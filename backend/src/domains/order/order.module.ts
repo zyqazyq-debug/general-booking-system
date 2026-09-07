@@ -18,7 +18,6 @@ import { OrderAdminQueryService } from './services/order-admin-query.service';
 import { OrderRelatedQueryService } from './services/order-related-query.service';
 import { OrderOwnerQueryService } from './services/order-owner-query.service';
 import { OrderStatusNotifierService } from './services/order-status-notifier.service';
-import { OrderUpdateGuardService } from './services/order-update-guard.service';
 import { OrderSourceResolverService } from './services/order-source-resolver.service';
 import { AuthOrderAdapter } from './adapters/auth-order.adapter';
 import { AdminOrderAdapter } from './adapters/admin-order.adapter';
@@ -44,7 +43,6 @@ import { AdminOrderAdapter } from './adapters/admin-order.adapter';
     OrderRelatedQueryService,
     OrderOwnerQueryService,
     OrderStatusNotifierService,
-    OrderUpdateGuardService,
     AuthOrderAdapter,
     AdminOrderAdapter,
   ],

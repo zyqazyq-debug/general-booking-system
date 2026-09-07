@@ -1,6 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { UpdateOrderDto } from './dto/update-order.dto';
 import { Order } from './entities/order.entity';
 import {
   PaginationDto,
@@ -101,10 +100,6 @@ export class OrderService {
 
   async findOne(id: string, actorId?: string) {
     return this.orderQueryService.findOneWithContext(id, actorId);
-  }
-
-  async update(id: string, updateOrderDto: UpdateOrderDto, actorId: string) {
-    return this.orderManagementService.update(id, updateOrderDto, actorId);
   }
 
   async remove(id: string, actorId: string) {
