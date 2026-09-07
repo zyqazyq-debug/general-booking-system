@@ -33,6 +33,8 @@ npm ci --prefix frontend
 
 质量入口自身不安装依赖，也不修复损坏的 `node_modules`。
 
+在 Windows 上，入口仅通过 `cmd.exe /d /s /c` 调用 `npm.cmd`；直接执行 Node 的门禁保持非 shell 调用。这样既兼容 npm 的 `.cmd` 包装器，也不放宽参数边界或失败处理。
+
 ## 当前冻结项
 
 根目录原先指向不存在 `ops/deploy/**`、`ops/check/**` 的命令已从公开脚本移除。生产发布入口在不可变镜像、readiness、原子切流和回滚状态机完成前保持冻结；`ops:guard` 仅执行静态入口和 PowerShell 语法检查。

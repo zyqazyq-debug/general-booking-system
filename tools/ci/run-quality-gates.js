@@ -5,6 +5,39 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '../..');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
+function requiresCommandShell(command, platform = process.platform) {
+  return platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
+}
+
+function createGateInvocation(
+  gate,
+  platform = process.platform,
+  commandShell = process.env.ComSpec || 'cmd.exe',
+) {
+  const options = {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: 'inherit',
+    shell: false,
+  };
+  if (requiresCommandShell(gate.command, platform)) {
+    return {
+      command: commandShell,
+      args: ['/d', '/s', '/c', gate.command, ...gate.args],
+      options,
+    };
+  }
+  return { command: gate.command, args: gate.args, options };
+}
+
+function runGate(
+  gate,
+  { spawn = spawnSync, platform = process.platform } = {},
+) {
+  const invocation = createGateInvocation(gate, platform);
+  return spawn(invocation.command, invocation.args, invocation.options);
+}
+
 const targetedBackendTestGroups = [
   {
     name: 'backend order R1 tests',
@@ -127,11 +160,7 @@ function run() {
   const failures = [];
   for (const gate of gates) {
     console.log(`\n[quality-gate] START ${gate.name}`);
-    const result = spawnSync(gate.command, gate.args, {
-      cwd: repoRoot,
-      env: process.env,
-      stdio: 'inherit',
-    });
+    const result = runGate(gate);
     if (result.error) {
       failures.push(`${gate.name}: ${result.error.message}`);
       console.error(`[quality-gate] FAIL ${gate.name}: ${result.error.message}`);
@@ -167,4 +196,7 @@ module.exports = {
   targetedBackendTestGroups,
   targetedBackendTests,
   assertInputsExist,
+  requiresCommandShell,
+  createGateInvocation,
+  runGate,
 };

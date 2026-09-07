@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { gates } = require('./run-quality-gates');
+const { gates, runGate } = require('./run-quality-gates');
 
 const repoRoot = path.resolve(__dirname, '../..');
 
@@ -25,6 +25,41 @@ test('all local JavaScript gate entrypoints exist', () => {
     .filter((value) => /^tools[\\/]ci[\\/].+\.js$/.test(value))
     .filter((value) => !fs.existsSync(path.join(repoRoot, value)));
   assert.deepEqual(missing, []);
+});
+
+test('Windows invokes npm.cmd through cmd.exe while Node gates remain direct', () => {
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return { status: 0 };
+  };
+  const npmGate = gates.find((gate) => gate.command === 'npm.cmd');
+  const nodeGate = gates.find((gate) => gate.command === process.execPath);
+
+  assert.ok(npmGate, 'expected an npm gate');
+  assert.ok(nodeGate, 'expected a Node gate');
+  const commandShell = 'C:\\Windows\\System32\\cmd.exe';
+  const originalComSpec = process.env.ComSpec;
+  process.env.ComSpec = commandShell;
+  try {
+    runGate(npmGate, { platform: 'win32', spawn });
+  } finally {
+    if (originalComSpec === undefined) {
+      delete process.env.ComSpec;
+    } else {
+      process.env.ComSpec = originalComSpec;
+    }
+  }
+  runGate(nodeGate, { platform: 'win32', spawn });
+
+  assert.equal(calls[0].command, commandShell);
+  assert.deepEqual(calls[0].args.slice(0, 4), ['/d', '/s', '/c', 'npm.cmd']);
+  assert.deepEqual(calls[0].args.slice(4), npmGate.args);
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[1].command, nodeGate.command);
+  assert.equal(calls[1].options.shell, false);
+  assert.equal(calls[0].options.cwd, repoRoot);
+  assert.equal(calls[1].options.cwd, repoRoot);
 });
 
 test('workflow never uses mutating lint commands', () => {
