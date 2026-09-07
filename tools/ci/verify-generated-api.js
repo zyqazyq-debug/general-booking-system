@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
+const net = require("net");
 const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -10,8 +11,6 @@ const {
 } = require("./openapi-ingress-coverage");
 
 const repoRoot = path.resolve(__dirname, "../..");
-const port = Number(process.env.QUALITY_GATE_PORT || "3101");
-const openapiUrl = `http://127.0.0.1:${port}/api-json`;
 const committedClient = path.join(repoRoot, "frontend/src/generated/api.ts");
 const backendEntrypoint = path.join(repoRoot, "backend/dist/src/main.js");
 const manifestModule = path.join(
@@ -21,17 +20,112 @@ const manifestModule = path.join(
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const normalize = (value) => value.replace(/\r\n/g, "\n").trimEnd();
+const MAX_CHILD_LOG_BYTES = 16 * 1024;
 
-async function waitForOpenApi(child) {
+function parseExplicitPort(value) {
+  if (!/^\d+$/.test(value)) {
+    throw new Error("QUALITY_GATE_PORT must be an integer from 1 to 65535");
+  }
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("QUALITY_GATE_PORT must be an integer from 1 to 65535");
+  }
+  return port;
+}
+
+function reserveLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    const fail = (error) => reject(error);
+    server.once("error", fail);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      server.removeListener("error", fail);
+      const address = server.address();
+      if (!address || typeof address === "string" || !Number.isInteger(address.port)) {
+        server.close(() => reject(new Error("could not reserve a loopback port")));
+        return;
+      }
+      server.close((error) => (error ? reject(error) : resolve(address.port)));
+    });
+  });
+}
+
+async function resolveQualityGatePort({ env = process.env, reservePort = reserveLoopbackPort } = {}) {
+  if (env.QUALITY_GATE_PORT !== undefined) {
+    return parseExplicitPort(env.QUALITY_GATE_PORT);
+  }
+  return reservePort();
+}
+
+function openApiUrlForPort(port) {
+  return `http://127.0.0.1:${port}/api-json`;
+}
+
+function createBoundedLog(maxBytes = MAX_CHILD_LOG_BYTES) {
+  let value = "";
+  return {
+    append(chunk) {
+      value = (value + Buffer.from(chunk).toString("utf8")).slice(-maxBytes);
+    },
+    read() {
+      return value || "<empty>";
+    },
+  };
+}
+
+function captureChildOutput(child) {
+  const stdout = createBoundedLog();
+  const stderr = createBoundedLog();
+  let spawnError = null;
+  child.stdout?.on("data", (chunk) => stdout.append(chunk));
+  child.stderr?.on("data", (chunk) => stderr.append(chunk));
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  return { stdout, stderr, get spawnError() { return spawnError; } };
+}
+
+function childDiagnostics(child, output) {
+  return [
+    `exit=${String(child.exitCode)} signal=${String(child.signalCode)}`,
+    output.spawnError ? `spawnError=${output.spawnError.message}` : null,
+    `stdout:\n${output.stdout.read()}`,
+    `stderr:\n${output.stderr.read()}`,
+  ].filter(Boolean).join("\n");
+}
+
+function backendEnvironment(port, baseEnvironment = process.env) {
+  return {
+    ...baseEnvironment,
+    NODE_ENV: "test",
+    USE_POSTGRES: "false",
+    TYPEORM_SYNCHRONIZE: "true",
+    JWT_SECRET: "quality_gate_only_secret",
+    JWT_SECRET1: "quality_gate_only_secret",
+    JWT_SECRET_ACTIVE_INDEX: "1",
+    TELEGRAM_BOT_TOKEN: "DUMMY",
+    TELEGRAM_BOT_MODE: "polling",
+    TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false",
+    H5_URL: "http://127.0.0.1:8080",
+    TELEGRAM_WEBAPP_URL: "http://127.0.0.1:8080",
+    PORT_ACTIVE_INDEX: "1",
+    PORT1: String(port),
+    PORT2: String(port),
+    SENTRY_DSN: "",
+  };
+}
+
+async function waitForOpenApi(child, output, { openapiUrl, fetchImpl = fetch, attempts = 60, sleep = delay } = {}) {
+  if (!openapiUrl) throw new Error("openapiUrl is required");
   let lastError = "backend did not respond";
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (child.exitCode !== null) {
       throw new Error(
-        `backend exited before OpenAPI was ready (exit=${child.exitCode})`,
+        `backend exited before OpenAPI was ready\n${childDiagnostics(child, output)}`,
       );
     }
     try {
-      const response = await fetch(openapiUrl, {
+      const response = await fetchImpl(openapiUrl, {
         signal: AbortSignal.timeout(1000),
       });
       if (response.ok) {
@@ -51,9 +145,11 @@ async function waitForOpenApi(child) {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await delay(500);
+    await sleep(500);
   }
-  throw new Error(`OpenAPI readiness timeout: ${lastError}`);
+  throw new Error(
+    `OpenAPI readiness timeout: ${lastError}\n${childDiagnostics(child, output)}`,
+  );
 }
 
 async function validateIngress(document) {
@@ -120,31 +216,17 @@ async function run() {
     path.join(os.tmpdir(), "booking-openapi-gate-"),
   );
   const generatedClient = path.join(temporaryDirectory, "api.ts");
+  const port = await resolveQualityGatePort();
+  const openapiUrl = openApiUrlForPort(port);
   const child = spawn(process.execPath, [backendEntrypoint], {
     cwd: path.join(repoRoot, "backend"),
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      USE_POSTGRES: "false",
-      TYPEORM_SYNCHRONIZE: "true",
-      JWT_SECRET: "quality_gate_only_secret",
-      JWT_SECRET1: "quality_gate_only_secret",
-      JWT_SECRET_ACTIVE_INDEX: "1",
-      TELEGRAM_BOT_TOKEN: "DUMMY",
-      TELEGRAM_BOT_MODE: "polling",
-      TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false",
-      H5_URL: "http://127.0.0.1:8080",
-      TELEGRAM_WEBAPP_URL: "http://127.0.0.1:8080",
-      PORT_ACTIVE_INDEX: "1",
-      PORT1: String(port),
-      PORT2: String(port),
-      SENTRY_DSN: "",
-    },
-    stdio: "ignore",
+    env: backendEnvironment(port),
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  const output = captureChildOutput(child);
 
   try {
-    const document = await waitForOpenApi(child);
+    const document = await waitForOpenApi(child, output, { openapiUrl });
     await validateIngress(document);
     const cli = resolveGeneratorCli();
     const generator = spawn(
@@ -186,4 +268,17 @@ if (require.main === module)
     process.exitCode = 1;
   });
 
-module.exports = { run, validateIngress, waitForOpenApi };
+module.exports = {
+  MAX_CHILD_LOG_BYTES,
+  backendEnvironment,
+  captureChildOutput,
+  childDiagnostics,
+  createBoundedLog,
+  openApiUrlForPort,
+  parseExplicitPort,
+  reserveLoopbackPort,
+  resolveQualityGatePort,
+  run,
+  validateIngress,
+  waitForOpenApi,
+};
