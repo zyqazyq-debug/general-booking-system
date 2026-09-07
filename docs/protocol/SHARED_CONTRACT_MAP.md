@@ -27,8 +27,10 @@ npm run generate:api --prefix frontend -- --input ../docs/protocol/openapi.json 
 npm run test:generate-api --prefix frontend
 ```
 
-`openapi.json` 是 R2 待提供的确定性产物，本轮没有创建或伪造它。生成器也支持显式
-HTTP URL；本地 Swagger 的源码路径为 `/api-json`，不能再硬编码 `3000/docs-json`。
+`openapi.json` 是 R2 的确定性输入。当前提交的是从已实现公开 `GET /health` 响应核验出的最小基线，
+用于消除空 fallback 并验证生成链；它不声称覆盖完整后端 API。新增业务端点必须先由后端 Swagger
+或已审查 DTO 核验后写入同一输入。生成器也支持显式 HTTP URL；本地 Swagger 的源码路径为 `/api-json`，
+不能再硬编码 `3000/docs-json`。
 缺输入、读取/HTTP/JSON/生成错误、空 paths、无 HTTP operation、空 DTO/schema、
 缺失成功响应契约或生成 TypeScript 缺失输入 operation，均失败并返回非零。
 200/201 等成功响应须显式描述 payload；无响应体使用 204/205（重定向可用 3xx）。
@@ -36,8 +38,8 @@ HTTP URL；本地 Swagger 的源码路径为 `/api-json`，不能再硬编码 `3
 不能退化为 any/unknown/空对象。失败不覆盖已有工件、不制造空 fallback。
 成功后才以同目录临时文件替换；`--check` 只比较，不写文件。
 
-当前 `frontend/src/generated/api.ts` 的空占位未在 R1 修改，必须在 R2 用真实契约生成替换。
-旧 `frontend/src/generated/README.md` 的 fallback 说明已失效，以本文与生成器测试为准。
+R2 已由上述输入生成非空 `frontend/src/generated/api.ts`。`frontend/src/generated/README.md` 说明了
+确定性输入、校验命令和当前覆盖边界。
 `packages/shared` 的 `npm test` 自动先 build；不依赖未跟踪的 dist。
 
 ## 尚未迁移的业务接口（R2 接入清单）

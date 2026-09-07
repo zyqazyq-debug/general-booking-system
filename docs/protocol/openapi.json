@@ -1,0 +1,77 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Booking System API contract baseline",
+    "version": "1.0.0-r2"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Read the public health snapshot",
+        "responses": {
+          "200": {
+            "description": "Health indicator snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthSnapshot": {
+        "type": "object",
+        "required": ["status", "info", "error", "details"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Aggregate Terminus health state."
+          },
+          "info": {
+            "$ref": "#/components/schemas/HealthIndicatorMap"
+          },
+          "error": {
+            "$ref": "#/components/schemas/HealthIndicatorMap"
+          },
+          "details": {
+            "$ref": "#/components/schemas/HealthIndicatorMap"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HealthIndicatorMap": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/HealthIndicator"
+        }
+      },
+      "HealthIndicator": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["up", "down"]
+          },
+          "message": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "id": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}
