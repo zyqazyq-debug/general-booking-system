@@ -22,29 +22,25 @@ export const telegrafLoggerMiddleware = async (
 ) => {
   const start = Date.now();
   const updateType = ctx.updateType;
-  const from = ctx.from
-    ? `User:${ctx.from.id}${ctx.from.username ? `(@${ctx.from.username})` : ''}`
-    : 'Unknown';
-  let message = '';
+  let payloadKind = 'Unknown';
 
   try {
     if ('message' in ctx.update) {
       const msg = ctx.update.message;
       if ('text' in msg) {
-        message = `Text: "${msg.text}"`;
+        payloadKind = 'Text';
       } else if ('photo' in msg) {
-        message = 'Photo';
+        payloadKind = 'Photo';
       } else {
-        message = 'Other Message Type';
+        payloadKind = 'OtherMessage';
       }
     } else if ('callback_query' in ctx.update) {
-      const cb = ctx.update.callback_query;
-      message = `Callback: "${'data' in cb ? cb.data : 'unknown'}"`;
+      payloadKind = 'Callback';
     } else {
-      message = JSON.stringify(ctx.update).substring(0, 100);
+      payloadKind = 'OtherUpdate';
     }
 
-    const logMsg = `📥 [IN][${updateType}] from ${from} | ${message}`;
+    const logMsg = `📥 [IN][${updateType}] payload=${payloadKind}`;
     logger.log(logMsg);
     writeTrafficLog(logMsg);
 

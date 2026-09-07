@@ -27,9 +27,16 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
           configService.get<string>('TELEGRAM_BOT_MODE') || 'polling'
         ).toLowerCase();
 
-        const webhookUrl = configService.get<string>('API_URL');
+        const webhookUrl = configService.get<string>('TELEGRAM_WEBHOOK_URL');
+        const webhookSecret = configService.get<string>(
+          'TELEGRAM_WEBHOOK_SECRET_TOKEN',
+        );
         const enableWebhook =
           configService.get<string>('TELEGRAM_ENABLE_WEBHOOK') === 'true';
+        const pollingDeleteWebhookOnStartup =
+          configService.get<string>(
+            'TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP',
+          ) === 'true';
 
         const logger = new Logger('TelegrafModule');
 
@@ -48,24 +55,33 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
           middlewares: [telegrafLoggerMiddleware, telegrafRateLimitMiddleware],
         };
 
-        if (enableWebhook && webhookUrl && botMode === 'webhook') {
-          logger.log(`Using Telegram Webhook: ${webhookUrl}`);
-          options.launchOptions = {
-            webhook: {
-              domain: webhookUrl.replace(/^https?:\/\//, ''),
-              path: '/telegram/webhook',
-            },
-          };
+        if (enableWebhook && botMode === 'webhook') {
+          if (!webhookUrl || !webhookSecret) {
+            logger.error(
+              'Webhook mode is disabled because TELEGRAM_WEBHOOK_URL or TELEGRAM_WEBHOOK_SECRET_TOKEN is missing.',
+            );
+          } else {
+            logger.log(
+              'Using Telegram webhook delivery through the Nest /telegram/webhook route.',
+            );
+          }
+          // Nest owns the HTTP route. Do not let Telegraf create a second
+          // listener or mutate the remote webhook whenever this process starts.
+          options.launchOptions = false;
+        } else if (botMode === 'polling' && pollingDeleteWebhookOnStartup) {
+          logger.log('Telegram polling is explicitly enabled.');
+          // Launch occurs after Nest has registered update handlers in
+          // TelegramPlatformModule, rather than during provider construction.
+          options.launchOptions = false;
         } else {
-          logger.log(`Using Telegram Polling (Mode: ${botMode})`);
-          options.launchOptions = {
-            allowedUpdates: [],
-            webhook: undefined,
-          };
+          logger.warn(
+            'Telegram delivery is disabled. Set webhook mode with an explicit URL and secret, or explicitly allow polling to clear an existing webhook.',
+          );
+          options.launchOptions = false;
         }
 
         if (proxyUrl) {
-          logger.log(`Using Telegram Proxy: ${proxyUrl}`);
+          logger.log('Using configured Telegram proxy.');
           try {
             const isSocks = proxyUrl.startsWith('socks');
             const agent = isSocks
@@ -78,9 +94,8 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
                 apiRoot: 'https://api.telegram.org',
               },
             };
-          } catch (e: unknown) {
-            const error = e instanceof Error ? e.message : String(e);
-            logger.error(`Failed to initialize proxy agent: ${error}`);
+          } catch {
+            logger.error('Failed to initialize Telegram proxy agent.');
           }
         }
 
@@ -98,10 +113,9 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
             ...axiosConfig,
             timeout: 8000,
           });
-        } catch (e: unknown) {
-          const error = e instanceof Error ? e.message : String(e);
+        } catch {
           logger.error(
-            `Telegram API unavailable. Bot launch disabled for this process: ${error}`,
+            'Telegram API unavailable. Bot launch disabled for this process.',
           );
           return { token, launchOptions: false } as TelegrafModuleOptions;
         }

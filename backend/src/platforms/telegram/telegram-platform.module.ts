@@ -32,9 +32,11 @@ import { CommandParserService } from './bot/services/command-parser.service';
 import { TelegramCoreModule } from './telegram-core.module';
 import { HealthTelegramAdapter } from './bot/adapters/health-telegram.adapter';
 import { HEALTH_TELEGRAM_PORT } from '../../shared/health/ports/tokens';
+import { TelegramWebhookController } from './telegram-webhook.controller';
 
 @Module({
   imports: [TelegramCoreModule],
+  controllers: [TelegramWebhookController],
   providers: [
     TelegramMenuUpdate,
     TelegramImportUpdate,
@@ -89,25 +91,35 @@ export class TelegramPlatformModule implements OnModuleInit, OnModuleDestroy {
     const botMode = (
       this.configService.get<string>('TELEGRAM_BOT_MODE') || 'polling'
     ).toLowerCase();
-    const enableWebhook =
-      this.configService.get<string>('TELEGRAM_ENABLE_WEBHOOK') === 'true';
-    const webhookBase =
-      this.configService.get<string>('TELEGRAM_WEBHOOK_URL') ||
-      this.configService.get<string>('API_URL');
+    const allowPollingDelete =
+      this.configService.get<string>(
+        'TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP',
+      ) === 'true';
 
-    if (enableWebhook && botMode === 'webhook' && webhookBase) {
+    if (botMode === 'polling' && allowPollingDelete) {
       return {
-        webhook: {
-          domain: webhookBase.replace(/^https?:\/\//, ''),
-          path: '/telegram/webhook',
-        },
+        allowedUpdates: [],
+        webhook: undefined,
       };
     }
 
-    return {
-      allowedUpdates: [],
-      webhook: undefined,
-    };
+    return null;
+  }
+
+  private canRecoverWithPolling() {
+    return this.buildLaunchOptions() !== null;
+  }
+
+  private startPolling() {
+    const launchOptions = this.buildLaunchOptions();
+    if (!launchOptions) {
+      return false;
+    }
+    void this.bot.launch(launchOptions).catch(() => {
+      this.logger.warn('Telegram polling stopped.');
+      this.startRecoveryLoop();
+    });
+    return true;
   }
 
   private getRecoveryRetryMs() {
@@ -120,10 +132,10 @@ export class TelegramPlatformModule implements OnModuleInit, OnModuleDestroy {
   }
 
   private startRecoveryLoop() {
-    if (this.recoveryTimer) return;
+    if (!this.canRecoverWithPolling() || this.recoveryTimer) return;
     const retryMs = this.getRecoveryRetryMs();
     this.logger.warn(
-      `Telegram degraded mode enabled. Will retry recovery every ${retryMs}ms.`,
+      `Telegram polling recovery is enabled. Will retry every ${retryMs}ms.`,
     );
     this.recoveryTimer = setInterval(() => {
       void this.tryRecoverTelegram();
@@ -137,20 +149,17 @@ export class TelegramPlatformModule implements OnModuleInit, OnModuleDestroy {
   }
 
   private async tryRecoverTelegram() {
-    if (this.recoveryRunning) return;
+    if (this.recoveryRunning || !this.canRecoverWithPolling()) return;
     this.recoveryRunning = true;
 
     try {
-      const me = await this.bot.telegram.getMe();
-      await this.bot.launch(this.buildLaunchOptions());
-      this.logger.log(
-        `Telegram Bot recovery succeeded: @${me.username} (${me.first_name})`,
-      );
-      this.stopRecoveryLoop();
-    } catch (e) {
-      this.logger.warn(
-        `Telegram recovery retry failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      await this.bot.telegram.getMe();
+      if (this.startPolling()) {
+        this.logger.log('Telegram polling recovery started.');
+        this.stopRecoveryLoop();
+      }
+    } catch {
+      this.logger.warn('Telegram polling recovery retry failed.');
     } finally {
       this.recoveryRunning = false;
     }
@@ -166,16 +175,17 @@ export class TelegramPlatformModule implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const me = await this.bot?.telegram?.getMe();
-      if (me) {
-        this.logger.log(
-          `Telegram Bot connected: @${me.username} (${me.first_name})`,
-        );
+      const botInfo = await this.bot?.telegram?.getMe();
+      if (botInfo) {
+        this.logger.log('Telegram bot API connection verified.');
+        if (this.canRecoverWithPolling()) {
+          if (this.startPolling()) {
+            this.logger.log('Telegram polling started.');
+          }
+        }
       }
-    } catch (e) {
-      this.logger.error(
-        `Failed to get bot info: ${e instanceof Error ? e.message : String(e)}`,
-      );
+    } catch {
+      this.logger.error('Failed to get Telegram bot info.');
       this.startRecoveryLoop();
     }
     this.logger.log('TelegramPlatformModule initialized. Bot is running.');

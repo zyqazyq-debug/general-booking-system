@@ -19,7 +19,7 @@ export const telegrafRateLimitMiddleware = async (
   const lastTime = userLastMessageTime.get(userId) || 0;
 
   if (now - lastTime < RATE_LIMIT_MS) {
-    logger.warn(`Rate limit exceeded for user ${userId}`);
+    logger.warn('Telegram rate limit exceeded.');
     // Optionally notify the user
     // await ctx.reply('发送太快了，请稍后再试。');
     return;

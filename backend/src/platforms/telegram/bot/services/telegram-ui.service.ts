@@ -50,9 +50,7 @@ export class TelegramUiService {
       ? this.escape(rawText)
       : '欢迎使用通用预约系统，请选择下方功能开始使用。';
 
-    this.logger.debug(
-      `[Debug] Sending main keyboard to user. Message: ${text}`,
-    );
+    this.logger.debug('[TelegramUi] Sending main keyboard.');
 
     await ctx.reply(text, {
       parse_mode: 'Markdown',

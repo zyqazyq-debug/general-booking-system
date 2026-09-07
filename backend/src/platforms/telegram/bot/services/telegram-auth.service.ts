@@ -24,9 +24,7 @@ export class TelegramAuthService {
 
     if (!user) {
       // 2. Auto-register if not found
-      this.logger.log(
-        `[TelegramAuth] Auto-registering user for ChatID: ${chatId}`,
-      );
+      this.logger.log('[TelegramAuth] Auto-registering Telegram user.');
 
       const username = `tg_${chatId}`;
       const nickname = telegramUser

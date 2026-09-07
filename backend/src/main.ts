@@ -13,10 +13,6 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { setupSwagger } from './shared/common/setup-swagger';
-import {
-  setupTelegramWebhook,
-  deleteTelegramWebhook,
-} from './shared/common/setup-telegram';
 import { initBackendSentry } from './shared/common/observability/sentry';
 
 declare const module: {
@@ -108,27 +104,9 @@ async function bootstrap() {
   // Setup Swagger
   setupSwagger(app);
 
-  // Setup Telegram Webhook
-  const activeBotMode = (
-    configService.get<string>('TELEGRAM_BOT_MODE') || 'polling'
-  ).toLowerCase();
-  const enableWebhook =
-    activeBotMode === 'webhook' &&
-    String(
-      configService.get<string>('TELEGRAM_ENABLE_WEBHOOK') || '',
-    ).toLowerCase() === 'true';
-
-  if (enableWebhook) {
-    // We removed the !module.hot check to force webhook setup even in dev mode
-    // This ensures webhook is always registered when configured
-    await setupTelegramWebhook(configService);
-  } else {
-    console.log(
-      `Skipping Telegram Webhook setup (Mode: ${activeBotMode}, WebhookEnabled: ${enableWebhook}). Ensure Polling is active.`,
-    );
-    // If webhook is disabled, try to delete it to ensure polling works
-    await deleteTelegramWebhook(configService);
-  }
+  // Remote Telegram webhook registration/deletion is an audited release action,
+  // never an application-start side effect. This keeps local, preview, and
+  // production restarts from silently replacing each other's delivery mode.
 
   const activePortIndex = configService.get<string>('PORT_ACTIVE_INDEX') || '1';
   const port1 = configService.get<number>('PORT1') || 3001;

@@ -35,17 +35,16 @@ export class TelegramService implements ITelegramNotificationChannel {
     title?: string,
   ): Promise<boolean> {
     const fullMessage = title ? `*${title}*\n\n${content}` : content;
-    try {
-      await this.sendMessage(recipient, fullMessage, {
-        parse_mode: 'Markdown',
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    return this.sendMessage(recipient, fullMessage, {
+      parse_mode: 'Markdown',
+    });
   }
 
-  async sendMessage(chatId: string, message: string, extra?: any) {
+  async sendMessage(
+    chatId: string,
+    message: string,
+    extra?: any,
+  ): Promise<boolean> {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (
       process.env.NODE_ENV === 'test' ||
@@ -53,19 +52,20 @@ export class TelegramService implements ITelegramNotificationChannel {
       token === 'DUMMY' ||
       token === 'dummy'
     ) {
-      return;
+      return false;
     }
     try {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       await this.bot.telegram.sendMessage(chatId, message, extra);
-      const logMsg = `📤 [OUT] to ${chatId} | Text: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`;
+      const logMsg = `📤 [OUT] message delivered (length=${message.length})`;
       this.logger.log(logMsg);
       this.writeTrafficLog(logMsg);
-    } catch (e: unknown) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      const errMsg = `❌ [ERR] Failed to send message to ${chatId}: ${error.message}`;
-      this.logger.error(errMsg, error.stack);
+      return true;
+    } catch {
+      const errMsg = '❌ [ERR] Telegram message delivery failed.';
+      this.logger.error(errMsg);
       this.writeTrafficLog(errMsg);
+      return false;
     }
   }
 

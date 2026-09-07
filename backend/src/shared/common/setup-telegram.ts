@@ -3,116 +3,109 @@ import axios, { AxiosRequestConfig } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
-export async function deleteTelegramWebhook(configService: ConfigService) {
-  // 核心：直接读取环境变量，本地开发由 .env.local 覆盖
-  const botToken = configService.get<string>('TELEGRAM_BOT_TOKEN');
+const WEBHOOK_PATH = '/telegram/webhook';
+const SECRET_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
 
-  if (!botToken) return;
+function isEnabled(configService: ConfigService, name: string) {
+  return configService.get<string>(name)?.toLowerCase() === 'true';
+}
+function webhookConfiguration(configService: ConfigService) {
+  const mode =
+    configService.get<string>('TELEGRAM_BOT_MODE')?.toLowerCase() || 'polling';
+  const url = configService.get<string>('TELEGRAM_WEBHOOK_URL')?.trim();
+  const secret = configService
+    .get<string>('TELEGRAM_WEBHOOK_SECRET_TOKEN')
+    ?.trim();
+
+  if (
+    !isEnabled(configService, 'TELEGRAM_ENABLE_WEBHOOK') ||
+    mode !== 'webhook'
+  ) {
+    return null;
+  }
+  if (!url || !secret || !SECRET_TOKEN_PATTERN.test(secret)) {
+    return null;
+  }
 
   try {
-    const proxyUrl = configService.get<string>('TELEGRAM_PROXY_URL');
-    let axiosConfig: AxiosRequestConfig = {};
-
-    if (proxyUrl) {
-      const agent = proxyUrl.startsWith('socks')
-        ? new SocksProxyAgent(proxyUrl)
-        : new HttpsProxyAgent(proxyUrl, {
-            keepAlive: true,
-            timeout: 20000,
-          });
-      axiosConfig = {
-        httpsAgent: agent,
-        proxy: false,
-      };
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' || parsed.pathname !== WEBHOOK_PATH) {
+      return null;
     }
-
-    console.log(
-      `Ensuring Webhook is deleted for Polling mode... (Proxy: ${proxyUrl || 'None'})`,
-    );
-    const response = await axios.get(
-      `https://api.telegram.org/bot${botToken}/deleteWebhook`,
-      axiosConfig,
-    );
-    console.log('Webhook deleted successfully:', response.data);
-  } catch (e: unknown) {
-    const error = e instanceof Error ? e.message : String(e);
-    console.error('Failed to delete webhook:', error);
+    return { url: parsed.toString(), secret };
+  } catch {
+    return null;
   }
 }
 
-export async function setupTelegramWebhook(configService: ConfigService) {
-  const webhookUrl = configService.get<string>('API_URL');
+function axiosConfig(configService: ConfigService): AxiosRequestConfig {
+  const proxyUrl = configService.get<string>('TELEGRAM_PROXY_URL');
+  if (!proxyUrl) return {};
+
+  const agent = proxyUrl.startsWith('socks')
+    ? new SocksProxyAgent(proxyUrl)
+    : new HttpsProxyAgent(proxyUrl, { keepAlive: true, timeout: 20000 });
+  return { httpsAgent: agent, proxy: false };
+}
+
+/**
+ * Remote webhook mutation is deliberately opt-in. A normal application
+ * restart must never remove a production webhook just because this process is
+ * configured differently.
+ */
+export async function deleteTelegramWebhook(configService: ConfigService) {
+  if (
+    !isEnabled(configService, 'TELEGRAM_WEBHOOK_MANAGE_ON_STARTUP') ||
+    !isEnabled(configService, 'TELEGRAM_ALLOW_WEBHOOK_DELETE')
+  ) {
+    return;
+  }
+
   const botToken = configService.get<string>('TELEGRAM_BOT_TOKEN');
+  if (!botToken || botToken === 'DUMMY') return;
 
-  if (!botToken) return;
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${botToken}/deleteWebhook`,
+      undefined,
+      axiosConfig(configService),
+    );
+    console.log('Telegram webhook deletion completed.');
+  } catch {
+    console.error('Telegram webhook deletion failed.');
+  }
+}
 
-  const explicitWebhookUrl = configService.get<string>('TELEGRAM_WEBHOOK_URL');
-  const finalWebhookUrl =
-    explicitWebhookUrl ||
-    (webhookUrl ? `${webhookUrl}/telegram/webhook` : null);
+/**
+ * This is a one-shot operator action, protected by
+ * TELEGRAM_WEBHOOK_MANAGE_ON_STARTUP=true. It must be unset for normal
+ * application launches. The URL is intentionally never inferred from API_URL.
+ */
+export async function setupTelegramWebhook(configService: ConfigService) {
+  if (!isEnabled(configService, 'TELEGRAM_WEBHOOK_MANAGE_ON_STARTUP')) {
+    return;
+  }
 
-  // Check if Webhook is enabled
-  const enableWebhook =
-    configService.get<string>('TELEGRAM_ENABLE_WEBHOOK') === 'true';
-  const botMode = (
-    configService.get<string>('TELEGRAM_BOT_MODE') || 'polling'
-  ).toLowerCase();
+  const botToken = configService.get<string>('TELEGRAM_BOT_TOKEN');
+  const webhook = webhookConfiguration(configService);
+  if (!botToken || botToken === 'DUMMY' || !webhook) {
+    console.error(
+      'Telegram webhook setup skipped: explicit HTTPS endpoint and valid secret token are required.',
+    );
+    return;
+  }
 
-  const shouldUseWebhook =
-    enableWebhook && botMode === 'webhook' && !!finalWebhookUrl;
-
-  if (shouldUseWebhook) {
-    console.log(`Setting Telegram Webhook to: ${finalWebhookUrl}`);
-
-    try {
-      const proxyUrl = configService.get<string>('TELEGRAM_PROXY_URL');
-      let axiosConfig: AxiosRequestConfig = {};
-
-      if (proxyUrl) {
-        const agent = proxyUrl.startsWith('socks')
-          ? new SocksProxyAgent(proxyUrl)
-          : new HttpsProxyAgent(proxyUrl, {
-              keepAlive: true,
-              timeout: 20000,
-            });
-        axiosConfig = {
-          httpsAgent: agent,
-          proxy: false, // disable axios default proxy handling to use agent
-        };
-      } else {
-        // If no proxy is set, use the default axios config
-        axiosConfig = {};
-      }
-
-      // Delete existing webhook first to avoid conflicts or stale states
-      console.log(`Deleting old webhook... (Proxy: ${proxyUrl || 'None'})`);
-      try {
-        await axios.get(
-          `https://api.telegram.org/bot${botToken}/deleteWebhook`,
-          axiosConfig,
-        );
-      } catch (e) {
-        console.warn(
-          'Warning: Failed to delete old webhook (ignoring)',
-          e instanceof Error ? e.message : String(e),
-        );
-      }
-
-      // Set new webhook
-      console.log(`Setting new webhook to ${finalWebhookUrl}...`);
-      const response = await axios.get(
-        `https://api.telegram.org/bot${botToken}/setWebhook?url=${finalWebhookUrl}`,
-        axiosConfig,
-      );
-      console.log('Webhook set result:', response.data);
-    } catch (e: unknown) {
-      const error = e instanceof Error ? e.message : String(e);
-      console.error('Failed to set webhook manually:', error);
-    }
-  } else {
-    // If webhook is disabled but we are in this function, we should ensure it's deleted
-    // But typically this function is only called if webhook is enabled.
-    // We can add a safe delete check here just in case.
-    await deleteTelegramWebhook(configService);
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${botToken}/setWebhook`,
+      {
+        url: webhook.url,
+        secret_token: webhook.secret,
+      },
+      axiosConfig(configService),
+    );
+    console.log('Telegram webhook registration completed.');
+  } catch {
+    console.error('Telegram webhook registration failed.');
   }
 }

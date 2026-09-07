@@ -71,9 +71,7 @@ export class TelegramMenuUpdate {
       return;
     }
 
-    this.logger.log(
-      `Received /start from ${user.first_name} (ID: ${user.id}, ChatID: ${chatId})`,
-    );
+    this.logger.log('Received /start command.');
 
     try {
       // 优先从数据库配置表读取，若无则回退到默认文案
@@ -251,10 +249,7 @@ export class TelegramMenuUpdate {
       await ctx.reply('无法识别当前会话，请重试。');
       return;
     }
-    const codePreview = importCode.substring(0, 12);
-    this.logger.log(
-      `[TG_IMPORT_START] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} code=${codePreview}`,
-    );
+    this.logger.log('[TG_IMPORT_START]');
     try {
       const { fullNode } = await this.importAppService.importContent({
         chatId,
@@ -267,9 +262,7 @@ export class TelegramMenuUpdate {
         text += '\n⚠️ 该服务当前已下架或暂停，暂时无法预约。';
       }
       await this.uiService.sendCollectionCard(ctx, fullNode, text);
-      this.logger.log(
-        `[TG_IMPORT_SUCCESS] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} node=${fullNode.id}`,
-      );
+      this.logger.log('[TG_IMPORT_SUCCESS]');
     } catch (e: unknown) {
       const errorText = this.errorNormalizer.extractErrorText(e, '');
       const queryErrorCode = this.errorNormalizer.extractQueryErrorCode(e);
@@ -278,9 +271,7 @@ export class TelegramMenuUpdate {
         errorText,
         queryErrorCode,
       });
-      this.logger.warn(
-        `[TG_IMPORT_FAIL] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} code=${codePreview} err=${errorText}`,
-      );
+      this.logger.warn('[TG_IMPORT_FAIL]');
       if (parsedMessage === '您已收藏过该服务') {
         await this.uiService.sendMainKeyboard(
           ctx,
@@ -318,24 +309,18 @@ export class TelegramMenuUpdate {
       if (referrer && user.id !== referrer.id && !user.referrer_id) {
         user.referrer_id = referrer.id;
         await this.usersPort.save(user);
-        this.logger.log(
-          `[TG_REFERRAL_BOUND] chat=${chatId} user=${user.id} referrer=${referrer.id} code=${code}`,
-        );
+        this.logger.log('[TG_REFERRAL_BOUND]');
       } else {
         this.logger.log(
-          `[TG_REFERRAL_SKIP] chat=${chatId} user=${user.id} code=${code} reason=${referrer ? 'already_bound_or_self' : 'invalid_code'}`,
+          `[TG_REFERRAL_SKIP] reason=${referrer ? 'already_bound_or_self' : 'invalid_code'}`,
         );
       }
-    } catch (e: unknown) {
-      this.logger.error(
-        `[TG_REFERRAL_FAIL] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} code=${code} err=${String(e)}`,
-      );
+    } catch {
+      this.logger.error('[TG_REFERRAL_FAIL]');
     }
 
     const firstName = ctx.from?.first_name || '朋友';
-    this.logger.log(
-      `[TG_REFERRAL_START] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} code=${code}`,
-    );
+    this.logger.log('[TG_REFERRAL_START]');
     const messageText =
       this.configService.get<string>('TELEGRAM_START_MESSAGE') ||
       `👋 你好，${firstName}！\n欢迎使用通用预约系统。\n\n请选择下方功能开始使用：`;

@@ -32,7 +32,7 @@ export class TelegramImportService {
     collectionNode: PlatformAgencyNodeDto;
     isNew: boolean;
   }> {
-    this.logger.log(`[TelegramImport] Start handling content: ${content}`);
+    this.logger.log('[TelegramImport] Processing import content.');
 
     // 1. Parse content using unified CommandParser
     const { code, markupOptions } = this.commandParser.parseImportText(content);
@@ -41,9 +41,7 @@ export class TelegramImportService {
       throw new Error('No valid import code found');
     }
 
-    this.logger.log(
-      `Handling import content: ${content} -> extracted code: ${code}, markup: ${JSON.stringify(markupOptions)}`,
-    );
+    this.logger.log('[TelegramImport] Import content parsed.');
 
     // 2. Delegate to AgencyService unified import logic
     // This handles resolution, validation, parent lookup, and creation

@@ -52,9 +52,7 @@ export class TelegramImportActionService {
     try {
       const id = this.getActionId(ctx);
       if (!id) return;
-      this.logger.log(
-        `[TG_ACTION_EDIT] chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} node=${id}`,
-      );
+      this.logger.log('[TG_ACTION_EDIT]');
       await this.callbackService.answerCbQuerySafely(
         ctx,
         '正在打开编辑器...',
@@ -71,9 +69,7 @@ export class TelegramImportActionService {
     try {
       const id = this.getActionId(ctx);
       if (!id) return;
-      this.logger.log(
-        `[TG_ACTION_PROMOTE] chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} node=${id}`,
-      );
+      this.logger.log('[TG_ACTION_PROMOTE]');
       await this.callbackService.answerCbQuerySafely(
         ctx,
         '正在生成推广链接...',
@@ -96,9 +92,7 @@ export class TelegramImportActionService {
     try {
       const id = this.getActionId(ctx);
       if (!id) return;
-      this.logger.log(
-        `[TG_ACTION_MARKUP] chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} node=${id}`,
-      );
+      this.logger.log('[TG_ACTION_MARKUP]');
       await this.callbackService.answerCbQuerySafely(
         ctx,
         '请在回复框输入加价...',
@@ -146,9 +140,7 @@ export class TelegramImportActionService {
     try {
       const id = this.getActionId(ctx);
       if (!id) return;
-      this.logger.log(
-        `[TG_ACTION_BOOK] chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} node=${id}`,
-      );
+      this.logger.log('[TG_ACTION_BOOK]');
       await this.callbackService.answerCbQuerySafely(
         ctx,
         '正在打开预约...',
@@ -242,9 +234,7 @@ export class TelegramImportActionService {
           '✅ **加价修改成功**',
           false, // We send a fresh card at the bottom
         );
-        this.logger.log(
-          `[TG_MARKUP_OK] chat=${chatId} user=${ctx.from?.id ?? 'unknown'} node=${id} type=${type} value=${value}`,
-        );
+        this.logger.log(`[TG_MARKUP_OK] type=${type}`);
       } else {
         await ctx.reply('更新成功，但无法获取最新信息。');
       }

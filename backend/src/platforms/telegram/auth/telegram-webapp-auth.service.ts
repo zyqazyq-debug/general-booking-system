@@ -37,6 +37,15 @@ export class TelegramWebAppAuthService {
     return typeof candidate.id === 'string' || typeof candidate.id === 'number';
   }
 
+  private hasMatchingHash(expected: string, supplied: string): boolean {
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    const suppliedBuffer = Buffer.from(supplied, 'hex');
+    return (
+      expectedBuffer.length === suppliedBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, suppliedBuffer)
+    );
+  }
+
   /**
    * Validates Telegram WebApp initData and returns parsed data
    */
@@ -51,9 +60,7 @@ export class TelegramWebAppAuthService {
     ) {
       try {
         const decoded = decodeURIComponent(initData);
-        this.logger.debug(
-          `[WebApp Login] Detected over-encoded initData, decoded to: ${decoded.substring(0, 50)}...`,
-        );
+        this.logger.debug('[WebApp Login] Detected over-encoded initData.');
         params = new URLSearchParams(decoded);
       } catch {
         this.logger.warn(
@@ -67,15 +74,11 @@ export class TelegramWebAppAuthService {
     delete data.hash;
 
     if (!hash) {
-      this.logger.error(
-        `[WebApp Login] InitData hash missing. Params keys: ${Object.keys(data).join(',')}`,
-      );
+      this.logger.warn('[WebApp Login] InitData hash is missing.');
       throw new BadRequestException('Invalid initData: hash missing');
     }
     if (!data.auth_date || !data.user) {
-      this.logger.error(
-        `[WebApp Login] InitData missing required fields. auth_date: ${data.auth_date}, user: ${!!data.user}`,
-      );
+      this.logger.warn('[WebApp Login] InitData required fields are missing.');
       throw new BadRequestException(
         'Invalid initData: required fields missing',
       );
@@ -119,12 +122,12 @@ export class TelegramWebAppAuthService {
       .update(checkStringB)
       .digest('hex');
 
-    if (calculatedHashA !== hash && calculatedHashB !== hash) {
+    if (
+      !this.hasMatchingHash(calculatedHashA, hash) &&
+      !this.hasMatchingHash(calculatedHashB, hash)
+    ) {
       this.logger.warn(
-        `[WebApp Login] Hash mismatch.\n` +
-          `Received: ${hash}\n` +
-          `Calculated A (decoded): ${calculatedHashA}\n` +
-          `Calculated B (raw): ${calculatedHashB}`,
+        '[WebApp Login] InitData signature verification failed.',
       );
       throw new UnauthorizedException('Invalid Telegram WebApp hash');
     }
@@ -152,9 +155,7 @@ export class TelegramWebAppAuthService {
     }
     const tgUser = tgUserRaw;
 
-    this.logger.log(
-      `[WebApp Login] Successfully verified Telegram user: ${tgUser.id} (@${tgUser.username || 'no_username'})`,
-    );
+    this.logger.log('[WebApp Login] InitData verified.');
 
     return {
       telegramId: tgUser.id.toString(),

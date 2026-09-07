@@ -20,9 +20,9 @@ export class TelegramCallbackService {
           message,
         )
       ) {
-        this.logger.warn(
-          `[TG_CALLBACK_EXPIRED] scene=${scene} chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} msg=${message}`,
-        );
+        // Telegram identities and upstream error text can contain personal or
+        // request-specific data. The event name is sufficient for operations.
+        this.logger.warn(`[TG_CALLBACK_EXPIRED] scene=${scene}`);
         return;
       }
       throw e;

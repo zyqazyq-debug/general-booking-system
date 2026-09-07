@@ -115,8 +115,8 @@ export class TelegramImportUpdate {
             originalCardMsgId,
           ),
       });
-    } catch (e: unknown) {
-      this.logger.error(`Telegram text handler failed: ${String(e)}`);
+    } catch {
+      this.logger.error('Telegram text handler failed.');
       await this.uiService.sendMainKeyboard(ctx, '处理失败，请稍后重试。');
     }
   }
@@ -199,10 +199,7 @@ export class TelegramImportUpdate {
         return;
       }
       await ctx.sendChatAction('typing');
-      const preview = content.substring(0, 24);
-      this.logger.log(
-        `[TG_IMPORT_INPUT] source=${source} chat=${chatId} user=${ctx.from?.id ?? 'unknown'} content=${preview}`,
-      );
+      this.logger.log(`[TG_IMPORT_INPUT] source=${source}`);
 
       const { fullNode, isNew } = await this.importAppService.importContent({
         chatId,
@@ -235,9 +232,7 @@ export class TelegramImportUpdate {
       // Check if this is triggered from an inline button (confirmation callback)
       const isEdit = !!ctx.callbackQuery;
       await this.uiService.sendCollectionCard(ctx, fullNode, text, isEdit);
-      this.logger.log(
-        `[TG_IMPORT_OK] source=${source} chat=${chatId} user=${ctx.from?.id ?? 'unknown'} node=${fullNode.id} isNew=${isNew}`,
-      );
+      this.logger.log(`[TG_IMPORT_OK] source=${source} isNew=${isNew}`);
     } catch (e: unknown) {
       const errorText = this.errorNormalizer.extractErrorText(e, '');
       const message = this.messageParser.buildImportFailureMessage({
@@ -245,24 +240,18 @@ export class TelegramImportUpdate {
         errorText,
         queryErrorCode: this.errorNormalizer.extractQueryErrorCode(e),
       });
-      this.logger.warn(
-        `[TG_IMPORT_ERR] source=${source} chat=${ctx.chat?.id ?? 'unknown'} user=${ctx.from?.id ?? 'unknown'} err=${errorText}`,
-      );
+      this.logger.warn(`[TG_IMPORT_ERR] source=${source}`);
       if (!message) {
         await this.uiService.sendMainKeyboard(ctx, this.unrecognizedTextHint);
         return;
       }
       if (message.includes('[object Object]')) {
-        this.logger.warn(
-          `Filtered [object Object] reply for content: ${content.substring(0, 20)}...`,
-        );
+        this.logger.warn('Filtered malformed import reply.');
         await this.uiService.sendMainKeyboard(ctx, '处理失败，请稍后重试。');
         return;
       }
 
-      this.logger.warn(
-        `Import failed for text "${content.substring(0, 20)}...": ${message}`,
-      );
+      this.logger.warn('Telegram import failed.');
       await this.uiService.sendMainKeyboard(ctx, message);
     }
   }
@@ -288,8 +277,8 @@ export class TelegramImportUpdate {
       );
       try {
         await ctx.editMessageText('⏳ 导入请求已过期，请重新发送链接。');
-      } catch (e: unknown) {
-        this.logger.warn(`Failed to edit expired import message: ${String(e)}`);
+      } catch {
+        this.logger.warn('Failed to edit expired import message.');
       }
       return;
     }
@@ -300,8 +289,8 @@ export class TelegramImportUpdate {
     );
     try {
       await ctx.editMessageText('⏳ 正在执行导入，请稍候...');
-    } catch (e: unknown) {
-      this.logger.warn(`Failed to edit importing message: ${String(e)}`);
+    } catch {
+      this.logger.warn('Failed to edit importing message.');
     }
     await this.executeImportContent(ctx, pending.content, pending.source, {
       forceRecreateOnExisting: pending.forceRecreateOnExisting,
