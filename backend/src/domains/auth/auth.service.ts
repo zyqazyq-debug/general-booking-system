@@ -73,12 +73,16 @@ export class AuthService {
     return this.registrationService.lightRegister(deviceInfo);
   }
 
-  async loginWechat(openid: string, deviceInfo: Record<string, unknown> = {}) {
-    return this.socialAuthService.loginWechat(openid, deviceInfo);
-  }
-
-  async loginQQ(openid: string, deviceInfo: Record<string, unknown> = {}) {
-    return this.socialAuthService.loginQQ(openid, deviceInfo);
+  async loginWithSocialProof(
+    provider: 'wechat' | 'qq',
+    proof: string,
+    deviceInfo: Record<string, unknown> = {},
+  ) {
+    return this.socialAuthService.loginWithVerifiedProof(
+      provider,
+      proof,
+      deviceInfo,
+    );
   }
 
   async loginPhone(
@@ -131,14 +135,16 @@ export class AuthService {
   async bindIdentityOrRequireMerge(
     currentUserId: string,
     provider: BindIdentityProvider,
-    identity: string,
+    identity?: string,
     code?: string,
+    proof?: string,
   ) {
     const result = await this.accountMergeService.bindIdentityOrRequireMerge(
       currentUserId,
       provider,
       identity,
       code,
+      proof,
     );
     if (result.status === 'bound') {
       const loginResult = await this.login(result.user);
@@ -162,14 +168,16 @@ export class AuthService {
   async confirmMergeByIdentity(
     currentUserId: string,
     provider: BindIdentityProvider,
-    identity: string,
+    identity?: string,
     code?: string,
+    proof?: string,
   ) {
     const mergedUser = await this.accountMergeService.confirmMergeByIdentity(
       currentUserId,
       provider,
       identity,
       code,
+      proof,
     );
     return this.login(mergedUser);
   }

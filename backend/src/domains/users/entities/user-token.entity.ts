@@ -11,7 +11,6 @@ import {
 import { User } from './user.entity';
 
 @Entity('user_tokens')
-@Index(['user_id', 'token']) // For quick lookup
 @Index(['expires_at']) // For cleanup jobs
 export class UserToken {
   @PrimaryGeneratedColumn('uuid')
@@ -24,8 +23,11 @@ export class UserToken {
   @JoinColumn({ name: 'user_id' })
   user: User;
 
-  @Column({ length: 512 }) // Refresh tokens can be long
-  token: string;
+  @Column({ type: 'uuid', unique: true })
+  session_id: string;
+
+  @Column({ type: 'varchar', length: 64, unique: true })
+  token_hash: string;
 
   @Column()
   expires_at: Date;
@@ -35,6 +37,9 @@ export class UserToken {
 
   @Column({ nullable: true })
   last_active_at: Date;
+
+  @Column({ nullable: true })
+  revoked_at: Date | null;
 
   @CreateDateColumn()
   created_at: Date;

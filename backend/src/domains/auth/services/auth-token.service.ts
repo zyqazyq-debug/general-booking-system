@@ -5,7 +5,12 @@ import {
   Inject,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import type { LoginResponse } from '../auth.types';
+import { createHash, randomUUID } from 'crypto';
+import type {
+  AuthJwtPayload,
+  AuthTokenUse,
+  LoginResponse,
+} from '../auth.types';
 import type { AuthLoginUserDto } from '../dto/auth-user.dto';
 import type { AuthUsersPort } from '../ports/auth-users.port';
 import { AUTH_USERS_PORT } from '../ports/tokens';
@@ -20,25 +25,51 @@ export class AuthTokenService {
     private readonly jwtService: JwtService,
   ) {}
 
+  private hashToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private buildPayload(
+    user: AuthLoginUserDto,
+    tokenUse: AuthTokenUse,
+    sessionId: string,
+  ): AuthJwtPayload {
+    return {
+      username: user.username,
+      sub: user.id,
+      roles: user.roles,
+      token_use: tokenUse,
+      session_id: sessionId,
+      jti: randomUUID(),
+      auth_version: user.auth_version,
+    };
+  }
+
   async login(
     user: AuthLoginUserDto,
     deviceInfo: Record<string, unknown> = {},
   ): Promise<LoginResponse> {
-    const payload = {
-      username: user.username,
-      sub: user.id,
-      roles: user.roles,
-    };
+    if (user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('Account is not active');
+    }
+    const sessionId = randomUUID();
+    const accessPayload = this.buildPayload(user, 'access', sessionId);
+    const refreshPayload = this.buildPayload(user, 'refresh', sessionId);
 
-    const accessToken = this.jwtService.sign(payload, { expiresIn: '1h' });
-    const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
+    const accessToken = this.jwtService.sign(accessPayload, {
+      expiresIn: '1h',
+    });
+    const refreshToken = this.jwtService.sign(refreshPayload, {
+      expiresIn: '7d',
+    });
 
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
     await this.usersPort.addRefreshToken(
       user.id,
-      refreshToken,
+      sessionId,
+      this.hashToken(refreshToken),
       expiresAt,
       deviceInfo,
     );
@@ -66,33 +97,52 @@ export class AuthTokenService {
 
   async refresh(refreshToken: string) {
     try {
-      this.jwtService.verify(refreshToken);
-      const tokenRecord =
-        await this.usersPort.validateRefreshToken(refreshToken);
+      const payload = this.jwtService.verify<AuthJwtPayload>(refreshToken);
+      if (
+        payload.token_use !== 'refresh' ||
+        !payload.sub ||
+        !payload.session_id ||
+        !payload.jti ||
+        !Number.isInteger(payload.auth_version)
+      ) {
+        throw new UnauthorizedException('Invalid refresh token type');
+      }
+      const oldTokenHash = this.hashToken(refreshToken);
+      const tokenRecord = await this.usersPort.validateRefreshToken(
+        payload.sub,
+        payload.session_id,
+        oldTokenHash,
+        payload.auth_version,
+      );
 
       if (!tokenRecord) {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
       const user = tokenRecord.user;
-      const payload = {
-        username: user.username,
-        sub: user.id,
-        roles: user.roles,
-      };
-
-      const newAccessToken = this.jwtService.sign(payload, { expiresIn: '1h' });
-      const newRefreshToken = this.jwtService.sign(payload, {
-        expiresIn: '7d',
-      });
+      const newAccessToken = this.jwtService.sign(
+        this.buildPayload(user, 'access', tokenRecord.session_id),
+        { expiresIn: '1h' },
+      );
+      const newRefreshToken = this.jwtService.sign(
+        this.buildPayload(user, 'refresh', tokenRecord.session_id),
+        {
+          expiresIn: '7d',
+        },
+      );
 
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
-      await this.usersPort.rotateRefreshToken(
-        refreshToken,
-        newRefreshToken,
+      const rotated = await this.usersPort.rotateRefreshToken(
+        tokenRecord.session_id,
+        oldTokenHash,
+        this.hashToken(newRefreshToken),
         expiresAt,
       );
+      if (!rotated) {
+        await this.usersPort.revokeSession(user.id, tokenRecord.session_id);
+        throw new UnauthorizedException('Refresh token replay detected');
+      }
 
       return {
         access_token: newAccessToken,
@@ -103,8 +153,22 @@ export class AuthTokenService {
     }
   }
 
-  async logout(_userId: string, refreshToken: string) {
-    await this.usersPort.removeRefreshToken(refreshToken);
+  async logout(userId: string, refreshToken: string) {
+    let payload: AuthJwtPayload;
+    try {
+      payload = this.jwtService.verify<AuthJwtPayload>(refreshToken);
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    if (
+      payload.token_use !== 'refresh' ||
+      payload.sub !== userId ||
+      !payload.session_id ||
+      !payload.jti
+    ) {
+      throw new UnauthorizedException('Refresh token does not match session');
+    }
+    await this.usersPort.revokeSession(userId, payload.session_id);
     return { success: true };
   }
 }

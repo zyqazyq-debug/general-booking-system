@@ -66,6 +66,7 @@ export class AuthIdentityController {
       body.provider,
       body.identity,
       body.code,
+      body.proof,
     );
   }
 
@@ -80,6 +81,7 @@ export class AuthIdentityController {
       body.provider,
       body.identity,
       body.code,
+      body.proof,
     );
   }
 

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthService } from './auth.service';
 import { AuthPublicController } from './auth-public.controller';
 import { AuthSessionController } from './auth-session.controller';
@@ -15,11 +16,15 @@ import { SocialLoginListener } from './listeners/social-login.listener';
 import { AccountMergeService } from './services/account-merge.service';
 import { AuthTelegramLoginService } from './services/auth-telegram-login.service';
 import { AuthIdentityService } from './services/auth-identity.service';
+import { ConsumedIdentityProof } from './entities/consumed-identity-proof.entity';
+import { SignedIdentityProofAdapter } from './adapters/signed-identity-proof.adapter';
+import { AUTH_IDENTITY_PROOF_PORT } from './ports/tokens';
 
 import { AgencyAuthAdapter } from './adapters/agency-auth.adapter';
 
 @Module({
   imports: [
+    TypeOrmModule.forFeature([ConsumedIdentityProof]),
     PassportModule,
     ConfigModule,
     TelegramCoreModule,
@@ -64,6 +69,11 @@ import { AgencyAuthAdapter } from './adapters/agency-auth.adapter';
     AccountMergeService,
     AuthTelegramLoginService,
     AuthIdentityService,
+    SignedIdentityProofAdapter,
+    {
+      provide: AUTH_IDENTITY_PROOF_PORT,
+      useExisting: SignedIdentityProofAdapter,
+    },
     SocialLoginListener,
     AgencyAuthAdapter,
   ],

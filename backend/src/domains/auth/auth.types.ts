@@ -13,6 +13,18 @@ export interface LoginResponse {
   };
 }
 
+export type AuthTokenUse = 'access' | 'refresh';
+
+export interface AuthJwtPayload {
+  sub: string;
+  username: string;
+  roles: string[];
+  token_use: AuthTokenUse;
+  session_id: string;
+  jti: string;
+  auth_version: number;
+}
+
 export interface BindingStatusResponse {
   status: string;
   ticket_id: string;

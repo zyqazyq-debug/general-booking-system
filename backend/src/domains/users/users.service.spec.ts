@@ -33,6 +33,7 @@ describe('UsersService', () => {
 
   const tokenService = {
     validateRefreshToken: jest.fn(),
+    validateAccessSession: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -97,7 +98,7 @@ describe('UsersService', () => {
       service.createCreditPurchaseIntent('u-1', 20),
     ).resolves.toEqual({ payment_url: '/pay' });
     await expect(
-      service.validateRefreshToken('refresh-token'),
+      service.validateRefreshToken('u-1', 'session-1', 'refresh-hash', 1),
     ).resolves.toEqual({ user: { id: 'u-1' } });
 
     expect(financialService.freezeCredit).toHaveBeenCalledWith(
@@ -110,7 +111,10 @@ describe('UsersService', () => {
       20,
     );
     expect(tokenService.validateRefreshToken).toHaveBeenCalledWith(
-      'refresh-token',
+      'u-1',
+      'session-1',
+      'refresh-hash',
+      1,
     );
   });
 });

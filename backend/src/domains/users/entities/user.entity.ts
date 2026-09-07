@@ -42,6 +42,9 @@ export class User {
   })
   status: UserStatus;
 
+  @Column({ type: 'integer', default: 1 })
+  auth_version: number;
+
   @Column({ type: 'varchar', nullable: true })
   merged_into_id: string;
 

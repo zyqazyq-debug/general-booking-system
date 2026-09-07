@@ -13,6 +13,8 @@ import { BusinessException } from '../../../shared/common/exceptions/business.ex
 import type { AuthOrderPort } from '../ports/auth-order.port';
 import type { AuthUsersPort } from '../ports/auth-users.port';
 import { AUTH_ORDER_PORT, AUTH_USERS_PORT } from '../ports/tokens';
+import { AUTH_IDENTITY_PROOF_PORT } from '../ports/tokens';
+import type { AuthIdentityProofPort } from '../ports/auth-identity-proof.port';
 
 @Injectable()
 export class AccountMergeService {
@@ -24,7 +26,36 @@ export class AccountMergeService {
     private readonly usersPort: AuthUsersPort,
     @Inject(AUTH_ORDER_PORT)
     private readonly orderPort: AuthOrderPort,
+    @Inject(AUTH_IDENTITY_PROOF_PORT)
+    private readonly identityProofPort: AuthIdentityProofPort,
   ) {}
+
+  private async resolveVerifiedIdentity(
+    actorId: string,
+    provider: BindIdentityProvider,
+    identity?: string,
+    code?: string,
+    proof?: string,
+  ) {
+    if (provider === 'phone') {
+      this.verifySmsCode(identity || '', code || '');
+      return identity as string;
+    }
+    if (identity !== undefined) {
+      throw new UnauthorizedException(
+        'Raw identity is not accepted for social providers',
+      );
+    }
+    if (!proof) {
+      throw new UnauthorizedException('Verified identity proof required');
+    }
+    const verified = await this.identityProofPort.consume(
+      proof,
+      provider,
+      actorId,
+    );
+    return verified.subject;
+  }
 
   private verifySmsCode(phone: string, code: string) {
     if (!phone || !code) {
@@ -105,9 +136,9 @@ export class AccountMergeService {
         telegramId,
       );
       if (existingUser && existingUser.id !== currentUser.id) {
-        existingUser.telegram_chat_id = null;
-        existingUser.telegram_username = '';
-        await this.usersPort.saveTx(manager, existingUser);
+        throw new BadRequestException(
+          'Telegram identity already belongs to another account',
+        );
       }
 
       currentUser.telegram_chat_id = telegramId;
@@ -182,39 +213,47 @@ export class AccountMergeService {
   async bindIdentityOrRequireMerge(
     currentUserId: string,
     provider: BindIdentityProvider,
-    identity: string,
+    identity?: string,
     code?: string,
+    proof?: string,
   ) {
-    if (provider === 'phone') {
-      this.verifySmsCode(identity, code || '');
-    }
+    const verifiedIdentity = await this.resolveVerifiedIdentity(
+      currentUserId,
+      provider,
+      identity,
+      code,
+      proof,
+    );
     const currentUser = await this.usersPort.findOne(currentUserId);
     if (!currentUser) {
       throw new UnauthorizedException('Current user not found');
     }
-    const existing = await this.findUserByIdentity(provider, identity);
+    const existing = await this.findUserByIdentity(provider, verifiedIdentity);
     if (!existing || existing.id === currentUser.id) {
-      this.bindIdentityToUser(currentUser, provider, identity);
+      this.bindIdentityToUser(currentUser, provider, verifiedIdentity);
       const saved = await this.usersPort.save(currentUser);
       return { status: 'bound' as const, user: saved };
     }
     return {
       status: 'merge_required' as const,
       provider,
-      identity,
-      target_user_id: existing.id,
     };
   }
 
   async confirmMergeByIdentity(
     currentUserId: string,
     provider: BindIdentityProvider,
-    identity: string,
+    identity?: string,
     code?: string,
+    proof?: string,
   ) {
-    if (provider === 'phone') {
-      this.verifySmsCode(identity, code || '');
-    }
+    const verifiedIdentity = await this.resolveVerifiedIdentity(
+      currentUserId,
+      provider,
+      identity,
+      code,
+      proof,
+    );
     return this.dataSource.transaction(async (manager) => {
       const currentUser = await this.usersPort.findOneTx(
         manager,
@@ -226,7 +265,7 @@ export class AccountMergeService {
       const targetUser = await this.findUserByIdentityTx(
         manager,
         provider,
-        identity,
+        verifiedIdentity,
       );
       if (!targetUser) {
         throw new BadRequestException('Identity account not found');
@@ -305,15 +344,14 @@ export class AccountMergeService {
       ).toFixed(2),
     );
 
-    targetUser.roles = Array.from(
-      new Set([...(targetUser.roles || []), ...(sourceUser.roles || [])]),
-    );
     targetUser.is_verified = targetUser.is_verified || sourceUser.is_verified;
 
     await this.orderPort.transferOrders(sourceUser.id, targetUser.id, manager);
 
     sourceUser.status = 'MERGED';
     sourceUser.merged_into_id = targetUser.id;
+    sourceUser.auth_version += 1;
+    targetUser.auth_version += 1;
     sourceUser.telegram_chat_id = null;
     sourceUser.telegram_username = '';
     sourceUser.wechat_openid = null;
@@ -323,6 +361,8 @@ export class AccountMergeService {
     sourceUser.credit_balance = 0;
     sourceUser.frozen_credit = 0;
 
+    await this.usersPort.revokeAllSessionsTx(manager, sourceUser.id);
+    await this.usersPort.revokeAllSessionsTx(manager, targetUser.id);
     await this.usersPort.saveTx(manager, sourceUser);
     return this.usersPort.saveTx(manager, targetUser);
   }

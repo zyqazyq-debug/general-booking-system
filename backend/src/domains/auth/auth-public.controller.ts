@@ -10,6 +10,7 @@ import {
 import { AuthService } from './auth.service';
 import { CreateAuthUserDto } from './dto/create-auth-user.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
+import { SocialIdentityProofDto } from './dto/social-identity-proof.dto';
 import type { TelegramAuthData } from './interfaces/telegram-validator.interface';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
 
@@ -26,27 +27,21 @@ export class AuthPublicController {
   }
 
   @Post('wechat')
-  async wechatLogin(
-    @Body('openid') openid: string,
-    @Body('deviceInfo') deviceInfo: Record<string, unknown>,
-  ) {
-    const actualOpenId = openid === 'demo' ? 'demo_wechat_user' : openid;
-    if (!actualOpenId) {
-      throw new UnauthorizedException('OpenID required');
-    }
-    return this.authService.loginWechat(actualOpenId, deviceInfo);
+  async wechatLogin(@Body() body: SocialIdentityProofDto) {
+    return this.authService.loginWithSocialProof(
+      'wechat',
+      body.proof,
+      body.deviceInfo,
+    );
   }
 
   @Post('qq')
-  async qqLogin(
-    @Body('openid') openid: string,
-    @Body('deviceInfo') deviceInfo: Record<string, unknown>,
-  ) {
-    const actualOpenId = openid === 'demo' ? 'demo_qq_user' : openid;
-    if (!actualOpenId) {
-      throw new UnauthorizedException('OpenID required');
-    }
-    return this.authService.loginQQ(actualOpenId, deviceInfo);
+  async qqLogin(@Body() body: SocialIdentityProofDto) {
+    return this.authService.loginWithSocialProof(
+      'qq',
+      body.proof,
+      body.deviceInfo,
+    );
   }
 
   @Get('social/providers')

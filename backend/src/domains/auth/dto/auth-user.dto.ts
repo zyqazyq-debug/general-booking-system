@@ -5,6 +5,7 @@ export type AuthUserDto = {
   username: string;
   password: string | null;
   status: AuthUserStatus;
+  auth_version: number;
   merged_into_id: string | null;
   roles: string[];
   email: string | null;
@@ -47,5 +48,6 @@ export type CreatePublicAuthUserPortDto = {
 };
 
 export type AuthRefreshTokenRecordDto = {
+  session_id: string;
   user: AuthUserDto;
 };

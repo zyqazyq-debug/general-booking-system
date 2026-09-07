@@ -164,24 +164,48 @@ export class UsersService {
 
   async addRefreshToken(
     userId: string,
-    token: string,
+    sessionId: string,
+    tokenHash: string,
     expiresAt: Date,
     deviceInfo: Record<string, unknown> = {},
   ) {
     return this.userTokenService.addRefreshToken(
       userId,
-      token,
+      sessionId,
+      tokenHash,
       expiresAt,
       deviceInfo,
     );
   }
 
-  async validateRefreshToken(token: string) {
-    return this.userTokenService.validateRefreshToken(token);
+  async validateRefreshToken(
+    userId: string,
+    sessionId: string,
+    tokenHash: string,
+    authVersion: number,
+  ) {
+    return this.userTokenService.validateRefreshToken(
+      userId,
+      sessionId,
+      tokenHash,
+      authVersion,
+    );
   }
 
-  async removeRefreshToken(token: string) {
-    return this.userTokenService.removeRefreshToken(token);
+  async validateAccessSession(
+    userId: string,
+    sessionId: string,
+    authVersion: number,
+  ) {
+    return this.userTokenService.validateAccessSession(
+      userId,
+      sessionId,
+      authVersion,
+    );
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    return this.userTokenService.revokeSession(userId, sessionId);
   }
 
   async removeAllRefreshTokens(userId: string) {
@@ -189,13 +213,15 @@ export class UsersService {
   }
 
   async rotateRefreshToken(
-    oldToken: string,
-    newToken: string,
+    sessionId: string,
+    oldTokenHash: string,
+    newTokenHash: string,
     expiresAt: Date,
   ) {
     return this.userTokenService.rotateRefreshToken(
-      oldToken,
-      newToken,
+      sessionId,
+      oldTokenHash,
+      newTokenHash,
       expiresAt,
     );
   }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, MoreThan, Repository } from 'typeorm';
 import { UserToken } from '../entities/user-token.entity';
 
 @Injectable()
@@ -12,7 +12,8 @@ export class UserTokenService {
 
   async addRefreshToken(
     userId: string,
-    token: string,
+    sessionId: string,
+    tokenHash: string,
     expiresAt: Date,
     deviceInfo: Record<string, unknown> = {},
   ) {
@@ -27,12 +28,20 @@ export class UserTokenService {
       .execute();
 
     const count = await this.userTokenRepository.count({
-      where: { user_id: userId },
+      where: {
+        user_id: userId,
+        revoked_at: IsNull(),
+        expires_at: MoreThan(new Date()),
+      },
     });
 
     if (count >= 5) {
       const oldest = await this.userTokenRepository.find({
-        where: { user_id: userId },
+        where: {
+          user_id: userId,
+          revoked_at: IsNull(),
+          expires_at: MoreThan(new Date()),
+        },
         order: { last_active_at: 'ASC' },
         take: 1,
       });
@@ -43,25 +52,41 @@ export class UserTokenService {
 
     const newToken = this.userTokenRepository.create({
       user_id: userId,
-      token,
+      session_id: sessionId,
+      token_hash: tokenHash,
       expires_at: expiresAt,
       device_info: deviceInfo,
       last_active_at: new Date(),
+      revoked_at: null,
     });
 
     return this.userTokenRepository.save(newToken);
   }
 
-  async validateRefreshToken(token: string): Promise<UserToken | null> {
+  async validateRefreshToken(
+    userId: string,
+    sessionId: string,
+    tokenHash: string,
+    authVersion: number,
+  ): Promise<UserToken | null> {
     const record = await this.userTokenRepository.findOne({
-      where: { token },
+      where: {
+        user_id: userId,
+        session_id: sessionId,
+        revoked_at: IsNull(),
+      },
       relations: ['user'],
     });
 
     if (!record) return null;
 
-    if (record.expires_at < new Date()) {
-      await this.userTokenRepository.delete(record.id);
+    if (
+      record.token_hash !== tokenHash ||
+      record.expires_at < new Date() ||
+      record.user.status !== 'ACTIVE' ||
+      record.user.auth_version !== authVersion
+    ) {
+      await this.revokeSession(record.user_id, record.session_id);
       return null;
     }
 
@@ -71,28 +96,67 @@ export class UserTokenService {
     return record;
   }
 
-  async removeRefreshToken(token: string) {
-    return this.userTokenRepository.delete({ token });
+  async validateAccessSession(
+    userId: string,
+    sessionId: string,
+    authVersion: number,
+  ): Promise<UserToken | null> {
+    const record = await this.userTokenRepository.findOne({
+      where: {
+        user_id: userId,
+        session_id: sessionId,
+        revoked_at: IsNull(),
+        expires_at: MoreThan(new Date()),
+      },
+      relations: ['user'],
+    });
+    if (!record) {
+      return null;
+    }
+    if (
+      record.user.status !== 'ACTIVE' ||
+      record.user.auth_version !== authVersion
+    ) {
+      await this.revokeSession(userId, sessionId);
+      return null;
+    }
+    return record;
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    return this.userTokenRepository.update(
+      { user_id: userId, session_id: sessionId, revoked_at: IsNull() },
+      { revoked_at: new Date() },
+    );
   }
 
   async removeAllRefreshTokens(userId: string) {
-    return this.userTokenRepository.delete({ user_id: userId });
+    return this.userTokenRepository.update(
+      { user_id: userId, revoked_at: IsNull() },
+      { revoked_at: new Date() },
+    );
   }
 
   async rotateRefreshToken(
-    oldToken: string,
-    newToken: string,
+    sessionId: string,
+    oldTokenHash: string,
+    newTokenHash: string,
     expiresAt: Date,
   ) {
-    const record = await this.userTokenRepository.findOneBy({
-      token: oldToken,
-    });
-    if (!record) return;
-
-    record.token = newToken;
-    record.expires_at = expiresAt;
-    record.last_active_at = new Date();
-    return this.userTokenRepository.save(record);
+    const result = await this.userTokenRepository
+      .createQueryBuilder()
+      .update(UserToken)
+      .set({
+        token_hash: newTokenHash,
+        expires_at: expiresAt,
+        last_active_at: new Date(),
+      })
+      .where('session_id = :sessionId', { sessionId })
+      .andWhere('token_hash = :oldTokenHash', { oldTokenHash })
+      .andWhere('revoked_at IS NULL')
+      .andWhere('expires_at > :now', { now: new Date() })
+      .execute();
+    return result.affected === 1;
   }
 
   async cleanupAllExpiredTokens() {

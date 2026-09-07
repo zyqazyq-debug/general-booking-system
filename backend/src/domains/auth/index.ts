@@ -1,4 +1,5 @@
 export * from './ports/auth-order.port';
+export * from './ports/auth-identity-proof.port';
 export * from './ports/auth-users.port';
 export * from './ports/tokens';
 export * from './dto/auth-user.dto';
@@ -10,6 +11,7 @@ export * from './dto/login.dto';
 export * from './dto/merge-telegram-account.dto';
 export * from './dto/sms-auth.dto';
 export * from './dto/social-login.dto';
+export * from './dto/social-identity-proof.dto';
 export * from './auth.types';
 export * from './access-control.config';
 export * from './interfaces/telegram-validator.interface';

@@ -46,17 +46,28 @@ export interface AuthUsersPort {
 
   addRefreshToken(
     userId: string,
-    token: string,
+    sessionId: string,
+    tokenHash: string,
     expiresAt: Date,
     deviceInfo: Record<string, unknown>,
   ): Promise<void>;
   validateRefreshToken(
-    token: string,
+    userId: string,
+    sessionId: string,
+    tokenHash: string,
+    authVersion: number,
   ): Promise<AuthRefreshTokenRecordDto | null>;
+  validateAccessSession(
+    userId: string,
+    sessionId: string,
+    authVersion: number,
+  ): Promise<AuthUserDto | null>;
   rotateRefreshToken(
-    oldToken: string,
-    newToken: string,
+    sessionId: string,
+    oldTokenHash: string,
+    newTokenHash: string,
     expiresAt: Date,
-  ): Promise<void>;
-  removeRefreshToken(token: string): Promise<void>;
+  ): Promise<boolean>;
+  revokeSession(userId: string, sessionId: string): Promise<void>;
+  revokeAllSessionsTx(manager: EntityManager, userId: string): Promise<void>;
 }

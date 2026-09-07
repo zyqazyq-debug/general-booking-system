@@ -1,18 +1,19 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthenticatedUser } from '../../shared/common/types/auth-request.type';
-
-interface JwtPayload {
-  sub: string;
-  username: string;
-  roles: string[];
-}
+import type { AuthJwtPayload } from './auth.types';
+import type { AuthUsersPort } from './ports/auth-users.port';
+import { AUTH_USERS_PORT } from './ports/tokens';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @Inject(AUTH_USERS_PORT)
+    private readonly usersPort: AuthUsersPort,
+  ) {
     const activeIndex =
       configService.get<string>('JWT_SECRET_ACTIVE_INDEX') || '1';
     const secret1 = configService.get<string>('JWT_SECRET1');
@@ -34,14 +35,29 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: JwtPayload): AuthenticatedUser {
-    if (!payload.sub || !payload.username) {
+  async validate(payload: AuthJwtPayload): Promise<AuthenticatedUser> {
+    if (
+      !payload.sub ||
+      !payload.username ||
+      payload.token_use !== 'access' ||
+      !payload.session_id ||
+      !payload.jti ||
+      !Number.isInteger(payload.auth_version)
+    ) {
       throw new UnauthorizedException('Invalid token payload');
     }
+    const currentUser = await this.usersPort.validateAccessSession(
+      payload.sub,
+      payload.session_id,
+      payload.auth_version,
+    );
+    if (!currentUser) {
+      throw new UnauthorizedException('Session is not active');
+    }
     return {
-      id: payload.sub,
-      username: payload.username,
-      roles: payload.roles || [],
+      id: currentUser.id,
+      username: currentUser.username,
+      roles: currentUser.roles || [],
     };
   }
 }

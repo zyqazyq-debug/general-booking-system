@@ -8,6 +8,7 @@ import type {
   CreatePublicAuthUserPortDto,
 } from '../../auth';
 import { User } from '../entities/user.entity';
+import { UserToken } from '../entities/user-token.entity';
 import { CreateUserDto } from '../dto/create-user.dto';
 import { UsersService } from '../users.service';
 
@@ -21,6 +22,7 @@ export class AuthUsersAdapter implements AuthUsersPort {
       username: user.username,
       password: user.password ?? null,
       status: user.status as AuthUserDto['status'],
+      auth_version: user.auth_version || 1,
       merged_into_id: user.merged_into_id ?? null,
       roles: user.roles || [],
       email: user.email ?? null,
@@ -45,6 +47,7 @@ export class AuthUsersAdapter implements AuthUsersPort {
       user.password = dto.password;
     }
     user.status = dto.status as unknown as User['status'];
+    user.auth_version = dto.auth_version;
     user.merged_into_id = dto.merged_into_id || (null as unknown as string);
     user.roles = dto.roles;
     user.email = dto.email || null;
@@ -205,34 +208,74 @@ export class AuthUsersAdapter implements AuthUsersPort {
 
   addRefreshToken(
     userId: string,
-    token: string,
+    sessionId: string,
+    tokenHash: string,
     expiresAt: Date,
     deviceInfo: Record<string, unknown>,
   ): Promise<void> {
     return this.usersService
-      .addRefreshToken(userId, token, expiresAt, deviceInfo)
+      .addRefreshToken(userId, sessionId, tokenHash, expiresAt, deviceInfo)
       .then(() => undefined);
   }
 
   async validateRefreshToken(
-    token: string,
+    userId: string,
+    sessionId: string,
+    tokenHash: string,
+    authVersion: number,
   ): Promise<AuthRefreshTokenRecordDto | null> {
-    const record = await this.usersService.validateRefreshToken(token);
+    const record = await this.usersService.validateRefreshToken(
+      userId,
+      sessionId,
+      tokenHash,
+      authVersion,
+    );
     if (!record) return null;
-    return { user: this.toAuthUserDto(record.user) };
+    return {
+      session_id: record.session_id,
+      user: this.toAuthUserDto(record.user),
+    };
   }
 
-  rotateRefreshToken(
-    oldToken: string,
-    newToken: string,
+  async validateAccessSession(
+    userId: string,
+    sessionId: string,
+    authVersion: number,
+  ): Promise<AuthUserDto | null> {
+    const record = await this.usersService.validateAccessSession(
+      userId,
+      sessionId,
+      authVersion,
+    );
+    return record ? this.toAuthUserDto(record.user) : null;
+  }
+
+  async rotateRefreshToken(
+    sessionId: string,
+    oldTokenHash: string,
+    newTokenHash: string,
     expiresAt: Date,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    return this.usersService.rotateRefreshToken(
+      sessionId,
+      oldTokenHash,
+      newTokenHash,
+      expiresAt,
+    );
+  }
+
+  revokeSession(userId: string, sessionId: string): Promise<void> {
     return this.usersService
-      .rotateRefreshToken(oldToken, newToken, expiresAt)
+      .revokeSession(userId, sessionId)
       .then(() => undefined);
   }
 
-  removeRefreshToken(token: string): Promise<void> {
-    return this.usersService.removeRefreshToken(token).then(() => undefined);
+  async revokeAllSessionsTx(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<void> {
+    await manager
+      .getRepository(UserToken)
+      .update({ user_id: userId }, { revoked_at: new Date() });
   }
 }
