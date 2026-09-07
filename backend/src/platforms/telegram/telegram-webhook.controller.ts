@@ -5,6 +5,7 @@ import { Inject } from '@nestjs/common';
 import { Context, Telegraf } from 'telegraf';
 import type { Request, Response } from 'express';
 import { timingSafeEqual } from 'crypto';
+import { ApiExcludeEndpoint } from '@nestjs/swagger';
 
 const WEBHOOK_PATH = '/telegram/webhook';
 const SECRET_HEADER = 'x-telegram-bot-api-secret-token';
@@ -29,6 +30,7 @@ export class TelegramWebhookController {
 
   @Post('webhook')
   @HttpCode(200)
+  @ApiExcludeEndpoint()
   async receive(@Req() req: Request, @Res() res: Response): Promise<void> {
     const webhookEnabled =
       this.configService.get<string>('TELEGRAM_ENABLE_WEBHOOK') === 'true' &&
