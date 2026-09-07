@@ -37,14 +37,13 @@ describe('Referral production OpenAPI boundary', () => {
       ],
     }).compile();
     const app = testingModule.createNestApplication();
-    await app.init();
-
     try {
       const document = SwaggerModule.createDocument(
         app,
         new DocumentBuilder().setTitle('Production referral harness').build(),
       );
       SwaggerModule.setup('api', app, document);
+      await app.init();
       const response = await request(app.getHttpServer()).get('/api-json');
 
       expect(response.status).toBe(200);

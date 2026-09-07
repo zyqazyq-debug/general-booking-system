@@ -19,14 +19,13 @@ describe('Client debug log OpenAPI boundary', () => {
         transform: true,
       }),
     );
-    await app.init();
-
     try {
       const document = SwaggerModule.createDocument(
         app,
         new DocumentBuilder().setTitle('App request contract').build(),
       );
       SwaggerModule.setup('api', app, document);
+      await app.init();
       const response = await request(app.getHttpServer()).get('/api-json');
       const schema = response.body.components?.schemas?.ClientDebugLogDto;
 
