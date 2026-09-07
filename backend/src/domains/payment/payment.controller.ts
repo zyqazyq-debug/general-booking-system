@@ -13,6 +13,7 @@ import { PaymentChannel } from './payment.types';
 import { PaymentService } from './payment.service';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
+import { ApiExcludeEndpoint } from '@nestjs/swagger';
 
 @Controller('payment')
 export class PaymentController {
@@ -33,6 +34,7 @@ export class PaymentController {
   }
 
   @Post('notify/:channel')
+  @ApiExcludeEndpoint()
   notify(
     @Param('channel') channel: PaymentChannel,
     @Body() payload: unknown,

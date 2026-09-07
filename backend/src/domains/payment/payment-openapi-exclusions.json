@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "exclusions": [
+    {
+      "method": "POST",
+      "public_path": "/api/payment/notify/{channel}",
+      "openapi_path": "/payment/notify/{channel}",
+      "owner": "backend-payment-domain",
+      "classification": "external-provider-webhook-adapter",
+      "reason": "The body is a provider-specific signed payload and is not a stable frontend SDK request contract.",
+      "exposure": "External payment providers only; no frontend SDK or manual client integration.",
+      "security_controls": "PaymentProvider.verifyNotification receives the channel, raw body and headers before PaymentService settles a transaction.",
+      "review_date": "2026-12-07"
+    }
+  ]
+}
