@@ -106,8 +106,16 @@ class SwaggerDtoProbeController {
 class SwaggerDtoProbeModule {}
 
 type ProbeSchema = {
-  properties?: Record<string, Record<string, unknown>>;
+  properties?: Record<
+    string,
+    {
+      allOf?: Array<{ $ref?: string }>;
+      [key: string]: unknown;
+    }
+  >;
   required?: string[];
+  enum?: string[];
+  type?: string;
 };
 
 describe('Swagger request DTO contracts', () => {
@@ -200,7 +208,10 @@ describe('Swagger request DTO contracts', () => {
       expect(schemas.CreateAuthUserDto.required).toEqual(
         expect.arrayContaining(['username', 'password']),
       );
-      expect(schemas.SocialLoginDto.properties?.provider).toMatchObject({
+      expect(schemas.SocialLoginDto.properties?.provider.allOf).toEqual([
+        { $ref: '#/components/schemas/SocialProvider' },
+      ]);
+      expect(schemas.SocialProvider).toMatchObject({
         type: 'string',
         enum: [
           'wechat',
