@@ -22,7 +22,7 @@ export enum SocialProvider {
 
 export class SocialLoginDto {
   @IsEnum(SocialProvider)
-  @ApiProperty({ enum: SocialProvider, enumName: 'SocialProvider' })
+  @ApiProperty({ enum: SocialProvider })
   provider: SocialProvider;
 
   @IsString()

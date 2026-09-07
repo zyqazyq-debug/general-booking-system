@@ -200,9 +200,20 @@ describe('Swagger request DTO contracts', () => {
       expect(schemas.CreateAuthUserDto.required).toEqual(
         expect.arrayContaining(['username', 'password']),
       );
-      expect(schemas.SocialLoginDto.properties?.provider.enum).toEqual(
-        expect.arrayContaining(['wechat', 'qq', 'telegram']),
-      );
+      expect(schemas.SocialLoginDto.properties?.provider).toMatchObject({
+        type: 'string',
+        enum: [
+          'wechat',
+          'qq',
+          'telegram',
+          'weibo',
+          'douyin',
+          'xiaohongshu',
+          'facebook',
+          'google',
+          'apple',
+        ],
+      });
       expect(schemas.VerifySmsLoginDto.properties?.code).toMatchObject({
         type: 'string',
         minLength: 4,
