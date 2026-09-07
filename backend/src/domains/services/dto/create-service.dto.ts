@@ -4,6 +4,8 @@ import {
   IsString,
   IsOptional,
   IsBoolean,
+  IsObject,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ServiceRulesDto, CancellationPolicyDto } from './service-rules.dto';
@@ -72,16 +74,13 @@ export class CreateServiceDto {
   };
 
   @ApiPropertyOptional({
-    description: 'Arbitrary JSON metadata; this DTO does not impose a runtime shape.',
-    nullable: true,
-    oneOf: [
-      { type: 'string' },
-      { type: 'number' },
-      { type: 'boolean' },
-      { type: 'array', items: {} },
-      { type: 'object', additionalProperties: true },
-    ],
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'Optional service metadata. Values must be supplied as a JSON object; arbitrary keys are supported.',
   })
-  @IsOptional()
-  metadata?: any;
+  // Validate undefined as an omitted optional field, but reject null, arrays, and scalars.
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsObject()
+  metadata?: Record<string, unknown>;
 }

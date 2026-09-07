@@ -62,6 +62,17 @@ describe('Services request OpenAPI contract', () => {
         },
       });
       expect(createService.properties).not.toHaveProperty('owner_id');
+      expect(createService.properties).toMatchObject({
+        metadata: { type: 'object', additionalProperties: true },
+      });
+      const metadata = createService.properties?.metadata as {
+        oneOf?: unknown;
+        items?: unknown;
+        nullable?: boolean;
+      };
+      expect(metadata.oneOf).toBeUndefined();
+      expect(metadata.items).toBeUndefined();
+      expect(metadata.nullable).toBeUndefined();
 
       expect(updateService).toMatchObject({
         type: 'object',

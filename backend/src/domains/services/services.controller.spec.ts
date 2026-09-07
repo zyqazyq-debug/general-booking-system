@@ -102,6 +102,48 @@ describe('ServicesController P0 boundaries', () => {
     );
   });
 
+  it('accepts only object-shaped public service metadata', async () => {
+    const pipe = new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    });
+    const basePayload = {
+      title: 'Consultation',
+      base_price: 100,
+      deposit_points: 10,
+    };
+
+    await expect(
+      pipe.transform(
+        {
+          ...basePayload,
+          metadata: { source: 'provider', flags: { vip: true } },
+        },
+        { type: 'body', metatype: CreateServiceDto },
+      ),
+    ).resolves.toMatchObject({ metadata: { source: 'provider' } });
+
+    for (const metadata of [[], ['tag'], 'tag', 1, true, null]) {
+      await expect(
+        pipe.transform(
+          { ...basePayload, metadata },
+          { type: 'body', metatype: CreateServiceDto },
+        ),
+      ).rejects.toBeDefined();
+      expect(
+        ZCreateServiceSchema.safeParse({ ...basePayload, metadata }).success,
+      ).toBe(false);
+    }
+
+    expect(
+      ZCreateServiceSchema.safeParse({
+        ...basePayload,
+        metadata: { source: 'provider', flags: { vip: true } },
+      }).success,
+    ).toBe(true);
+  });
+
   it('uses the public availability projection for the anonymous endpoint', async () => {
     const publicResponse = {
       rules: { weekdays: [1], start_hour: 9, end_hour: 18 },

@@ -31,7 +31,9 @@ export const ZCreateServiceSchema = z.object({
   rules: ZServiceRulesSchema.optional(),
   cancellation_policy: ZCancellationPolicySchema.optional(),
   location: ZLocationSchema.optional(),
-  metadata: z.any().optional(),
+  // Public metadata is an extensible JSON object. Keep this aligned with the
+  // Swagger `additionalProperties` contract and the class-validator DTO.
+  metadata: z.record(z.unknown()).optional(),
 }).strict();
 
 export type CreateService = z.infer<typeof ZCreateServiceSchema>;
