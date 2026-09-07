@@ -12,7 +12,7 @@ export class OrderAgencyAdapter implements OrderAgencyPort {
   ) {}
 
   async findById(id: string): Promise<AgencyNodeInfoDto | null> {
-    const node = await this.agencyQueryService.findById(id);
+    const node = await this.agencyQueryService.findInternalSnapshotById(id);
     if (!node) return null;
     return {
       id: node.id,

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgencyService } from '../agency.service';
+import { AgencyQueryService } from '../services/agency-query.service';
 import type { AgencyNode } from '../entities/agency-node.entity';
 
 export type PlatformAgencyNodeDto = {
@@ -26,7 +27,10 @@ export type PlatformAgencyNodeDto = {
 
 @Injectable()
 export class PlatformAgencyAdapter {
-  constructor(private readonly agencyService: AgencyService) {}
+  constructor(
+    private readonly agencyService: AgencyService,
+    private readonly agencyQueryService: AgencyQueryService,
+  ) {}
 
   private mapNode(node: AgencyNode): PlatformAgencyNodeDto {
     return {
@@ -79,13 +83,13 @@ export class PlatformAgencyAdapter {
   }
 
   async findById(id: string): Promise<PlatformAgencyNodeDto | null> {
-    const node = await this.agencyService.findById(id);
+    const node = await this.agencyQueryService.findInternalSnapshotById(id);
     if (!node) return null;
     return this.mapNode(node);
   }
 
   async findOne(id: string): Promise<PlatformAgencyNodeDto | null> {
-    const node = await this.agencyService.findOne(id);
+    const node = await this.agencyQueryService.findInternalSnapshotById(id);
     if (!node) return null;
     return this.mapNode(node);
   }

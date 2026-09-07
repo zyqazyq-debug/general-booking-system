@@ -172,8 +172,8 @@ export class AgencyService {
     return this.agencyPricingService.propagateScheduleUpdate(serviceId);
   }
 
-  async findById(id: string) {
-    return this.agencyQueryService.findById(id);
+  async findByIdForActor(id: string, actorId: string) {
+    return this.agencyQueryService.findByIdForActor(id, actorId);
   }
 
   async validateActiveChain(nodeId: string) {
@@ -190,10 +190,6 @@ export class AgencyService {
       serviceId,
       includeInactive,
     );
-  }
-
-  async findOne(id: string) {
-    return this.agencyQueryService.findOne(id);
   }
 
   async findBySlug(slug: string) {

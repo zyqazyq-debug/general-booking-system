@@ -2,7 +2,6 @@ import {
   IsNotEmpty,
   IsString,
   IsOptional,
-  IsArray,
   IsEmail,
 } from 'class-validator';
 
@@ -16,16 +15,8 @@ export class CreateAuthUserDto {
   password: string;
 
   @IsOptional()
-  @IsArray()
-  roles?: string[];
-
-  @IsOptional()
   @IsString()
   locale?: string;
-
-  @IsOptional()
-  @IsString()
-  referrer_id?: string;
 
   @IsOptional()
   @IsString()

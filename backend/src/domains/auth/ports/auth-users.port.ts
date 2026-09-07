@@ -1,8 +1,8 @@
 import type { EntityManager } from 'typeorm';
-import type { CreateAuthUserDto } from '../dto/create-auth-user.dto';
 import type {
   AuthRefreshTokenRecordDto,
   AuthUserDto,
+  CreatePublicAuthUserPortDto,
   CreateAuthUserByProviderDto,
 } from '../dto/auth-user.dto';
 
@@ -22,7 +22,7 @@ export interface AuthUsersPort {
   findByQQAny(openid: string): Promise<AuthUserDto | null>;
   findByTelegram(telegramId: string): Promise<AuthUserDto | null>;
 
-  create(dto: CreateAuthUserDto): Promise<AuthUserDto>;
+  create(dto: CreatePublicAuthUserPortDto): Promise<AuthUserDto>;
   createWithProvider(dto: CreateAuthUserByProviderDto): Promise<AuthUserDto>;
 
   findOneTx(manager: EntityManager, id: string): Promise<AuthUserDto | null>;

@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
 import type { AuthUsersPort } from '../../auth';
-import type { CreateAuthUserDto } from '../../auth';
 import type {
   AuthRefreshTokenRecordDto,
   AuthUserDto,
   CreateAuthUserByProviderDto,
+  CreatePublicAuthUserPortDto,
 } from '../../auth';
 import { User } from '../entities/user.entity';
 import { CreateUserDto } from '../dto/create-user.dto';
@@ -122,7 +122,7 @@ export class AuthUsersAdapter implements AuthUsersPort {
     return user ? this.toAuthUserDto(user) : null;
   }
 
-  async create(dto: CreateAuthUserDto): Promise<AuthUserDto> {
+  async create(dto: CreatePublicAuthUserPortDto): Promise<AuthUserDto> {
     const createUserDto: CreateUserDto = dto;
     const user = await this.usersService.create(createUserDto);
     return this.toAuthUserDto(user);

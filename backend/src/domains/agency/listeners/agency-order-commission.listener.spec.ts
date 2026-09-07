@@ -4,7 +4,7 @@ import { AgencyOrderCommissionListener } from './agency-order-commission.listene
 describe('AgencyOrderCommissionListener', () => {
   it('should calculate A->B commissions along parent_node_id chain', async () => {
     const agencyQueryService = {
-      findById: jest.fn(async (id: string) => {
+      findInternalSnapshotById: jest.fn(async (id: string) => {
         if (id === 'node-b') {
           return {
             id: 'node-b',
@@ -54,8 +54,12 @@ describe('AgencyOrderCommissionListener', () => {
       },
     });
 
-    expect(agencyQueryService.findById).toHaveBeenCalledWith('node-b');
-    expect(agencyQueryService.findById).toHaveBeenCalledWith('node-a');
+    expect(agencyQueryService.findInternalSnapshotById).toHaveBeenCalledWith(
+      'node-b',
+    );
+    expect(agencyQueryService.findInternalSnapshotById).toHaveBeenCalledWith(
+      'node-a',
+    );
     expect(saved).toHaveLength(2);
 
     const provider = saved[0];

@@ -20,7 +20,8 @@ export class AgencyOrderCommissionListener implements OnModuleDestroy {
   ) {
     this.calculator = new CommissionCalculator(
       {
-        findById: (id: string) => this.agencyQueryService.findById(id),
+        findById: (id: string) =>
+          this.agencyQueryService.findInternalSnapshotById(id),
       },
       commissionRepository,
     );

@@ -27,8 +27,8 @@ export class RegistrationService {
     );
     if (existing) throw new BadRequestException('Username exists');
 
-    let resolvedReferrerId = createUserDto.referrer_id;
-    if (!resolvedReferrerId && createUserDto.referral_code) {
+    let resolvedReferrerId: string | undefined;
+    if (createUserDto.referral_code) {
       const referrer = await this.usersPort.findByReferralCode(
         createUserDto.referral_code,
       );
@@ -39,8 +39,13 @@ export class RegistrationService {
     }
 
     const user = await this.usersPort.create({
-      ...createUserDto,
+      username: createUserDto.username,
+      password: createUserDto.password,
+      locale: createUserDto.locale,
+      referral_code: createUserDto.referral_code,
+      email: createUserDto.email,
       referrer_id: resolvedReferrerId,
+      roles: ['CONSUMER'],
     });
 
     return this.authTokenService.login(user);

@@ -31,7 +31,10 @@ export class AgencyCollectionController {
 
   @Get('nodes/:id')
   @UseGuards(JwtAuthGuard)
-  async getNodeById(@Param('id') id: string) {
-    return this.agencyService.findById(id);
+  async getNodeById(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.agencyService.findByIdForActor(id, req.user.id);
   }
 }

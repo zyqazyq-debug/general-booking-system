@@ -3,6 +3,7 @@ export * from './ports/auth-users.port';
 export * from './ports/tokens';
 export * from './dto/auth-user.dto';
 export * from './dto/create-auth-user.dto';
+export * from './dto/register.schema';
 export * from './dto/identity-merge.dto';
 export * from './dto/identity-scan.dto';
 export * from './dto/login.dto';

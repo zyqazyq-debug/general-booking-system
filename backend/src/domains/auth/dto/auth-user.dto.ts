@@ -36,6 +36,16 @@ export type CreateAuthUserByProviderDto = {
   is_verified?: boolean;
 };
 
+export type CreatePublicAuthUserPortDto = {
+  username: string;
+  password: string;
+  roles: ['CONSUMER'];
+  locale?: string;
+  referrer_id?: string;
+  referral_code?: string;
+  email?: string;
+};
+
 export type AuthRefreshTokenRecordDto = {
   user: AuthUserDto;
 };

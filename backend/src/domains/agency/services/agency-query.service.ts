@@ -1,7 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { AgencyNode } from '../entities/agency-node.entity';
+import type {
+  AgencyNodeViewDto,
+  PublicAgencyNodeViewDto,
+} from '../dto/agency-node-view.dto';
 
 @Injectable()
 export class AgencyQueryService {
@@ -10,15 +18,43 @@ export class AgencyQueryService {
     private readonly agencyRepository: Repository<AgencyNode>,
   ) {}
 
-  private extractLegacyPublicNotes(privateNotes?: string | null) {
-    if (!privateNotes) return '';
-    const parts = String(privateNotes).split('\n');
-    for (const part of parts) {
-      if (part.startsWith('说明：')) {
-        return part.replace('说明：', '');
-      }
+  private toView(
+    node: AgencyNode,
+    options: { includeShareSlug: boolean },
+  ): AgencyNodeViewDto {
+    const displayPrice = Number(node.cache_total_price);
+    const service = node.service;
+    const result: AgencyNodeViewDto = {
+      id: node.id,
+      status: node.status,
+      alias: node.alias ?? null,
+      inherited_name: node.inherited_name ?? null,
+      parent_node_id: node.parent_node_id,
+      service_id: node.service_id,
+      created_at: node.created_at,
+      updated_at: node.updated_at,
+      service: {
+        id: service.id,
+        title: node.alias || node.inherited_name || service.title,
+        duration_minutes: service.duration_minutes,
+        deposit_points: service.deposit_points,
+        buffer_minutes: service.buffer_minutes,
+        rules: service.rules,
+        base_price: Number(displayPrice.toFixed(2)),
+        description: node.public_notes || '',
+        is_active: service.is_active,
+      },
+      agent: {
+        id: node.agent_id,
+        nickname: node.agent?.nickname ?? null,
+        avatar: node.agent?.avatar ?? null,
+      },
+      is_unavailable: node.status !== 'ACTIVE' || !service.is_active,
+    };
+    if (options.includeShareSlug) {
+      result.share_slug = node.share_slug;
     }
-    return '';
+    return result;
   }
 
   async getMyCollection(agentId: string): Promise<AgencyNode[]> {
@@ -98,19 +134,28 @@ export class AgencyQueryService {
     return nodes;
   }
 
-  async findById(id: string) {
+  async findByIdForActor(
+    id: string,
+    actorId: string,
+  ): Promise<AgencyNodeViewDto> {
     const node = await this.agencyRepository.findOne({
       where: { id },
-      relations: ['service'],
+      relations: ['service', 'agent'],
     });
-    if (node && node.service) {
-      const providerBasePrice = Number(node.service.base_price);
-      node.service.base_price = node.cache_cost_price;
-      node.service.provider_base_price = providerBasePrice;
-      node.service.cost_price = Number(node.cache_cost_price);
-      node.service.sale_price = Number(node.cache_total_price);
+    if (!node) {
+      throw new NotFoundException('Agency node not found');
     }
-    return node;
+    if (node.agent_id !== actorId) {
+      throw new ForbiddenException('Agency node is not owned by actor');
+    }
+    return this.toView(node, { includeShareSlug: true });
+  }
+
+  async findInternalSnapshotById(id: string) {
+    return this.agencyRepository.findOne({
+      where: { id },
+      relations: ['service', 'service.owner', 'agent'],
+    });
   }
 
   async findByAgentAndService(
@@ -128,14 +173,7 @@ export class AgencyQueryService {
     return this.agencyRepository.findOne({ where });
   }
 
-  async findOne(id: string) {
-    return this.agencyRepository.findOne({
-      where: { id },
-      relations: ['service', 'service.owner', 'agent'],
-    });
-  }
-
-  async findBySlug(slug: string) {
+  async findBySlug(slug: string): Promise<PublicAgencyNodeViewDto> {
     const nodeAny = await this.agencyRepository.findOne({
       where: { share_slug: slug },
       relations: ['service', 'service.owner', 'agent'],
@@ -143,48 +181,27 @@ export class AgencyQueryService {
     if (!nodeAny) {
       throw new NotFoundException('Agency node not found');
     }
+    if (nodeAny.status !== 'ACTIVE' || !nodeAny.service?.is_active) {
+      throw new NotFoundException('Agency node is unavailable');
+    }
 
-    const isNodeActive = nodeAny.status === 'ACTIVE';
-    const isServiceActive = nodeAny.service && nodeAny.service.is_active;
-    const finalPrice = nodeAny.cache_total_price;
-    const importCost = finalPrice;
-
-    const finalDescription =
-      nodeAny.public_notes ||
-      this.extractLegacyPublicNotes(nodeAny.private_notes) ||
-      '';
+    const publicView = this.toView(nodeAny, { includeShareSlug: true });
+    const {
+      status: node_status,
+      created_at: _createdAt,
+      updated_at: _updatedAt,
+      ...safeView
+    } = publicView;
+    void _createdAt;
+    void _updatedAt;
 
     return {
-      id: nodeAny.id,
-      share_slug: nodeAny.share_slug,
+      ...safeView,
+      node_status,
       importInfo: {
-        costPrice: importCost,
-        markupType: nodeAny.markup_type,
-        markupValue: nodeAny.markup_value,
         parentNodeId: nodeAny.id,
         serviceId: nodeAny.service_id,
       },
-      service: {
-        id: nodeAny.service.id,
-        title: nodeAny.alias || nodeAny.inherited_name || nodeAny.service.title,
-        duration_minutes: nodeAny.service.duration_minutes,
-        deposit_points: nodeAny.service.deposit_points,
-        buffer_minutes: nodeAny.service.buffer_minutes,
-        rules: nodeAny.service.rules,
-        base_price: Number(finalPrice.toFixed(2)),
-        provider_base_price: Number(nodeAny.service.base_price),
-        cost_price: Number(nodeAny.cache_cost_price),
-        sale_price: Number(finalPrice.toFixed(2)),
-        description: finalDescription,
-        is_active: isServiceActive,
-      },
-      node_status: nodeAny.status,
-      agent: {
-        id: nodeAny.agent_id,
-        nickname: nodeAny.agent.nickname,
-        avatar: nodeAny.agent.avatar,
-      },
-      is_unavailable: !isNodeActive || !isServiceActive,
     };
   }
 }
