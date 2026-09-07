@@ -6,6 +6,7 @@ import {
   Post,
   UseGuards,
   Request,
+  Headers,
 } from '@nestjs/common';
 import { CreatePrepayDto } from './dto/create-prepay.dto';
 import { PaymentChannel } from './payment.types';
@@ -32,8 +33,12 @@ export class PaymentController {
   }
 
   @Post('notify/:channel')
-  notify(@Param('channel') channel: PaymentChannel, @Body() payload: any) {
-    return this.paymentService.handleNotify(channel, payload);
+  notify(
+    @Param('channel') channel: PaymentChannel,
+    @Body() payload: unknown,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    return this.paymentService.handleNotify(channel, payload, headers);
   }
 
   @Get(':channel/:orderNo/status')

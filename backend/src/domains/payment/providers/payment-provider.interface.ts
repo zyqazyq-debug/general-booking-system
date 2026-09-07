@@ -1,4 +1,5 @@
 import { CreatePrepayDto } from '../dto/create-prepay.dto';
+import { PaymentChannel } from '../payment.types';
 
 export interface PrepayResponse {
   success: boolean;
@@ -13,7 +14,9 @@ export interface VerifyNotifyResult {
   success: boolean;
   order_no: string;
   trade_no: string;
-  amount: number;
+  channel: PaymentChannel;
+  amount_minor: number;
+  currency: 'CNY';
   raw_data: Record<string, unknown>;
   error_message?: string;
 }
@@ -24,8 +27,10 @@ export interface QueryStatusResult {
 }
 
 export interface PaymentProvider {
+  isAvailable(channel: PaymentChannel): boolean;
   createPrepay(dto: CreatePrepayDto): Promise<PrepayResponse>;
   verifyNotification(
+    channel: PaymentChannel,
     body: unknown,
     headers?: Record<string, string | string[] | undefined>,
   ): Promise<VerifyNotifyResult>;

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿import {
+﻿import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
@@ -35,11 +35,21 @@ export class PaymentTransaction {
   order_no: string; // Internal order number for this transaction
 
   @Column({ nullable: true })
-  @Index()
+  @Index('UQ_payment_transactions_trade_no', {
+    unique: true,
+    where: '"trade_no" IS NOT NULL',
+  })
   trade_no?: string; // External transaction ID from payment provider
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  amount: number;
+  amount: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  @Index('UQ_payment_transactions_payment_event_id', {
+    unique: true,
+    where: '"payment_event_id" IS NOT NULL',
+  })
+  payment_event_id?: string;
 
   @Column({ type: 'simple-enum', enum: PaymentChannel })
   channel: PaymentChannel;

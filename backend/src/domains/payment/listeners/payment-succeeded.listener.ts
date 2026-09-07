@@ -1,7 +1,17 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { PaymentUsersPort } from '../ports/payment-users.port';
 import { PAYMENT_USERS_PORT } from '../ports/tokens';
+import {
+  PAYMENT_SETTLED_EVENT,
+  type PaymentSettledEvent,
+} from '../events/payment-settled.event';
+import { PaymentPurpose } from '../payment.types';
 
 @Injectable()
 export class PaymentSucceededListener {
@@ -12,34 +22,29 @@ export class PaymentSucceededListener {
     private readonly usersPort: PaymentUsersPort,
   ) {}
 
-  @OnEvent('payment.succeeded')
-  async handlePaymentSucceeded(payload: {
-    userId: string;
-    amount: number;
-    orderNo: string;
-    tradeNo: string;
-  }) {
+  @OnEvent(PAYMENT_SETTLED_EVENT)
+  async handlePaymentSucceeded(payload: PaymentSettledEvent) {
+    if (payload.purpose !== PaymentPurpose.CREDIT_PURCHASE) {
+      return;
+    }
+
     this.logger.log(
-      `Payment succeeded for user ${payload.userId}, amount ${payload.amount}. Updating balance.`,
+      `Posting payment ${payload.paymentEventId} for user ${payload.payerUserId}.`,
     );
 
-    try {
-      // Add credit to user balance
-      // Note: In a real system, you might have a conversion rate between money and credits.
-      // For now, we assume 1:1 or handle it as credits directly.
-      await this.usersPort.addCredit(payload.userId, payload.amount);
-
-      this.logger.log(
-        `Successfully added ${payload.amount} credits to user ${payload.userId} for order ${payload.orderNo}`,
+    if (!this.usersPort.postPaymentCredit) {
+      throw new ServiceUnavailableException(
+        'Idempotent users payment posting port is not configured',
       );
-    } catch (error: unknown) {
-      const resolvedError =
-        error instanceof Error ? error : new Error(String(error));
-      this.logger.error(
-        `Failed to add credit for user ${payload.userId} after successful payment: ${resolvedError.message}`,
-        resolvedError.stack,
-      );
-      // In production, this should trigger an alert or a manual reconciliation task.
     }
+
+    await this.usersPort.postPaymentCredit({
+      paymentEventId: payload.paymentEventId,
+      userId: payload.payerUserId,
+      amountMinor: payload.amountMinor,
+      currency: payload.currency,
+      orderNo: payload.orderNo,
+      tradeNo: payload.tradeNo,
+    });
   }
 }
