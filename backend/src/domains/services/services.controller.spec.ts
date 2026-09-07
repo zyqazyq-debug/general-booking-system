@@ -10,8 +10,12 @@ describe('ServicesController P0 boundaries', () => {
     getPublicAvailability: jest.fn(),
     getManagementAvailability: jest.fn(),
   };
-  const agencyPort = {};
-  const availabilityService = {};
+  const agencyPort = {
+    findNodeById: jest.fn(),
+  };
+  const availabilityService = {
+    getAvailableSlots: jest.fn(),
+  };
 
   let controller: ServicesController;
 
@@ -78,6 +82,47 @@ describe('ServicesController P0 boundaries', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(servicesService.getManagementAvailability).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      'slots',
+      () => controller.getAvailableSlots('service-1', '2030-01-01', 'node-1'),
+    ],
+    [
+      'available-slots',
+      () =>
+        controller.getAvailableSlotsAlias('service-1', '2030-01-01', 'node-1'),
+    ],
+  ])(
+    'never serializes agency node details through the public %s path',
+    async (_name, act) => {
+      agencyPort.findNodeById.mockResolvedValue({
+        id: 'node-1',
+        service_id: 'service-1',
+        private_notes: 'provider-only node note',
+        markup_value: 99,
+      });
+      availabilityService.getAvailableSlots.mockResolvedValue([
+        {
+          start_time: '2030-01-01T09:00:00.000Z',
+          end_time: '2030-01-01T10:00:00.000Z',
+          status: 'available',
+        },
+      ]);
+
+      const result = await act();
+
+      expect(result).toEqual([
+        {
+          start_time: '2030-01-01T09:00:00.000Z',
+          end_time: '2030-01-01T10:00:00.000Z',
+          status: 'available',
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('provider-only node note');
+      expect(JSON.stringify(result)).not.toContain('markup_value');
+    },
+  );
 });
 
 const adminRequest = {
