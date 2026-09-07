@@ -4,14 +4,13 @@ import { ReferralController } from './referral.controller';
 import { ReferralService } from './referral.service';
 import { ReferralLog } from './entities/referral-log.entity';
 import { ReferralPaymentSettledListener } from './listeners/referral-payment-settled.listener';
-import { ReferralTestController } from './referral-test.controller';
+
+/** Controllers that are allowed in the standard production module. */
+export const REFERRAL_PRODUCTION_CONTROLLERS = [ReferralController];
 
 @Module({
   imports: [TypeOrmModule.forFeature([ReferralLog])],
-  controllers: [
-    ReferralController,
-    ...(process.env.NODE_ENV === 'test' ? [ReferralTestController] : []),
-  ],
+  controllers: REFERRAL_PRODUCTION_CONTROLLERS,
   providers: [ReferralService, ReferralPaymentSettledListener],
   exports: [ReferralService],
 })
