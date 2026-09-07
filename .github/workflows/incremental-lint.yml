@@ -1,18 +1,20 @@
-name: Incremental Lint
+name: Fail-Closed Quality Gates
 
 on:
   pull_request:
     paths:
       - 'frontend/**'
       - 'backend/**'
+      - 'packages/shared/**'
       - 'ops/**'
+      - 'tools/**'
       - 'scripts/**'
       - '.github/workflows/**'
       - 'lint-staged.config.js'
       - 'package.json'
 
 jobs:
-  lint-diff:
+  non-mutating-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,18 +29,20 @@ jobs:
             frontend/package-lock.json
             backend/package-lock.json
 
-      - name: Install root deps
-        run: npm ci
-
       - name: Install frontend deps
         run: cd frontend && npm ci
 
       - name: Install backend deps
         run: cd backend && npm ci
 
-      - name: Lint changed files
-        run: |
-          npx lint-staged --diff="origin/${{ github.base_ref }}...HEAD" --config lint-staged.config.js
+      - name: Frontend format check
+        run: cd frontend && npm run format:check
+
+      - name: Frontend lint (no fix)
+        run: cd frontend && ./node_modules/.bin/eslint . --ext .js,.ts,.vue --max-warnings 0
+
+      - name: Backend lint (no fix)
+        run: cd backend && ./node_modules/.bin/eslint "{src,apps,libs,test}/**/*.ts" --max-warnings 0 --no-fix
 
   gates:
     name: Build & Typecheck & Test
@@ -50,35 +54,21 @@ jobs:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: |
+            packages/shared/package-lock.json
             frontend/package-lock.json
             backend/package-lock.json
+
+      - name: Install shared deps
+        run: cd packages/shared && npm ci
 
       - name: Install frontend deps
         run: cd frontend && npm ci
 
-      - name: Frontend dependency check
-        run: cd frontend && npm run depcruise
-        
-      - name: Frontend typecheck
-        run: cd frontend && npm run type-check
-
-      - name: Frontend build (h5)
-        run: cd frontend && npm run build:h5
-
       - name: Install backend deps
         run: cd backend && npm ci
 
-      - name: Backend lint
-        run: cd backend && npm run lint -- --max-warnings 0 --no-fix
+      - name: Run reproducible quality gate chain
+        run: node tools/ci/run-quality-gates.js
 
-      - name: Backend build
-        run: cd backend && npm run build
-
-      - name: Backend architecture boundary checks (lint:arch)
-        run: cd backend && npm run lint:arch
-
-      - name: Backend tests
-        run: cd backend && npm test
-
-      - name: Backend SQLite E2E tests (zero infra dependency)
-        run: cd backend && npx jest --config test/jest-e2e.json --testPathIgnorePatterns='app.e2e-spec.ts'
+      - name: Gate contract self-tests
+        run: node --test tools/ci/quality-gates-meta.test.js
