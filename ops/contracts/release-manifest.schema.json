@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/release-manifest.schema.json",
+  "title": "HappyBooking immutable release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "releaseId", "source", "artifacts", "contracts", "runtime", "probes"],
+  "properties": {
+    "schema": { "const": "booking.release/v1" },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gitSha", "treeState"],
+      "properties": {
+        "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "treeState": { "const": "clean" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "gateway"],
+      "properties": {
+        "backend": { "$ref": "#/$defs/backendArtifact" },
+        "gateway": { "$ref": "#/$defs/gatewayArtifact" }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configSchema", "apiVersion", "frontendCompatibleApi", "migrationExpandFloor", "rollbackCompatibleRelease"],
+      "properties": {
+        "configSchema": { "type": "string", "pattern": "^booking\\.config/v[1-9][0-9]*$" },
+        "apiVersion": { "type": "string", "pattern": "^v[1-9][0-9]*$" },
+        "frontendCompatibleApi": { "type": "string", "pattern": "^v[1-9][0-9]*$" },
+        "migrationExpandFloor": { "type": "string", "minLength": 1 },
+        "rollbackCompatibleRelease": {
+          "oneOf": [
+            { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeMajor", "targetPlatform"],
+      "properties": {
+        "nodeMajor": { "type": "integer", "minimum": 20 },
+        "targetPlatform": { "type": "string", "pattern": "^linux/(amd64|arm64)$" }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["live", "ready", "version"],
+      "properties": {
+        "live": { "type": "string", "pattern": "^/" },
+        "ready": { "type": "string", "pattern": "^/" },
+        "version": { "type": "string", "pattern": "^/" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "imageArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "digest", "sbomDigest"],
+      "properties": {
+        "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
+        "digest": { "$ref": "#/$defs/digest" },
+        "sbomDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "backendArtifact": { "$ref": "#/$defs/imageArtifact" },
+    "gatewayArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "digest", "sbomDigest", "frontendAssetDigest", "routeContractDigest"],
+      "properties": {
+        "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
+        "digest": { "$ref": "#/$defs/digest" },
+        "sbomDigest": { "$ref": "#/$defs/digest" },
+        "frontendAssetDigest": { "$ref": "#/$defs/digest" },
+        "routeContractDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

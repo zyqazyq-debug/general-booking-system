@@ -1,0 +1,14 @@
+{
+  "schema": "booking.deploy-state/v1",
+  "generation": 18,
+  "activeSlot": "blue",
+  "activeRelease": "booking-20260907T150000Z-abcdef0",
+  "candidateSlot": "green",
+  "candidateRelease": "booking-20260907T160000Z-0123456",
+  "previousSlot": null,
+  "previousRelease": null,
+  "phase": "CANDIDATE_READY",
+  "manifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "operationId": "release-20260907-001",
+  "contractMigrationApplied": false
+}

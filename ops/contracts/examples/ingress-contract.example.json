@@ -1,0 +1,13 @@
+{
+  "schema": "booking.ingress/v1",
+  "hostname": "app.happybooking.uk",
+  "origin": {
+    "scheme": "http",
+    "service": "booking-prod-edge",
+    "port": 8080
+  },
+  "healthPath": "/__ops/readyz",
+  "versionPath": "/__ops/version",
+  "webhookPath": "/telegram/webhook",
+  "owner": "booking-nas-cloudflare"
+}

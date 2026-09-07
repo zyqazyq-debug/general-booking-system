@@ -1,0 +1,38 @@
+{
+  "schema": "booking.release/v1",
+  "releaseId": "booking-20260907T160000Z-0123456",
+  "source": {
+    "gitSha": "0123456789abcdef0123456789abcdef01234567",
+    "treeState": "clean"
+  },
+  "artifacts": {
+    "backend": {
+      "image": "registry.example.invalid/happybooking/backend",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "sbomDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "gateway": {
+      "image": "registry.example.invalid/happybooking/gateway",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "sbomDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "frontendAssetDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "routeContractDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  },
+  "contracts": {
+    "configSchema": "booking.config/v1",
+    "apiVersion": "v1",
+    "frontendCompatibleApi": "v1",
+    "migrationExpandFloor": "1774200000002-RemoveAgencyNodeUniqueIndex",
+    "rollbackCompatibleRelease": null
+  },
+  "runtime": {
+    "nodeMajor": 20,
+    "targetPlatform": "linux/amd64"
+  },
+  "probes": {
+    "live": "/livez",
+    "ready": "/readyz",
+    "version": "/__ops/version"
+  }
+}

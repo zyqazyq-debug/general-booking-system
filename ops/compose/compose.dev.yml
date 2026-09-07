@@ -1,0 +1,96 @@
+name: booking-dev
+
+services:
+  postgres-dev:
+    profiles: ["dev"]
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: booking_dev
+      POSTGRES_USER: booking_dev
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_dev_password
+    secrets:
+      - postgres_dev_password
+    volumes:
+      - booking_dev_postgres:/var/lib/postgresql/data
+    networks: [dev-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_dev -d booking_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis-dev:
+    profiles: ["dev"]
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - booking_dev_redis:/data
+    networks: [dev-data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend-dev:
+    profiles: ["dev"]
+    image: node:20-alpine
+    working_dir: /workspace/backend
+    command: ["sh", "-lc", "npm ci && npm run start:dev"]
+    env_file:
+      - ${BOOKING_DEV_ENV_FILE:?set a dev-only env file}
+    environment:
+      NODE_ENV: development
+      POSTGRES_HOST: postgres-dev
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: redis-dev
+      REDIS_PORT: "6379"
+      CHOKIDAR_USEPOLLING: ${BOOKING_DEV_USE_POLLING:-false}
+      CHOKIDAR_INTERVAL: ${BOOKING_DEV_POLL_INTERVAL_MS:-750}
+    volumes:
+      - ../../backend:/workspace/backend
+      - ../../packages/shared:/workspace/packages/shared:ro
+      - booking_dev_backend_modules:/workspace/backend/node_modules
+    ports:
+      - "127.0.0.1:${BOOKING_DEV_BACKEND_PORT:-3001}:3001"
+    networks: [dev-app, dev-data]
+    depends_on:
+      postgres-dev:
+        condition: service_healthy
+      redis-dev:
+        condition: service_healthy
+
+  frontend-dev:
+    profiles: ["dev"]
+    image: node:20-alpine
+    working_dir: /workspace/frontend
+    command: ["sh", "-lc", "npm ci && npm run dev:h5 -- --host 0.0.0.0 --port 8443"]
+    environment:
+      NODE_ENV: development
+      VITE_DEV_PROXY_TARGET: http://backend-dev:3001
+      CHOKIDAR_USEPOLLING: ${BOOKING_DEV_USE_POLLING:-false}
+      CHOKIDAR_INTERVAL: ${BOOKING_DEV_POLL_INTERVAL_MS:-750}
+      WATCHPACK_POLLING: ${BOOKING_DEV_USE_POLLING:-false}
+    volumes:
+      - ../../frontend:/workspace/frontend
+      - ../../packages/shared:/workspace/packages/shared:ro
+      - booking_dev_frontend_modules:/workspace/frontend/node_modules
+    ports:
+      - "127.0.0.1:${BOOKING_DEV_FRONTEND_PORT:-8443}:8443"
+    networks: [dev-app]
+    depends_on: [backend-dev]
+
+secrets:
+  postgres_dev_password:
+    file: ${BOOKING_DEV_SECRET_ROOT:?set a dev-only secret directory}/postgres-password
+
+volumes:
+  booking_dev_postgres:
+  booking_dev_redis:
+  booking_dev_backend_modules:
+  booking_dev_frontend_modules:
+
+networks:
+  dev-app:
+  dev-data:
+    internal: true

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/ingress-contract.schema.json",
+  "title": "HappyBooking non-secret ingress handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "hostname", "origin", "healthPath", "versionPath", "webhookPath", "owner"],
+  "properties": {
+    "schema": { "const": "booking.ingress/v1" },
+    "hostname": { "type": "string", "format": "hostname" },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme", "service", "port"],
+      "properties": {
+        "scheme": { "enum": ["http", "https"] },
+        "service": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "healthPath": { "type": "string", "pattern": "^/" },
+    "versionPath": { "type": "string", "pattern": "^/" },
+    "webhookPath": { "const": "/telegram/webhook" },
+    "owner": { "const": "booking-nas-cloudflare" }
+  }
+}

@@ -1,0 +1,33 @@
+name: booking-prod-edge
+
+services:
+  edge:
+    container_name: booking-prod-edge
+    image: ${BOOKING_EDGE_IMAGE:?set immutable edge image repository}@${BOOKING_EDGE_IMAGE_DIGEST:?set sha256 digest}
+    restart: unless-stopped
+    ports:
+      - "${BOOKING_EDGE_BIND_ADDRESS:?set an explicit non-wildcard address}:${BOOKING_EDGE_PORT:-8080}:8080"
+    volumes:
+      - ../network/edge/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${BOOKING_EDGE_STATE_ROOT:?set edge state root}/active.conf:/etc/nginx/upstreams/active.conf:ro
+    environment:
+      BOOKING_TRUSTED_PROXY_CIDR: ${BOOKING_TRUSTED_PROXY_CIDR:?set trusted cloudflared source CIDR}
+    networks: [prod-ingress, prod-edge]
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  prod-ingress:
+    name: booking-prod-ingress
+    external: true
+  prod-edge:
+    name: booking-prod-edge
+    external: true

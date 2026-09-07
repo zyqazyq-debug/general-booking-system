@@ -1,0 +1,123 @@
+name: booking-prod-release
+
+x-backend-common: &backend-common
+  restart: unless-stopped
+  env_file:
+    - ${BOOKING_RUNTIME_ENV_FILE:?set non-secret runtime env file}
+  secrets:
+    - postgres_password
+    - redis_password
+    - jwt_secret_1
+    - jwt_secret_2
+    - telegram_bot_token
+    - telegram_webhook_secret
+  networks: [prod-edge, prod-data]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  healthcheck:
+    test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 20s
+
+x-gateway-common: &gateway-common
+  restart: unless-stopped
+  networks: [prod-edge]
+  read_only: true
+  tmpfs: [/var/cache/nginx, /var/run, /tmp]
+  cap_drop: ["ALL"]
+  cap_add: ["NET_BIND_SERVICE"]
+  security_opt: ["no-new-privileges:true"]
+  healthcheck:
+    test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+
+services:
+  backend-blue:
+    <<: *backend-common
+    profiles: ["blue"]
+    image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_BLUE_BACKEND_DIGEST:?set blue backend digest}
+    environment:
+      BOOKING_RELEASE_ID: ${BOOKING_BLUE_RELEASE_ID:?set blue release id}
+      BOOKING_GIT_SHA: ${BOOKING_BLUE_GIT_SHA:?set blue Git SHA}
+      BOOKING_SLOT: blue
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_BLUE_MANIFEST_DIGEST:?set blue manifest digest}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_BLUE_MIGRATION_FLOOR:?set migration floor}
+      BOOKING_RUNTIME_ROLE: ${BOOKING_BLUE_RUNTIME_ROLE:-standby}
+      BOOKING_WORKERS_ENABLED: ${BOOKING_BLUE_WORKERS_ENABLED:-false}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      JWT_SECRET1_FILE: /run/secrets/jwt_secret_1
+      JWT_SECRET2_FILE: /run/secrets/jwt_secret_2
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+
+  gateway-blue:
+    <<: *gateway-common
+    profiles: ["blue"]
+    image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_BLUE_GATEWAY_DIGEST:?set blue gateway digest}
+    networks:
+      prod-edge:
+        aliases: [gateway-blue]
+    depends_on:
+      backend-blue:
+        condition: service_healthy
+
+  backend-green:
+    <<: *backend-common
+    profiles: ["green"]
+    image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_GREEN_BACKEND_DIGEST:?set green backend digest}
+    environment:
+      BOOKING_RELEASE_ID: ${BOOKING_GREEN_RELEASE_ID:?set green release id}
+      BOOKING_GIT_SHA: ${BOOKING_GREEN_GIT_SHA:?set green Git SHA}
+      BOOKING_SLOT: green
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_GREEN_MANIFEST_DIGEST:?set green manifest digest}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_GREEN_MIGRATION_FLOOR:?set migration floor}
+      BOOKING_RUNTIME_ROLE: ${BOOKING_GREEN_RUNTIME_ROLE:-standby}
+      BOOKING_WORKERS_ENABLED: ${BOOKING_GREEN_WORKERS_ENABLED:-false}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      JWT_SECRET1_FILE: /run/secrets/jwt_secret_1
+      JWT_SECRET2_FILE: /run/secrets/jwt_secret_2
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+
+  gateway-green:
+    <<: *gateway-common
+    profiles: ["green"]
+    image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_GREEN_GATEWAY_DIGEST:?set green gateway digest}
+    networks:
+      prod-edge:
+        aliases: [gateway-green]
+    depends_on:
+      backend-green:
+        condition: service_healthy
+
+secrets:
+  postgres_password:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/postgres-password
+  redis_password:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/redis-password
+  jwt_secret_1:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/jwt-secret-1
+  jwt_secret_2:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/jwt-secret-2
+  telegram_bot_token:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/telegram-bot-token
+  telegram_webhook_secret:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/telegram-webhook-secret
+
+networks:
+  prod-edge:
+    name: booking-prod-edge
+    external: true
+  prod-data:
+    name: booking-prod-data
+    external: true

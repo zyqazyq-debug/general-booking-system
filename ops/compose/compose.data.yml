@@ -1,0 +1,51 @@
+name: booking-prod-data
+
+services:
+  postgres:
+    image: ${BOOKING_POSTGRES_IMAGE:?set immutable PostgreSQL image repository}@${BOOKING_POSTGRES_IMAGE_DIGEST:?set sha256 digest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set database name}
+      POSTGRES_USER: ${POSTGRES_USER:?set database user}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - ${BOOKING_DATA_ROOT:?set NAS data root}/postgres:/var/lib/postgresql/data
+    networks: [prod-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    read_only: true
+    tmpfs: [/tmp, /run/postgresql]
+    security_opt: ["no-new-privileges:true"]
+
+  redis:
+    image: ${BOOKING_REDIS_IMAGE:?set immutable Redis image repository}@${BOOKING_REDIS_IMAGE_DIGEST:?set sha256 digest}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--aclfile", "/run/secrets/redis_acl"]
+    secrets: [redis_acl]
+    volumes:
+      - ${BOOKING_DATA_ROOT:?set NAS data root}/redis:/data
+    networks: [prod-data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "--user", "healthcheck", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+
+secrets:
+  postgres_password:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/postgres-password
+  redis_acl:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/redis-users.acl
+
+networks:
+  prod-data:
+    name: booking-prod-data
+    internal: true

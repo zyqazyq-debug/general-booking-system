@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/gate-result.schema.json",
+  "title": "HappyBooking release gate result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "gate", "releaseId", "status", "observedAt", "checks", "evidenceDigest"],
+  "properties": {
+    "schema": { "const": "booking.gate-result/v1" },
+    "gate": { "type": "string", "minLength": 1 },
+    "releaseId": { "type": "string", "minLength": 1 },
+    "slot": { "enum": ["blue", "green", null] },
+    "status": { "enum": ["pass", "fail"] },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pass", "fail"] },
+          "code": { "type": "string" },
+          "detail": { "type": "string", "maxLength": 512 }
+        }
+      }
+    },
+    "evidenceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
