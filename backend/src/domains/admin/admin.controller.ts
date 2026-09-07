@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { ADMIN_ROLES, JwtAuthGuard, Roles, RolesGuard } from '../auth';
+import { AdjustUserCreditDto } from './dto/adjust-user-credit.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,7 +30,7 @@ export class AdminController {
   }
 
   @Post('users/:id/credit')
-  adjustCredit(@Param('id') id: string, @Body('amount') amount: number) {
-    return this.adminService.adjustCredit(id, amount);
+  adjustCredit(@Param('id') id: string, @Body() body: AdjustUserCreditDto) {
+    return this.adminService.adjustCredit(id, body.amount);
   }
 }

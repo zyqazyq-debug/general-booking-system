@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { AppService } from './app.service';
 import type { Response } from 'express';
+import { ClientDebugLogDto } from './app.debug-log.dto';
 
 @Controller()
 export class AppController {
@@ -17,7 +18,7 @@ export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Post('debug/log')
-  clientLog(@Body() body: Record<string, unknown>) {
+  clientLog(@Body() body: ClientDebugLogDto) {
     this.logger.log(`[Frontend Log] ${JSON.stringify(body, null, 2)}`);
     return { success: true };
   }
