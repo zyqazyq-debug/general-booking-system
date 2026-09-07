@@ -176,6 +176,106 @@ function discoverIngressRoutes({ backendRoot }) {
   );
 }
 
+function stringProperty(object, name, label, errors) {
+  const property = object.properties.find(
+    (candidate) =>
+      ts.isPropertyAssignment(candidate) &&
+      ((ts.isIdentifier(candidate.name) && candidate.name.text === name) ||
+        (ts.isStringLiteral(candidate.name) && candidate.name.text === name)),
+  );
+  if (!property || !ts.isStringLiteral(property.initializer)) {
+    errors.push(`${label}.${name} must be a string literal`);
+    return null;
+  }
+  return property.initializer.text;
+}
+
+function readGlobalPrefixConfiguration({ backendRoot }) {
+  const mainFile = path.join(backendRoot, "src/main.ts");
+  if (!fs.existsSync(mainFile)) {
+    throw new IngressCoverageError([
+      `backend bootstrap is missing: ${mainFile}`,
+    ]);
+  }
+  const errors = [];
+  const source = ts.createSourceFile(
+    mainFile,
+    fs.readFileSync(mainFile, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const calls = [];
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "setGlobalPrefix"
+    ) {
+      calls.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (calls.length !== 1) {
+    errors.push(
+      `${mainFile} must contain exactly one statically readable app.setGlobalPrefix call`,
+    );
+  }
+  const call = calls[0];
+  if (!call) throw new IngressCoverageError(errors);
+  if (
+    call.arguments.length !== 2 ||
+    !ts.isStringLiteral(call.arguments[0]) ||
+    !ts.isObjectLiteralExpression(call.arguments[1])
+  ) {
+    errors.push(
+      `${mainFile} setGlobalPrefix must use a string literal and object literal options`,
+    );
+  }
+  const prefix = ts.isStringLiteral(call.arguments[0])
+    ? call.arguments[0].text
+    : null;
+  const options = ts.isObjectLiteralExpression(call.arguments[1])
+    ? call.arguments[1]
+    : null;
+  const excluded = new Set();
+  if (options) {
+    const exclude = options.properties.find(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ((ts.isIdentifier(property.name) && property.name.text === "exclude") ||
+          (ts.isStringLiteral(property.name) &&
+            property.name.text === "exclude")),
+    );
+    if (!exclude || !ts.isArrayLiteralExpression(exclude.initializer)) {
+      errors.push(
+        `${mainFile} setGlobalPrefix options.exclude must be an array literal`,
+      );
+    } else {
+      for (const [index, entry] of exclude.initializer.elements.entries()) {
+        if (ts.isStringLiteral(entry)) {
+          excluded.add(entry.text);
+        } else if (ts.isObjectLiteralExpression(entry)) {
+          const pathValue = stringProperty(
+            entry,
+            "path",
+            `${mainFile} exclude[${index}]`,
+            errors,
+          );
+          if (pathValue !== null) excluded.add(pathValue);
+        } else {
+          errors.push(
+            `${mainFile} exclude[${index}] must be a string or object with literal path`,
+          );
+        }
+      }
+    }
+  }
+  if (errors.length) throw new IngressCoverageError(errors);
+  return { prefix, excluded };
+}
+
 function routeKey(route) {
   return `${route.controller_file}#${route.handler} ${route.method} ${route.source_path}`;
 }
@@ -235,6 +335,7 @@ function validateOpenApiManifestAgainstDocument(
   manifest,
   discoveredRoutes,
   document,
+  runtimeConfiguration,
 ) {
   const errors = [];
   const discoveredByKey = new Map(
@@ -284,6 +385,24 @@ function validateOpenApiManifestAgainstDocument(
       errors.push(
         `${label} is app surface but controller filename is test-only`,
       );
+    }
+    if (runtimeConfiguration) {
+      const isExcluded = runtimeConfiguration.excluded.has(
+        route.source_path.slice(1),
+      );
+      if (runtimeConfiguration.prefix !== "api") {
+        errors.push(
+          `backend global prefix must be "api", found ${String(runtimeConfiguration.prefix)}`,
+        );
+      } else if (route.runtime_prefix === "none" && !isExcluded) {
+        errors.push(
+          `${label} declares no runtime prefix but is absent from main.ts global-prefix exclusions`,
+        );
+      } else if (route.runtime_prefix === "api" && isExcluded) {
+        errors.push(
+          `${label} declares api runtime prefix but is excluded in main.ts`,
+        );
+      }
     }
     const openApiKey = `${route.method} ${route.openapi_path}`;
     if (manifestByOpenApi.has(openApiKey))
@@ -363,6 +482,7 @@ function validateOpenApiManifestAgainstDocument(
 module.exports = {
   IngressCoverageError,
   discoverIngressRoutes,
+  readGlobalPrefixConfiguration,
   resolveProperties,
   scanControllerSource,
   validateOpenApiManifestAgainstDocument,

@@ -2,6 +2,7 @@ const assert = require("assert/strict");
 const test = require("node:test");
 const {
   IngressCoverageError,
+  readGlobalPrefixConfiguration,
   resolveProperties,
   scanControllerSource,
   validateOpenApiManifestAgainstDocument,
@@ -155,5 +156,40 @@ test("rejects a discovered mutating route omitted from the manifest", () => {
         paths: {},
       }),
     /omitted/,
+  );
+});
+
+test("reads global-prefix exclusions and rejects an undeclared unprefixed webhook", () => {
+  const configuration = readGlobalPrefixConfiguration({
+    backendRoot: `${process.cwd()}/backend`,
+  });
+  assert.equal(configuration.prefix, "api");
+  assert.ok(configuration.excluded.has("telegram/webhook"));
+  const raw = scanControllerSource(
+    `import { Controller, Post, Req } from '@nestjs/common'; import { ApiExcludeEndpoint } from '@nestjs/swagger'; @Controller('hook') export class X { @Post() @ApiExcludeEndpoint() receive(@Req() req: unknown) {} }`,
+    controllerFile,
+    { backendRoot },
+  );
+  const webhook = {
+    ...manifestRoute,
+    handler: "receive",
+    source_path: "/hook",
+    openapi_path: "/hook",
+    runtime_prefix: "none",
+    runtime_path: "/hook",
+    body_kind: "external-webhook",
+    body_binding: "raw",
+    validation: { required_properties: [] },
+    external_webhook: { classification: "external-provider-webhook-adapter" },
+  };
+  assert.throws(
+    () =>
+      validateOpenApiManifestAgainstDocument(
+        { routes: [webhook] },
+        raw,
+        { paths: {} },
+        configuration,
+      ),
+    /absent from main\.ts global-prefix exclusions/,
   );
 });

@@ -5,6 +5,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 const {
   discoverIngressRoutes,
+  readGlobalPrefixConfiguration,
   validateOpenApiManifestAgainstDocument,
 } = require("./openapi-ingress-coverage");
 
@@ -65,7 +66,15 @@ async function validateIngress(document) {
   const routes = discoverIngressRoutes({
     backendRoot: path.join(repoRoot, "backend"),
   });
-  validateOpenApiManifestAgainstDocument(manifest, routes, document);
+  const runtimeConfiguration = readGlobalPrefixConfiguration({
+    backendRoot: path.join(repoRoot, "backend"),
+  });
+  validateOpenApiManifestAgainstDocument(
+    manifest,
+    routes,
+    document,
+    runtimeConfiguration,
+  );
   console.log(
     "[generated-api] PASS ingress manifest and runtime OpenAPI coverage",
   );
