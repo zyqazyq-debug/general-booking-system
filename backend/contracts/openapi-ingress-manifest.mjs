@@ -15,15 +15,18 @@ const ROUTE_KEYS = new Set([
   'body_kind',
   'body_binding',
   'owner',
+  'reason',
   'validation',
   'external_webhook',
 ]);
 const ROOT_KEYS = new Set(['version', 'routes']);
 const VALID_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const VALID_SURFACES = new Set(['app', 'test-only']);
+const VALID_SURFACES = new Set(['app', 'test-only', 'development-only']);
 const VALID_BODY_KINDS = new Set(['sdk-json', 'external-webhook', 'no-body']);
 const VALID_BODY_BINDINGS = new Set(['whole', 'field', 'raw', 'none']);
-const VALID_RUNTIME_PREFIXES = new Set(['api', 'none']);
+function isRuntimePrefix(value) {
+  return value === 'none' || (typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_-]*$/.test(value));
+}
 
 export class IngressManifestValidationError extends Error {
   constructor(errors) {
@@ -70,10 +73,10 @@ export function sourcePathToRuntimePath(sourcePath, runtimePrefix) {
   if (!isRoutePath(sourcePath)) {
     throw new TypeError(`Invalid source path "${sourcePath}"`);
   }
-  if (!VALID_RUNTIME_PREFIXES.has(runtimePrefix)) {
+  if (!isRuntimePrefix(runtimePrefix)) {
     throw new TypeError(`Invalid runtime prefix "${runtimePrefix}"`);
   }
-  return runtimePrefix === 'api' ? `/api${sourcePath}` : sourcePath;
+  return runtimePrefix === 'none' ? sourcePath : `/${runtimePrefix}${sourcePath}`;
 }
 
 function assertStringList(value, label, errors, { nonEmpty = false } = {}) {
@@ -178,7 +181,7 @@ export function parseOpenApiIngressManifest(input, { now = new Date() } = {}) {
     assertKnownKeys(route, ROUTE_KEYS, label, errors);
     if (!isPlainObject(route)) continue;
     for (const key of ROUTE_KEYS) {
-      if (!(key in route) && key !== 'external_webhook') errors.push(`${label}.${key} is required`);
+      if (!(key in route) && key !== 'external_webhook' && key !== 'reason') errors.push(`${label}.${key} is required`);
     }
     assertString(route.controller_file, `${label}.controller_file`, errors);
     if (typeof route.controller_file === 'string' && !/^src\/.+\.controller\.ts$/.test(route.controller_file)) {
@@ -192,20 +195,25 @@ export function parseOpenApiIngressManifest(input, { now = new Date() } = {}) {
     if (!VALID_METHODS.has(route.method)) errors.push(`${label}.method is invalid`);
     if (!VALID_BODY_KINDS.has(route.body_kind)) errors.push(`${label}.body_kind is invalid`);
     if (!VALID_BODY_BINDINGS.has(route.body_binding)) errors.push(`${label}.body_binding is invalid`);
-    if (!VALID_RUNTIME_PREFIXES.has(route.runtime_prefix)) errors.push(`${label}.runtime_prefix is invalid`);
+    if (!isRuntimePrefix(route.runtime_prefix)) errors.push(`${label}.runtime_prefix is invalid`);
     assertString(route.owner, `${label}.owner`, errors);
+    if (route.surface === 'development-only') {
+      assertString(route.reason, `${label}.reason`, errors);
+    } else if (route.reason !== undefined) {
+      errors.push(`${label}.reason is only allowed for development-only routes`);
+    }
 
     if (!isRoutePath(route.source_path)) {
       errors.push(`${label}.source_path is not a canonical Nest route path`);
     } else {
-      const expectedOpenApi = sourcePathToOpenApiPath(route.source_path);
-      if (route.openapi_path !== expectedOpenApi) {
-        errors.push(`${label}.openapi_path must equal transformed source_path "${expectedOpenApi}"`);
-      }
-      if (VALID_RUNTIME_PREFIXES.has(route.runtime_prefix)) {
+      if (isRuntimePrefix(route.runtime_prefix)) {
         const expectedRuntime = sourcePathToRuntimePath(route.source_path, route.runtime_prefix);
         if (route.runtime_path !== expectedRuntime) {
           errors.push(`${label}.runtime_path must equal transformed source_path "${expectedRuntime}"`);
+        }
+        const expectedOpenApi = sourcePathToOpenApiPath(expectedRuntime);
+        if (route.openapi_path !== expectedOpenApi) {
+          errors.push(`${label}.openapi_path must equal transformed runtime_path "${expectedOpenApi}"`);
         }
       }
       const identity = `${route.method} ${route.source_path}`;

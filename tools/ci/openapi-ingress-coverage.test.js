@@ -16,7 +16,7 @@ const manifestRoute = {
   surface: "app",
   method: "POST",
   source_path: "/example/:id",
-  openapi_path: "/example/{id}",
+  openapi_path: "/api/example/{id}",
   runtime_prefix: "api",
   runtime_path: "/api/example/:id",
   body_kind: "sdk-json",
@@ -31,7 +31,7 @@ const discovered = scanControllerSource(source, controllerFile, {
 });
 const documentFor = (schema) => ({
   paths: {
-    "/example/{id}": {
+    "/api/example/{id}": {
       post: { requestBody: { content: { "application/json": { schema } } } },
     },
   },
@@ -67,7 +67,7 @@ test("rejects empty, missing and orphan request body schemas", () => {
       validateOpenApiManifestAgainstDocument(
         { routes: [manifestRoute] },
         discovered,
-        { paths: { "/example/{id}": { post: {} } } },
+        { paths: { "/api/example/{id}": { post: {} } } },
       ),
     IngressCoverageError,
   );
@@ -135,7 +135,7 @@ test("scans field body and raw excluded webhook with fail-closed route metadata"
     ...manifestRoute,
     handler: "receive",
     source_path: "/hook",
-    openapi_path: "/hook",
+    openapi_path: "/api/hook",
     runtime_path: "/api/hook",
     body_kind: "external-webhook",
     body_binding: "raw",
@@ -156,6 +156,33 @@ test("rejects a discovered mutating route omitted from the manifest", () => {
         paths: {},
       }),
     /omitted/,
+  );
+});
+
+test("requires development-only ingress to stay declared yet absent from runtime OpenAPI", () => {
+  const developmentOnly = {
+    ...manifestRoute,
+    surface: "development-only",
+    reason: "The controller is intentionally absent from this AppModule surface.",
+  };
+  const runtimeConfiguration = { prefix: "api", excluded: new Set() };
+  assert.doesNotThrow(() =>
+    validateOpenApiManifestAgainstDocument(
+      { routes: [developmentOnly] },
+      discovered,
+      { paths: {} },
+      runtimeConfiguration,
+    ),
+  );
+  assert.throws(
+    () =>
+      validateOpenApiManifestAgainstDocument(
+        { routes: [developmentOnly] },
+        discovered,
+        documentFor({ $ref: "#/components/schemas/Input" }),
+        runtimeConfiguration,
+      ),
+    /development-only but appears in running OpenAPI/,
   );
 });
 
@@ -190,6 +217,6 @@ test("reads global-prefix exclusions and rejects an undeclared unprefixed webhoo
         { paths: {} },
         configuration,
       ),
-    /absent from main\.ts global-prefix exclusions/,
+    /runtime_prefix must be "api" from main\.ts global-prefix\/exclude configuration/,
   );
 });

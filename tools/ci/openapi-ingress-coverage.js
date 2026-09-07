@@ -280,6 +280,20 @@ function routeKey(route) {
   return `${route.controller_file}#${route.handler} ${route.method} ${route.source_path}`;
 }
 
+function deriveRuntimeAndOpenApiPath(route, runtimeConfiguration) {
+  const isExcluded = runtimeConfiguration.excluded.has(route.source_path.slice(1));
+  const runtimePrefix = isExcluded ? 'none' : runtimeConfiguration.prefix;
+  const runtimePath =
+    runtimePrefix === 'none'
+      ? route.source_path
+      : joinRoute(runtimePrefix, route.source_path);
+  return {
+    runtimePrefix,
+    runtimePath,
+    openapiPath: runtimePath.replace(/:([A-Za-z][A-Za-z0-9_]*)/g, '{$1}'),
+  };
+}
+
 function resolveProperties(
   schema,
   components,
@@ -387,20 +401,20 @@ function validateOpenApiManifestAgainstDocument(
       );
     }
     if (runtimeConfiguration) {
-      const isExcluded = runtimeConfiguration.excluded.has(
-        route.source_path.slice(1),
-      );
-      if (runtimeConfiguration.prefix !== "api") {
+      const expected = deriveRuntimeAndOpenApiPath(route, runtimeConfiguration);
+      if (route.runtime_prefix !== expected.runtimePrefix) {
         errors.push(
-          `backend global prefix must be "api", found ${String(runtimeConfiguration.prefix)}`,
+          `${label} runtime_prefix must be "${expected.runtimePrefix}" from main.ts global-prefix/exclude configuration`,
         );
-      } else if (route.runtime_prefix === "none" && !isExcluded) {
+      }
+      if (route.runtime_path !== expected.runtimePath) {
         errors.push(
-          `${label} declares no runtime prefix but is absent from main.ts global-prefix exclusions`,
+          `${label} runtime_path must be "${expected.runtimePath}" from main.ts global-prefix/exclude configuration`,
         );
-      } else if (route.runtime_prefix === "api" && isExcluded) {
+      }
+      if (route.openapi_path !== expected.openapiPath) {
         errors.push(
-          `${label} declares api runtime prefix but is excluded in main.ts`,
+          `${label} openapi_path must be "${expected.openapiPath}" from main.ts global-prefix/exclude configuration`,
         );
       }
     }
@@ -423,9 +437,9 @@ function validateOpenApiManifestAgainstDocument(
   for (const route of manifest.routes) {
     const label = `${route.method} ${route.openapi_path}`;
     const operation = operationAt(document, route);
-    if (route.surface === "test-only") {
+    if (route.surface === "test-only" || route.surface === "development-only") {
       if (operation)
-        errors.push(`${label} is test-only but appears in running OpenAPI`);
+        errors.push(`${label} is ${route.surface} but appears in running OpenAPI`);
       continue;
     }
     if (route.body_kind === "external-webhook") {
@@ -482,6 +496,7 @@ function validateOpenApiManifestAgainstDocument(
 module.exports = {
   IngressCoverageError,
   discoverIngressRoutes,
+  deriveRuntimeAndOpenApiPath,
   readGlobalPrefixConfiguration,
   resolveProperties,
   scanControllerSource,
