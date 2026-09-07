@@ -62,6 +62,7 @@ import { AgencyOnboardingFacade } from './services/agency-onboarding.facade';
   ],
   exports: [
     AgencyService,
+    AgencyQueryService,
     CollectionQuotaService,
     AgencyImportService,
     OrderAgencyAdapter,
