@@ -1,9 +1,12 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, ValidationPipe } from '@nestjs/common';
 
+import { CreateServiceDto } from './dto/create-service.dto';
+import { ZCreateServiceSchema } from './dto/create-service.schema';
 import { ServicesController } from './services.controller';
 
 describe('ServicesController P0 boundaries', () => {
   const servicesService = {
+    create: jest.fn(),
     findOne: jest.fn(),
     update: jest.fn(),
     remove: jest.fn(),
@@ -44,6 +47,60 @@ describe('ServicesController P0 boundaries', () => {
       expect(servicesService.remove).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects a client-supplied owner_id before creation and derives ownership from the JWT', async () => {
+    const pipe = new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    });
+
+    await expect(
+      pipe.transform(
+        {
+          title: 'Consultation',
+          base_price: 100,
+          deposit_points: 10,
+          owner_id: 'attacker-owner',
+        },
+        { type: 'body', metatype: CreateServiceDto },
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: expect.arrayContaining([
+          expect.stringContaining('owner_id should not exist'),
+        ]),
+      }),
+    });
+
+    expect(
+      ZCreateServiceSchema.safeParse({
+        title: 'Consultation',
+        base_price: 100,
+        deposit_points: 10,
+        owner_id: 'attacker-owner',
+      }).success,
+    ).toBe(false);
+
+    await controller.create(
+      {
+        title: 'Consultation',
+        base_price: 100,
+        deposit_points: 10,
+        owner_id: 'attacker-owner',
+      } as never,
+      {
+        user: { id: 'authenticated-owner', roles: ['USER'] },
+      } as never,
+    );
+
+    expect(servicesService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Consultation',
+        owner_id: 'authenticated-owner',
+      }),
+    );
+  });
 
   it('uses the public availability projection for the anonymous endpoint', async () => {
     const publicResponse = {

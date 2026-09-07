@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { CreateServiceDto } from './dto/create-service.dto';
+import type { CreateServiceCommand } from './commands/create-service.command';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { CreateServiceBlockDto } from './dto/create-service-block.dto';
 import { UpdateServiceBlockDto } from './dto/update-service-block.dto';
@@ -40,7 +40,7 @@ export class ServicesService {
     }
   }
 
-  async create(createServiceDto: CreateServiceDto) {
+  async create(createServiceDto: CreateServiceCommand) {
     // this.validateRules(createServiceDto);
     const service = this.servicesRepository.create(createServiceDto);
     const saved: Service = await this.servicesRepository.save(service);

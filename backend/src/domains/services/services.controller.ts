@@ -18,6 +18,7 @@ import {
 } from '@nestjs/common';
 import { ServicesService } from './services.service';
 import { CreateServiceDto } from './dto/create-service.dto';
+import type { CreateServiceCommand } from './commands/create-service.command';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { CreateServiceBlockDto } from './dto/create-service-block.dto';
 import { UpdateServiceBlockDto } from './dto/update-service-block.dto';
@@ -44,11 +45,21 @@ export class ServicesController {
   @UseGuards(JwtAuthGuard)
   @Post()
   create(
-    @Body() createServiceDto: CreateServiceDto,
+    @Body(
+      new ValidationPipe({
+        transform: true,
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      }),
+    )
+    createServiceDto: CreateServiceDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    createServiceDto.owner_id = req.user.id;
-    return this.servicesService.create(createServiceDto);
+    const command: CreateServiceCommand = {
+      ...createServiceDto,
+      owner_id: req.user.id,
+    };
+    return this.servicesService.create(command);
   }
 
   @UseGuards(JwtAuthGuard)

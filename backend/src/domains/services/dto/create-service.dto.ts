@@ -5,19 +5,10 @@ import {
   IsOptional,
   IsBoolean,
 } from 'class-validator';
-import {
-  ApiHideProperty,
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ServiceRulesDto, CancellationPolicyDto } from './service-rules.dto';
 
 export class CreateServiceDto {
-  @ApiHideProperty()
-  @IsOptional()
-  @IsString()
-  owner_id: string;
-
   @ApiPropertyOptional({ type: 'string' })
   @IsOptional()
   @IsString()
