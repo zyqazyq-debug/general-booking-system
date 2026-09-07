@@ -41,6 +41,13 @@ describe('Order OpenAPI request boundary', () => {
         required?: boolean;
         schema?: OpenApiSchema;
       }>;
+      const cancelRequest = document.paths['/order/{id}/cancel']?.post
+        ?.requestBody as { content?: Record<string, { schema?: unknown }> };
+      const cancelOrder = schemas.CancelOrderDto as {
+        type?: string;
+        required?: string[];
+        properties?: Record<string, OpenApiSchema>;
+      };
       const parameter = (name: string) =>
         manageParameters.find((item) => item.name === name);
 
@@ -68,6 +75,17 @@ describe('Order OpenAPI request boundary', () => {
       );
       expect(createOrder.properties).not.toHaveProperty('consumer_id');
       expect(createOrder.required).not.toContain('agency_node_id');
+
+      expect(cancelRequest?.content?.['application/json']?.schema).toEqual({
+        $ref: '#/components/schemas/CancelOrderDto',
+      });
+      expect(cancelOrder).toMatchObject({
+        type: 'object',
+        properties: {
+          reason: { type: 'string' },
+        },
+      });
+      expect(cancelOrder.required ?? []).toHaveLength(0);
 
       expect(parameter('page')).toEqual(
         expect.objectContaining({

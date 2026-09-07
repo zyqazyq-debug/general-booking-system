@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { CreateOrderDto } from './dto/create-order.dto';
+import type { CreateOrderCommand } from './dto/create-order.dto';
 import { Order } from './entities/order.entity';
 import {
   PaginationDto,
@@ -25,8 +25,8 @@ export class OrderService {
     private orderManagementService: OrderManagementService,
   ) {}
 
-  async create(createOrderDto: CreateOrderDto) {
-    return this.orderCreationService.create(createOrderDto);
+  async create(command: CreateOrderCommand) {
+    return this.orderCreationService.create(command);
   }
 
   async confirm(id: string, actorId: string) {

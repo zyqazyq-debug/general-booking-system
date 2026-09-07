@@ -4,7 +4,7 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 import type { DeepPartial } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Order, OrderStatus } from '../entities/order.entity';
-import { CreateOrderDto } from '../dto/create-order.dto';
+import type { CreateOrderCommand } from '../dto/create-order.dto';
 import { ORDER_SERVICES_PORT } from '../ports/tokens';
 import type { OrderServicesPort } from '../ports/order-services.port';
 import { OrderValidator } from '../utils/order-validator';
@@ -25,7 +25,7 @@ export class OrderCreationService {
     private readonly orderFinancialService: OrderFinancialService,
   ) {}
 
-  async create(createOrderDto: CreateOrderDto): Promise<Order> {
+  async create(createOrderDto: CreateOrderCommand): Promise<Order> {
     const service = await this.servicesPort.findServiceById(
       createOrderDto.service_id,
     );

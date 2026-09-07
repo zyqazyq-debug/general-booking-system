@@ -4,19 +4,10 @@ import {
   IsDateString,
   IsOptional,
 } from 'class-validator';
-import {
-  ApiHideProperty,
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/** Public POST /order request payload. */
 export class CreateOrderDto {
-  // Set from the authenticated request in OrderController; never client-owned.
-  @ApiHideProperty()
-  @IsOptional()
-  @IsString()
-  consumer_id?: string;
-
   @ApiProperty({
     type: String,
     description: 'Service to book.',
@@ -51,3 +42,12 @@ export class CreateOrderDto {
   @IsDateString()
   end_time: string;
 }
+
+/** Internal command; the controller derives consumer_id from authentication. */
+export type CreateOrderCommand = {
+  consumer_id: string;
+  service_id: string;
+  agency_node_id?: string;
+  start_time: string;
+  end_time: string;
+};

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { OrderService } from '../order.service';
 import type { Order } from '../entities/order.entity';
-import type { CreateOrderDto } from '../dto/create-order.dto';
+import type { CreateOrderCommand } from '../dto/create-order.dto';
 
 export type PlatformOrderDto = {
   id: string;
@@ -43,7 +43,7 @@ export class PlatformOrderAdapter {
     end_time: string;
     agency_node_id?: string;
   }): Promise<PlatformOrderDto> {
-    const dto: CreateOrderDto = {
+    const dto: CreateOrderCommand = {
       consumer_id: params.consumer_id,
       service_id: params.service_id,
       start_time: params.start_time,

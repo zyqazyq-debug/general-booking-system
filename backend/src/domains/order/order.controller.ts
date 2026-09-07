@@ -13,7 +13,11 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { OrderService } from './order.service';
-import { CreateOrderDto } from './dto/create-order.dto';
+import {
+  CreateOrderDto,
+  type CreateOrderCommand,
+} from './dto/create-order.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 import { OrderFilterDto } from './dto/order-filter.dto';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
@@ -78,9 +82,14 @@ export class OrderController {
     @Request() req: AuthenticatedRequest,
     @Body() createOrderDto: CreateOrderDto,
   ) {
-    // Prevent IDOR: Force consumer_id to be the current user
-    createOrderDto.consumer_id = req.user.id;
-    return this.orderService.create(createOrderDto);
+    const command: CreateOrderCommand = {
+      consumer_id: req.user.id,
+      service_id: createOrderDto.service_id,
+      agency_node_id: createOrderDto.agency_node_id,
+      start_time: createOrderDto.start_time,
+      end_time: createOrderDto.end_time,
+    };
+    return this.orderService.create(command);
   }
 
   @Get('my')
@@ -162,10 +171,10 @@ export class OrderController {
   @Post(':id/cancel')
   cancel(
     @Param('id') id: string,
-    @Body('reason') reason: string,
+    @Body() cancelOrderDto: CancelOrderDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    return this.orderService.cancel(id, req.user.id, reason);
+    return this.orderService.cancel(id, req.user.id, cancelOrderDto.reason);
   }
 
   // findAll() is REMOVED to prevent accidental exposure.
