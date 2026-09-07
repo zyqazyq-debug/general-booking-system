@@ -6,8 +6,10 @@ const {
   captureChildOutput,
   openApiUrlForPort,
   parseExplicitPort,
+  readinessLogMessage,
   reserveLoopbackPort,
   resolveQualityGatePort,
+  startupLogMessage,
   waitForOpenApi,
 } = require("./verify-generated-api");
 
@@ -34,16 +36,28 @@ test("uses a validated explicit QUALITY_GATE_PORT", async () => {
   }
 });
 
-test("propagates an auto-selected loopback port consistently", async () => {
+test("propagates an auto-selected loopback port and quality-owned database retry settings", async () => {
   const port = await resolveQualityGatePort({
     env: {},
     reservePort: async () => 41234,
   });
-  const env = backendEnvironment(port, {});
+  const env = backendEnvironment(port, {
+    DB_CONNECT_RETRY_ATTEMPTS: "99",
+    DB_CONNECT_RETRY_DELAY_MS: "9999",
+  });
   assert.equal(port, 41234);
   assert.equal(env.PORT1, "41234");
   assert.equal(env.PORT2, "41234");
+  assert.equal(env.DB_CONNECT_RETRY_ATTEMPTS, "1");
+  assert.equal(env.DB_CONNECT_RETRY_DELAY_MS, "0");
   assert.equal(openApiUrlForPort(port), "http://127.0.0.1:41234/api-json");
+});
+
+test("formats startup and readiness logs with the selected URL and child PID", () => {
+  const child = { pid: 43210 };
+  const url = "http://127.0.0.1:41234/api-json";
+  assert.match(startupLogMessage(child, url), /pid=43210.*openapi=http:\/\/127\.0\.0\.1:41234\/api-json/);
+  assert.match(readinessLogMessage(child, url), /PASS OpenAPI readiness.*pid=43210.*openapi=http:\/\/127\.0\.0\.1:41234\/api-json/);
 });
 
 test("planned concurrent auto invocations receive distinct ports", async () => {

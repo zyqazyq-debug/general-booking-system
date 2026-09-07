@@ -94,6 +94,14 @@ function childDiagnostics(child, output) {
   ].filter(Boolean).join("\n");
 }
 
+function startupLogMessage(child, openapiUrl) {
+  return `[generated-api] starting backend pid=${String(child.pid)} openapi=${openapiUrl}`;
+}
+
+function readinessLogMessage(child, openapiUrl) {
+  return `[generated-api] PASS OpenAPI readiness pid=${String(child.pid)} openapi=${openapiUrl}`;
+}
+
 function backendEnvironment(port, baseEnvironment = process.env) {
   return {
     ...baseEnvironment,
@@ -111,6 +119,8 @@ function backendEnvironment(port, baseEnvironment = process.env) {
     PORT_ACTIVE_INDEX: "1",
     PORT1: String(port),
     PORT2: String(port),
+    DB_CONNECT_RETRY_ATTEMPTS: "1",
+    DB_CONNECT_RETRY_DELAY_MS: "0",
     SENTRY_DSN: "",
   };
 }
@@ -224,9 +234,11 @@ async function run() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = captureChildOutput(child);
+  console.log(startupLogMessage(child, openapiUrl));
 
   try {
     const document = await waitForOpenApi(child, output, { openapiUrl });
+    console.log(readinessLogMessage(child, openapiUrl));
     await validateIngress(document);
     const cli = resolveGeneratorCli();
     const generator = spawn(
@@ -277,8 +289,10 @@ module.exports = {
   openApiUrlForPort,
   parseExplicitPort,
   reserveLoopbackPort,
+  readinessLogMessage,
   resolveQualityGatePort,
   run,
+  startupLogMessage,
   validateIngress,
   waitForOpenApi,
 };
