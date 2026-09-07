@@ -2,9 +2,21 @@ import { Body, Controller, Module, Post } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
 import { CreateAgencyNodeDto } from '../../agency/dto/create-agency-node.dto';
+import {
+  ExecuteImportDto,
+  ReparentCollectionDto,
+  SetCollectionStatusDto,
+  UpdateCollectionDto,
+} from '../../agency/dto/collection-mutation.dto';
 import { UpdateUserDto } from '../../users/dto/update-user.dto';
+import {
+  AddUserRoleDto,
+  ChangePasswordDto,
+  CreateCreditPurchaseIntentDto,
+} from '../../users/dto/user-account-action.dto';
 import { CreateAuthUserDto } from './create-auth-user.dto';
 import { IdentityBindDto } from './identity-merge.dto';
+import { IdentityUnbindDto } from './identity-unbind.dto';
 import {
   IdentityScanStartDto,
   IdentityScanStatusDto,
@@ -14,6 +26,9 @@ import { MergeTelegramAccountDto } from './merge-telegram-account.dto';
 import { SendSmsCodeDto, VerifySmsLoginDto } from './sms-auth.dto';
 import { SocialIdentityProofDto } from './social-identity-proof.dto';
 import { SocialLoginDto } from './social-login.dto';
+import { RefreshTokenDto } from './session-token.dto';
+import { TelegramLoginDto } from './telegram-login.dto';
+import { TelegramWebAppLoginDto } from './telegram-webapp-login.dto';
 
 @Controller('swagger-dto-probe')
 class SwaggerDtoProbeController {
@@ -52,6 +67,39 @@ class SwaggerDtoProbeController {
 
   @Post('agency-node')
   agencyNode(@Body() _body: CreateAgencyNodeDto) {}
+
+  @Post('refresh-token')
+  refreshToken(@Body() _body: RefreshTokenDto) {}
+
+  @Post('telegram-login')
+  telegramLogin(@Body() _body: TelegramLoginDto) {}
+
+  @Post('telegram-webapp-login')
+  telegramWebAppLogin(@Body() _body: TelegramWebAppLoginDto) {}
+
+  @Post('identity-unbind')
+  identityUnbind(@Body() _body: IdentityUnbindDto) {}
+
+  @Post('collection-status')
+  collectionStatus(@Body() _body: SetCollectionStatusDto) {}
+
+  @Post('collection-reparent')
+  collectionReparent(@Body() _body: ReparentCollectionDto) {}
+
+  @Post('collection-update')
+  collectionUpdate(@Body() _body: UpdateCollectionDto) {}
+
+  @Post('collection-import')
+  collectionImport(@Body() _body: ExecuteImportDto) {}
+
+  @Post('user-role')
+  userRole(@Body() _body: AddUserRoleDto) {}
+
+  @Post('change-password')
+  changePassword(@Body() _body: ChangePasswordDto) {}
+
+  @Post('credit-purchase-intent')
+  creditPurchaseIntent(@Body() _body: CreateCreditPurchaseIntentDto) {}
 }
 
 @Module({ controllers: [SwaggerDtoProbeController] })
@@ -97,21 +145,12 @@ describe('Swagger request DTO contracts', () => {
         IdentityBindDto: ['provider', 'identity', 'code', 'proof'],
         IdentityScanStartDto: ['provider'],
         IdentityScanStatusDto: ['ticket_id'],
-        UpdateUserDto: [
-          'username',
-          'password',
-          'roles',
-          'locale',
-          'referrer_id',
-          'referral_code',
-          'email',
-        ],
+        UpdateUserDto: ['username', 'password', 'locale', 'email'],
         CreateAgencyNodeDto: [
           'serviceId',
           'listingId',
           'listingIds',
           'parentNodeId',
-          'markup_amount',
           'markup_type',
           'markup_value',
           'alias',
@@ -121,6 +160,32 @@ describe('Swagger request DTO contracts', () => {
           'compliance_signature',
           'deviceInfo',
         ],
+        RefreshTokenDto: ['refresh_token'],
+        TelegramLoginDto: [
+          'id',
+          'first_name',
+          'last_name',
+          'username',
+          'photo_url',
+          'auth_date',
+          'hash',
+          'deviceInfo',
+        ],
+        TelegramWebAppLoginDto: ['initData'],
+        IdentityUnbindDto: ['provider'],
+        SetCollectionStatusDto: ['is_active'],
+        ReparentCollectionDto: ['newParentNodeId'],
+        UpdateCollectionDto: [
+          'markup_type',
+          'markup_value',
+          'private_notes',
+          'public_notes',
+          'alias',
+        ],
+        ExecuteImportDto: ['token', 'force', 'import_as_child'],
+        AddUserRoleDto: ['role'],
+        ChangePasswordDto: ['oldPassword', 'newPassword'],
+        CreateCreditPurchaseIntentDto: ['required_credit'],
       };
 
       for (const [name, properties] of Object.entries(expectedProperties)) {
@@ -146,6 +211,11 @@ describe('Swagger request DTO contracts', () => {
       expect(schemas.UpdateUserDto.required || []).not.toEqual(
         expect.arrayContaining(['username', 'password']),
       );
+      expect(schemas.UpdateUserDto.properties).not.toMatchObject({
+        roles: expect.anything(),
+        referrer_id: expect.anything(),
+        referral_code: expect.anything(),
+      });
       expect(schemas.CreateAgencyNodeDto.properties?.listingIds).toMatchObject({
         type: 'array',
         items: { type: 'string', pattern: '^\\d+$' },

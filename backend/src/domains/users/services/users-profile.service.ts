@@ -122,33 +122,15 @@ export class UsersProfileService {
       }
     }
 
-    if (updateUserDto.roles) {
-      user.roles = Array.from(new Set(updateUserDto.roles));
-    }
-
     if (updateUserDto.password) {
       user.password = await this.hashPassword(updateUserDto.password);
     }
 
-    const {
-      password: _pw,
-      roles: _rl,
-      referrer_id: _ri,
-      referral_code: _rc,
-      wallet_balance: _wb,
-      credit_balance: _cb,
-      frozen_credit: _fc,
-      id: _id,
-      ...allowedFields
-    } = updateUserDto as Record<string, unknown>;
+    const { password: _pw, ...allowedFields } = updateUserDto as Record<
+      string,
+      unknown
+    >;
     void _pw;
-    void _rl;
-    void _ri;
-    void _rc;
-    void _wb;
-    void _cb;
-    void _fc;
-    void _id;
 
     Object.assign(user, allowedFields);
     if (normalizedEmail !== undefined) {

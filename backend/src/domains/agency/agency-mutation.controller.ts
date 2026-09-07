@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -11,6 +10,11 @@ import {
 import { AgencyService } from './agency.service';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
+import {
+  ReparentCollectionDto,
+  SetCollectionStatusDto,
+  UpdateCollectionDto,
+} from './dto/collection-mutation.dto';
 
 @Controller('agency')
 export class AgencyMutationController {
@@ -30,16 +34,13 @@ export class AgencyMutationController {
   async setCollectionStatus(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body('is_active') isActive: boolean | string,
+    @Body() body: SetCollectionStatusDto,
   ) {
-    const active =
-      typeof isActive === 'string' ? isActive === 'true' : isActive;
-
-    if (typeof active !== 'boolean') {
-      throw new BadRequestException('is_active must be boolean');
-    }
-
-    return this.agencyService.setCollectionStatus(req.user.id, id, active);
+    return this.agencyService.setCollectionStatus(
+      req.user.id,
+      id,
+      body.is_active,
+    );
   }
 
   @Patch('collection/:id/reparent')
@@ -47,16 +48,12 @@ export class AgencyMutationController {
   async reparentCollection(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body('newParentNodeId') newParentNodeId: string,
+    @Body() body: ReparentCollectionDto,
   ) {
-    if (!newParentNodeId) {
-      throw new BadRequestException('newParentNodeId is required');
-    }
-
     return this.agencyService.reparentCollection(
       req.user.id,
       id,
-      newParentNodeId,
+      body.newParentNodeId,
     );
   }
 
@@ -65,15 +62,7 @@ export class AgencyMutationController {
   async updateCollection(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body()
-    body: {
-      markup_amount?: number;
-      private_notes?: string;
-      public_notes?: string;
-      markup_type?: string;
-      markup_value?: number;
-      alias?: string;
-    },
+    @Body() body: UpdateCollectionDto,
   ) {
     return this.agencyService.updateCollection(req.user.id, id, body);
   }

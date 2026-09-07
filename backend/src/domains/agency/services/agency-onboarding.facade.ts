@@ -12,7 +12,6 @@ type AgencyOnboardingContext = {
 };
 
 type CollectionOptions = {
-  markup_amount?: number;
   markup_type?: string;
   markup_value?: number;
   alias?: string;
@@ -104,7 +103,6 @@ export class AgencyOnboardingFacade {
     complianceSignature: string,
   ): CollectionOptions {
     return {
-      markup_amount: body.markup_amount,
       markup_type: body.markup_type,
       markup_value: body.markup_value,
       alias: body.alias,

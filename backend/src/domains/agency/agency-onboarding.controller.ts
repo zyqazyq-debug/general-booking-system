@@ -15,6 +15,10 @@ import type {
 } from '../../shared/common/types/auth-request.type';
 import { CreateAgencyNodeDto } from './dto/create-agency-node.dto';
 import { AgencyOnboardingFacade } from './services/agency-onboarding.facade';
+import {
+  ExecuteImportDto,
+  UpdateCollectionDto,
+} from './dto/collection-mutation.dto';
 
 @Controller('agency')
 export class AgencyOnboardingController {
@@ -60,12 +64,7 @@ export class AgencyOnboardingController {
   @UseGuards(JwtAuthGuard)
   async executeImport(
     @Request() req: AuthenticatedRequest,
-    @Body()
-    body: {
-      token: string;
-      force?: boolean;
-      import_as_child?: boolean;
-    },
+    @Body() body: ExecuteImportDto,
   ) {
     return this.agencyService.importCollection(req.user.id, body.token, {
       force_recreate_on_existing: Boolean(body.force),
@@ -78,15 +77,7 @@ export class AgencyOnboardingController {
   async importByCode(
     @Request() req: AuthenticatedRequest,
     @Param('code') code: string,
-    @Body()
-    body: {
-      markup_amount?: number;
-      markup_type?: string;
-      markup_value?: number;
-      alias?: string;
-      private_notes?: string;
-      public_notes?: string;
-    },
+    @Body() body: UpdateCollectionDto,
   ) {
     return this.agencyService.importCollection(req.user.id, code, body);
   }

@@ -39,13 +39,6 @@ export class CreateAgencyNodeDto {
   parentNodeId?: string;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0)
-  @ApiPropertyOptional({ type: Number, minimum: 0 })
-  markup_amount?: number;
-
-  @IsOptional()
   @IsString()
   @ApiPropertyOptional({ type: String })
   markup_type?: string;

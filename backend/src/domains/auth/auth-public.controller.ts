@@ -1,18 +1,11 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Logger,
-  Post,
-  UnauthorizedException,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Logger, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { CreateAuthUserDto } from './dto/create-auth-user.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { SocialIdentityProofDto } from './dto/social-identity-proof.dto';
-import type { TelegramAuthData } from './interfaces/telegram-validator.interface';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
+import { TelegramLoginDto } from './dto/telegram-login.dto';
+import { TelegramWebAppLoginDto } from './dto/telegram-webapp-login.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -55,14 +48,11 @@ export class AuthPublicController {
   }
 
   @Post('telegram')
-  async telegramLogin(
-    @Body() telegramData: TelegramAuthData,
-    @Body('deviceInfo') deviceInfo: Record<string, unknown>,
-  ) {
-    if (!telegramData) {
-      throw new UnauthorizedException('Telegram data required');
-    }
-    return this.authService.loginTelegram(telegramData, deviceInfo);
+  async telegramLogin(@Body() telegramData: TelegramLoginDto) {
+    return this.authService.loginTelegram(
+      telegramData,
+      telegramData.deviceInfo,
+    );
   }
 
   @Post('telegram/login-ticket')
@@ -71,13 +61,11 @@ export class AuthPublicController {
   }
 
   @Post('telegram/webapp-login')
-  async telegramWebAppLogin(@Body('initData') initData: string) {
+  async telegramWebAppLogin(@Body() body: TelegramWebAppLoginDto) {
+    const { initData } = body;
     this.logger.log(
       `[WebApp Login] Request received. Data length: ${initData?.length}`,
     );
-    if (!initData) {
-      throw new UnauthorizedException('initData required');
-    }
     try {
       const result = await this.authService.loginTelegramWebApp(initData);
       this.logger.log(

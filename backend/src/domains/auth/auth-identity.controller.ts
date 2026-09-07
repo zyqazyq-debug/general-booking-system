@@ -1,6 +1,5 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import type { ScanIdentityProvider } from './auth.types';
 import { MergeTelegramAccountDto } from './dto/merge-telegram-account.dto';
 import { IdentityBindDto } from './dto/identity-merge.dto';
 import {
@@ -10,6 +9,7 @@ import {
 import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
+import { IdentityUnbindDto } from './dto/identity-unbind.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -107,8 +107,8 @@ export class AuthIdentityController {
   @UseGuards(JwtAuthGuard)
   async unbindIdentity(
     @Req() req: AuthenticatedRequest,
-    @Body('provider') provider: ScanIdentityProvider,
+    @Body() body: IdentityUnbindDto,
   ) {
-    return this.authService.unbindIdentity(req.user.id, provider);
+    return this.authService.unbindIdentity(req.user.id, body.provider);
   }
 }

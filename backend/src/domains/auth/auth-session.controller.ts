@@ -10,6 +10,7 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { SendSmsCodeDto, VerifySmsLoginDto } from './dto/sms-auth.dto';
+import { RefreshTokenDto } from './dto/session-token.dto';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
@@ -32,23 +33,17 @@ export class AuthSessionController {
   }
 
   @Post('refresh')
-  async refresh(@Body('refresh_token') refreshToken: string) {
-    if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token required');
-    }
-    return this.authService.refresh(refreshToken);
+  async refresh(@Body() body: RefreshTokenDto) {
+    return this.authService.refresh(body.refresh_token);
   }
 
   @Post('logout')
   @UseGuards(JwtAuthGuard)
   async logout(
     @Request() req: AuthenticatedRequest,
-    @Body('refresh_token') refreshToken: string,
+    @Body() body: RefreshTokenDto,
   ) {
-    if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token required');
-    }
-    return this.authService.logout(req.user.id, refreshToken);
+    return this.authService.logout(req.user.id, body.refresh_token);
   }
 
   @Post('phone')

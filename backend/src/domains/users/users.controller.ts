@@ -20,11 +20,11 @@ import { JwtAuthGuard, Roles, RolesGuard } from '../auth';
 import { UserRole } from './entities/user.entity';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
 import { PaginationDto } from '../../shared/common/dto/pagination.dto';
-
-type ChangePasswordBody = {
-  oldPassword: string;
-  newPassword: string;
-};
+import {
+  AddUserRoleDto,
+  ChangePasswordDto,
+  CreateCreditPurchaseIntentDto,
+} from './dto/user-account-action.dto';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -36,8 +36,8 @@ export class UsersController {
   // For now, restrict to Admin role or maybe just block public access
   @Roles(...ADMIN_ROLES)
   @Post(':id/role')
-  addRole(@Param('id') id: string, @Body('role') role: string) {
-    return this.usersService.addRole(id, role);
+  addRole(@Param('id') id: string, @Body() body: AddUserRoleDto) {
+    return this.usersService.addRole(id, body.role);
   }
 
   @Roles(...ADMIN_ROLES)
@@ -70,21 +70,14 @@ export class UsersController {
       throw new ForbiddenException('You can only update your own profile');
     }
     // Prevent self-role escalation
-    if (updateUserDto.roles && !req.user.roles.includes(UserRole.ADMIN)) {
-      throw new ForbiddenException('Cannot update roles');
-    }
     return this.usersService.update(id, updateUserDto);
   }
 
   @Post('change-password')
   changePassword(
     @Request() req: AuthenticatedRequest,
-    @Body() body: ChangePasswordBody,
+    @Body() body: ChangePasswordDto,
   ) {
-    // Body: { oldPassword, newPassword }
-    if (!body.oldPassword || !body.newPassword) {
-      throw new ForbiddenException('Missing parameters');
-    }
     return this.usersService.changePassword(
       req.user.id,
       body.oldPassword,
@@ -95,11 +88,11 @@ export class UsersController {
   @Post('me/credit/purchase-intent')
   createCreditPurchaseIntent(
     @Request() req: AuthenticatedRequest,
-    @Body('required_credit') requiredCredit?: number,
+    @Body() body: CreateCreditPurchaseIntentDto,
   ) {
     return this.usersService.createCreditPurchaseIntent(
       req.user.id,
-      Number(requiredCredit || 0),
+      body.required_credit,
     );
   }
 
