@@ -130,6 +130,11 @@ export class ServicesService {
   }
 
   async update(id: string, updateServiceDto: UpdateServiceDto) {
+    if (Object.prototype.hasOwnProperty.call(updateServiceDto, 'owner_id')) {
+      throw new BadRequestException(
+        'Service owner cannot be changed through ordinary update',
+      );
+    }
     this.validateRules(updateServiceDto);
     const service = await this.findOne(id);
     if (!service) throw new NotFoundException('Service not found');
@@ -209,8 +214,24 @@ export class ServicesService {
     );
   }
 
-  async getAvailability(serviceId: string, startDate: string, endDate: string) {
-    return this.serviceAvailabilityService.getAvailability(
+  async getPublicAvailability(
+    serviceId: string,
+    startDate: string,
+    endDate: string,
+  ) {
+    return this.serviceAvailabilityService.getPublicAvailability(
+      serviceId,
+      startDate,
+      endDate,
+    );
+  }
+
+  async getManagementAvailability(
+    serviceId: string,
+    startDate: string,
+    endDate: string,
+  ) {
+    return this.serviceAvailabilityService.getManagementAvailability(
       serviceId,
       startDate,
       endDate,

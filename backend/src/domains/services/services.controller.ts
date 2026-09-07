@@ -121,21 +121,33 @@ export class ServicesController {
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
   ) {
-    if (!startDate || !endDate)
-      throw new BadRequestException('StartDate and EndDate required');
+    this.assertAvailabilityDateRange(startDate, endDate);
+    return this.servicesService.getPublicAvailability(id, startDate, endDate);
+  }
 
-    // Enforce hard limit on date range (max 90 days)
-    // This prevents abuse and potential memory/IO issues with massive queries
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    if (diffDays > 90) {
-      throw new BadRequestException('Date range cannot exceed 90 days');
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/availability/manage')
+  async getManagementAvailability(
+    @Param('id') id: string,
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    this.assertAvailabilityDateRange(startDate, endDate);
+    const service = await this.servicesService.findOne(id);
+    if (!service) {
+      throw new NotFoundException('Service not found');
     }
-
-    return this.servicesService.getAvailability(id, startDate, endDate);
+    if (service.owner_id !== req.user.id) {
+      throw new ForbiddenException(
+        'You can only inspect availability for your own services',
+      );
+    }
+    return this.servicesService.getManagementAvailability(
+      id,
+      startDate,
+      endDate,
+    );
   }
 
   @Get()
@@ -209,7 +221,7 @@ export class ServicesController {
   ) {
     const service = await this.servicesService.findOne(id);
     if (!service) throw new NotFoundException('Service not found');
-    if (service.owner_id !== req.user.id && !req.user.roles.includes('ADMIN')) {
+    if (service.owner_id !== req.user.id) {
       throw new ForbiddenException('You can only update your own services');
     }
     const result = await this.servicesService.update(id, updateServiceDto);
@@ -221,7 +233,7 @@ export class ServicesController {
   async remove(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     const service = await this.servicesService.findOne(id);
     if (!service) throw new NotFoundException('Service not found');
-    if (service.owner_id !== req.user.id && !req.user.roles.includes('ADMIN')) {
+    if (service.owner_id !== req.user.id) {
       throw new ForbiddenException('You can only delete your own services');
     }
     return this.servicesService.remove(id);
@@ -282,5 +294,27 @@ export class ServicesController {
     @Request() req: AuthenticatedRequest,
   ) {
     return this.servicesService.removeBlock(blockId, req.user.id);
+  }
+
+  private assertAvailabilityDateRange(startDate: string, endDate: string) {
+    if (!startDate || !endDate) {
+      throw new BadRequestException('StartDate and EndDate required');
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new BadRequestException('Invalid date format');
+    }
+    if (start > end) {
+      throw new BadRequestException('Start date must be before end date');
+    }
+
+    const diffDays = Math.ceil(
+      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
+    );
+    if (diffDays > 90) {
+      throw new BadRequestException('Date range cannot exceed 90 days');
+    }
   }
 }

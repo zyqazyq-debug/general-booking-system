@@ -124,5 +124,66 @@ describe('ServiceAvailabilityService', () => {
         });
       }
     });
+
+    it('removes all block annotations from the public projection', async () => {
+      jest.spyOn(service, 'getAvailability').mockResolvedValue({
+        rules: {
+          weekdays: [1, 2, 3, 4, 5],
+          start_hour: 9,
+          end_hour: 18,
+          duration_minutes: 60,
+          buffer_minutes: 15,
+        },
+        busy_slots: [
+          {
+            start: new Date('2030-01-01T09:00:00.000Z'),
+            end: '2030-01-01T10:15:00.000Z',
+          },
+        ],
+        blocks: [
+          {
+            id: 'block-1',
+            start: new Date('2030-01-01T12:00:00.000Z'),
+            end: new Date('2030-01-01T13:00:00.000Z'),
+            type: 'TIME_OFF',
+            reason: 'private reason',
+            description: 'private description',
+            notes: 'provider-only note',
+          },
+        ],
+      } as never);
+
+      const result = await service.getPublicAvailability(
+        'service-1',
+        '2030-01-01',
+        '2030-01-01',
+      );
+
+      expect(result).toEqual({
+        rules: {
+          weekdays: [1, 2, 3, 4, 5],
+          start_hour: 9,
+          end_hour: 18,
+          duration_minutes: 60,
+          buffer_minutes: 15,
+        },
+        busy_slots: [
+          {
+            start: '2030-01-01T09:00:00.000Z',
+            end: '2030-01-01T10:15:00.000Z',
+          },
+        ],
+        blocks: [
+          {
+            start: '2030-01-01T12:00:00.000Z',
+            end: '2030-01-01T13:00:00.000Z',
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('provider-only note');
+      expect(JSON.stringify(result)).not.toContain('private reason');
+      expect(JSON.stringify(result)).not.toContain('private description');
+      expect(JSON.stringify(result)).not.toContain('block-1');
+    });
   });
 });

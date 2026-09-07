@@ -13,6 +13,10 @@ import { Service } from './entities/service.entity';
 import { ServiceBlock } from './entities/service-block.entity';
 import { TimeSlotGenerator, type TimeSlot } from './utils/time-slot-generator';
 import type { ServiceRulesDto } from './dto/service-rules.dto';
+import type {
+  ManagementAvailabilityResponseDto,
+  PublicAvailabilityResponseDto,
+} from './dto/availability-response.dto';
 
 type OrderRecord = {
   owner_id: string;
@@ -155,14 +159,45 @@ export class ServiceAvailabilityService {
     return result;
   }
 
-  async getAvailability(serviceId: string, startDate: string, endDate: string) {
+  async getPublicAvailability(
+    serviceId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<PublicAvailabilityResponseDto> {
+    const snapshot = await this.getAvailability(serviceId, startDate, endDate);
+    const toWindow = (slot: { start: Date | string; end: Date | string }) => ({
+      start: new Date(slot.start).toISOString(),
+      end: new Date(slot.end).toISOString(),
+    });
+
+    return {
+      rules: snapshot.rules,
+      busy_slots: snapshot.busy_slots.map(toWindow),
+      blocks: snapshot.blocks.map(toWindow),
+    };
+  }
+
+  async getManagementAvailability(
+    serviceId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<ManagementAvailabilityResponseDto> {
+    return this.getAvailability(serviceId, startDate, endDate);
+  }
+
+  async getAvailability(
+    serviceId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<ManagementAvailabilityResponseDto> {
     const version = await this.getServiceVersion(serviceId);
     // Round dates to hour or day to increase cache hit rate?
     // No, users might query arbitrary ranges.
     // But typically frontend queries by month or week.
     const cacheKey = `avail:${serviceId}:${startDate}:${endDate}:${version}`;
 
-    const cached = await this.cacheManager.get(cacheKey);
+    const cached =
+      await this.cacheManager.get<ManagementAvailabilityResponseDto>(cacheKey);
     if (cached) {
       return cached;
     }
