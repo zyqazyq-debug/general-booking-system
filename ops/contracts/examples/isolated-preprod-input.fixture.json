@@ -1,0 +1,56 @@
+{
+  "schema": "booking.g4-isolated-preprod-input/v1",
+  "environment": {
+    "name": "booking-preprod",
+    "tier": "preprod",
+    "externalChangesAuthorized": false
+  },
+  "nas": {
+    "projectRoot": "/srv/fixture/booking-preprod",
+    "dataRoot": "/srv/fixture/booking-preprod-data",
+    "secretRoot": "/srv/fixture/booking-preprod-secrets"
+  },
+  "networks": {
+    "edge": "booking-preprod-edge",
+    "data": "booking-preprod-data"
+  },
+  "release": {
+    "manifestPath": "/srv/fixture/booking-preprod/.g4/release-manifest.json",
+    "manifestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "backendImageDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "gatewayImageDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "probes": {
+    "candidate": { "slot": "green", "baseUrl": "http://booking-preprod-green.fixture.test:8080" },
+    "ingress": { "baseUrl": "https://booking-preprod.fixture.test" },
+    "paths": { "live": "/livez", "ready": "/readyz", "version": "/__ops/version" }
+  },
+  "edge": {
+    "stableOriginRef": "edge:booking-preprod",
+    "activeUpstreamPath": "/srv/fixture/booking-preprod/.g4/edge/active.conf",
+    "candidateUpstreamRef": "gateway-green"
+  },
+  "telegram": {
+    "fixtureBotIdentityRef": "fixture:booking-preprod-g4",
+    "webhookPath": "/telegram/webhook",
+    "deliveryReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/telegram-duplicate.json"
+  },
+  "database": {
+    "armedGateReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/database-armed.json",
+    "backupReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/database-backup.json",
+    "restoreReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/database-restore.json"
+  },
+  "lease": {
+    "activeSlot": "blue",
+    "candidateSlot": "green",
+    "expectedGeneration": 18,
+    "expectedFencingEpoch": 42,
+    "candidateWorkersEnabled": false,
+    "switchReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/lease-switch.json"
+  },
+  "rollback": {
+    "windowMinutes": 30,
+    "previousReleaseManifestPath": "/srv/fixture/booking-preprod/.g4/previous-release-manifest.json",
+    "observationReceiptPath": "/srv/fixture/booking-preprod/.g4/receipts/rollback-observation.json"
+  }
+}

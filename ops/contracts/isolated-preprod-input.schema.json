@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/isolated-preprod-input.schema.json",
+  "title": "HappyBooking G4 isolated pre-production input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "nas", "networks", "release", "probes", "edge", "telegram", "database", "lease", "rollback"],
+  "properties": {
+    "schema": { "const": "booking.g4-isolated-preprod-input/v1" },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "tier", "externalChangesAuthorized"],
+      "properties": {
+        "name": { "const": "booking-preprod" },
+        "tier": { "const": "preprod" },
+        "externalChangesAuthorized": { "const": false }
+      }
+    },
+    "nas": { "$ref": "#/$defs/nas" },
+    "networks": { "$ref": "#/$defs/networks" },
+    "release": { "$ref": "#/$defs/release" },
+    "probes": { "$ref": "#/$defs/probes" },
+    "edge": { "$ref": "#/$defs/edge" },
+    "telegram": { "$ref": "#/$defs/telegram" },
+    "database": { "$ref": "#/$defs/database" },
+    "lease": { "$ref": "#/$defs/lease" },
+    "rollback": { "$ref": "#/$defs/rollback" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/[^\\0]*$" },
+    "receiptPath": { "type": "string", "pattern": "^/[^\\0]*\\.json$" },
+    "nas": {
+      "type": "object", "additionalProperties": false,
+      "required": ["projectRoot", "dataRoot", "secretRoot"],
+      "properties": {
+        "projectRoot": { "$ref": "#/$defs/absolutePath" },
+        "dataRoot": { "$ref": "#/$defs/absolutePath" },
+        "secretRoot": { "$ref": "#/$defs/absolutePath" }
+      }
+    },
+    "networks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["edge", "data"],
+      "properties": {
+        "edge": { "type": "string", "pattern": "^booking-preprod-[a-z0-9-]+$" },
+        "data": { "type": "string", "pattern": "^booking-preprod-[a-z0-9-]+$" }
+      }
+    },
+    "release": {
+      "type": "object", "additionalProperties": false,
+      "required": ["manifestPath", "manifestDigest", "backendImageDigest", "gatewayImageDigest"],
+      "properties": {
+        "manifestPath": { "$ref": "#/$defs/absolutePath" },
+        "manifestDigest": { "$ref": "#/$defs/digest" },
+        "backendImageDigest": { "$ref": "#/$defs/digest" },
+        "gatewayImageDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate", "ingress", "paths"],
+      "properties": {
+        "candidate": {
+          "type": "object", "additionalProperties": false, "required": ["slot", "baseUrl"],
+          "properties": { "slot": { "enum": ["blue", "green"] }, "baseUrl": { "$ref": "#/$defs/httpUrl" } }
+        },
+        "ingress": { "type": "object", "additionalProperties": false, "required": ["baseUrl"], "properties": { "baseUrl": { "$ref": "#/$defs/httpsUrl" } } },
+        "paths": {
+          "type": "object", "additionalProperties": false, "required": ["live", "ready", "version"],
+          "properties": {
+            "live": { "const": "/livez" }, "ready": { "const": "/readyz" }, "version": { "const": "/__ops/version" }
+          }
+        }
+      }
+    },
+    "httpUrl": { "type": "string", "pattern": "^https?://[^/@?#]+(?::[0-9]{1,5})?$" },
+    "httpsUrl": { "type": "string", "pattern": "^https://[^/@?#]+(?::[0-9]{1,5})?$" },
+    "edge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableOriginRef", "activeUpstreamPath", "candidateUpstreamRef"],
+      "properties": {
+        "stableOriginRef": { "type": "string", "pattern": "^edge:booking-preprod$" },
+        "activeUpstreamPath": { "$ref": "#/$defs/absolutePath" },
+        "candidateUpstreamRef": { "enum": ["gateway-blue", "gateway-green"] }
+      }
+    },
+    "telegram": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixtureBotIdentityRef", "webhookPath", "deliveryReceiptPath"],
+      "properties": {
+        "fixtureBotIdentityRef": { "type": "string", "pattern": "^fixture:[a-z0-9-]+$" },
+        "webhookPath": { "const": "/telegram/webhook" },
+        "deliveryReceiptPath": { "$ref": "#/$defs/receiptPath" }
+      }
+    },
+    "database": {
+      "type": "object", "additionalProperties": false,
+      "required": ["armedGateReceiptPath", "backupReceiptPath", "restoreReceiptPath"],
+      "properties": {
+        "armedGateReceiptPath": { "$ref": "#/$defs/receiptPath" },
+        "backupReceiptPath": { "$ref": "#/$defs/receiptPath" },
+        "restoreReceiptPath": { "$ref": "#/$defs/receiptPath" }
+      }
+    },
+    "lease": {
+      "type": "object", "additionalProperties": false,
+      "required": ["activeSlot", "candidateSlot", "expectedGeneration", "expectedFencingEpoch", "candidateWorkersEnabled", "switchReceiptPath"],
+      "properties": {
+        "activeSlot": { "enum": ["blue", "green"] }, "candidateSlot": { "enum": ["blue", "green"] },
+        "expectedGeneration": { "type": "integer", "minimum": 0 }, "expectedFencingEpoch": { "type": "integer", "minimum": 1 },
+        "candidateWorkersEnabled": { "const": false }, "switchReceiptPath": { "$ref": "#/$defs/receiptPath" }
+      }
+    },
+    "rollback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["windowMinutes", "previousReleaseManifestPath", "observationReceiptPath"],
+      "properties": {
+        "windowMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "previousReleaseManifestPath": { "$ref": "#/$defs/absolutePath" },
+        "observationReceiptPath": { "$ref": "#/$defs/receiptPath" }
+      }
+    }
+  }
+}
