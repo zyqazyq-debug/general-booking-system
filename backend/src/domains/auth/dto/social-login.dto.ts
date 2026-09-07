@@ -6,6 +6,7 @@ import {
   IsString,
   MaxLength,
 } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum SocialProvider {
   WECHAT = 'wechat',
@@ -21,19 +22,23 @@ export enum SocialProvider {
 
 export class SocialLoginDto {
   @IsEnum(SocialProvider)
+  @ApiProperty({ enum: SocialProvider, enumName: 'SocialProvider' })
   provider: SocialProvider;
 
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
+  @ApiProperty({ type: String, maxLength: 255 })
   auth_code: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(255)
+  @ApiPropertyOptional({ type: String, maxLength: 255 })
   redirect_uri?: string;
 
   @IsOptional()
   @IsObject()
+  @ApiPropertyOptional({ type: 'object', additionalProperties: true })
   extra?: Record<string, unknown>;
 }
