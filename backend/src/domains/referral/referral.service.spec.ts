@@ -1,5 +1,5 @@
 import type { Repository } from 'typeorm';
-import type { PaymentSettledEvent } from '../payment/events/payment-settled.event';
+import type { VerifiedPaymentEvent } from './contracts/verified-payment-event';
 import type { ReferralLog } from './entities/referral-log.entity';
 import type {
   ReferralRewardPostingCommand,
@@ -25,7 +25,7 @@ describe('ReferralService payment event boundary', () => {
       find: jest.fn().mockResolvedValue([]),
     } as unknown as Repository<ReferralLog>;
     const service = new ReferralService(logsRepository, postingPort);
-    const event: PaymentSettledEvent = {
+    const event: VerifiedPaymentEvent = {
       eventVersion: 1,
       paymentEventId: 'payment-event-1',
       transactionId: 'transaction-1',

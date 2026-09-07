@@ -16,7 +16,7 @@ import {
 import { IsIn, IsInt, IsNotEmpty, IsPositive, IsString } from 'class-validator';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
 import { JwtAuthGuard } from '../auth';
-import { PaymentChannel, PaymentPurpose } from '../payment/payment.types';
+import { ReferralPaymentPurpose } from './contracts/verified-payment-event';
 import { ReferralService } from './referral.service';
 
 export class SimulatePaymentDto {
@@ -67,10 +67,10 @@ export class ReferralTestController {
       payerUserId: req.user.id,
       orderNo: `test:${body.paymentEventId}`,
       tradeNo: `test:${body.paymentEventId}`,
-      channel: PaymentChannel.WECHAT,
+      channel: 'wechat',
       amountMinor: body.amountMinor,
       currency: body.currency,
-      purpose: PaymentPurpose.SOFTWARE_FEE,
+      purpose: ReferralPaymentPurpose.SOFTWARE_FEE,
       occurredAt: new Date().toISOString(),
     });
   }

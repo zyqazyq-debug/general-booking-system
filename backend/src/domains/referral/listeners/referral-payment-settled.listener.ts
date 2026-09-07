@@ -1,17 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
-  PAYMENT_SETTLED_EVENT,
-  type PaymentSettledEvent,
-} from '../../payment/events/payment-settled.event';
+  REFERRAL_PAYMENT_SETTLED_EVENT,
+  type VerifiedPaymentEvent,
+} from '../contracts/verified-payment-event';
 import { ReferralService } from '../referral.service';
 
 @Injectable()
 export class ReferralPaymentSettledListener {
   constructor(private readonly referralService: ReferralService) {}
 
-  @OnEvent(PAYMENT_SETTLED_EVENT)
-  handle(event: PaymentSettledEvent) {
+  @OnEvent(REFERRAL_PAYMENT_SETTLED_EVENT)
+  handle(event: VerifiedPaymentEvent) {
     return this.referralService.handlePaymentSettled(event);
   }
 }

@@ -8,8 +8,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import type { PaymentSettledEvent } from '../payment/events/payment-settled.event';
-import { PaymentPurpose } from '../payment/payment.types';
+import {
+  ReferralPaymentPurpose,
+  type VerifiedPaymentEvent,
+} from './contracts/verified-payment-event';
 import { ReferralLog } from './entities/referral-log.entity';
 import {
   REFERRAL_REWARD_POSTING_PORT,
@@ -28,8 +30,8 @@ export class ReferralService {
     private readonly rewardPostingPort?: ReferralRewardPostingPort,
   ) {}
 
-  async handlePaymentSettled(event: PaymentSettledEvent) {
-    if (event.purpose !== PaymentPurpose.SOFTWARE_FEE) {
+  async handlePaymentSettled(event: VerifiedPaymentEvent) {
+    if (event.purpose !== ReferralPaymentPurpose.SOFTWARE_FEE) {
       return { ignored: true, reason: 'payment-purpose-not-eligible' };
     }
 
