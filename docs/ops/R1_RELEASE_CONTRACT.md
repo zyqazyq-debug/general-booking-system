@@ -71,3 +71,16 @@ Every transition must compare the expected generation. R2/R3 must combine a NAS 
 Missing files, malformed JSON, mutable image tags, dirty source identity, secret-like manifest fields, wildcard edge defaults, exposed data ports, wrong webhook path, stale deployment generation, timeouts, non-200 probes, and release identity mismatches all produce non-zero results.
 
 R1 tools are read-only. No switch/restart/rollback command exists in this phase.
+
+## Legacy entrypoints
+
+The historical `ops/deploy-prod.ps1` and `tools/ops/deploy-prod.ps1` scripts
+previously copied assets and used `docker cp` to overwrite a running backend.
+They are parser-safe, local fail-closed stubs and exit `80`; no SSH, NAS,
+Docker, or container command remains in either implementation. The historical
+stop scripts are also disabled because stopping the entire data and application
+stack is not a release or a rollback.
+
+The only future production path is an approved executor for the
+`booking.release/v1` contract. R1 intentionally does not implement that
+executor.

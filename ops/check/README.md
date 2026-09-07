@@ -18,3 +18,5 @@ node ops/check/probe-ingress.mjs --base-url <public-url> --manifest <manifest> -
 All commands are read-only. They emit one `booking.gate-result/v1` JSON object and return non-zero on uncertainty, identity mismatch, timeout, or malformed input.
 
 `probe-ingress` validates that the declared Telegram webhook path is exactly `/telegram/webhook`, but deliberately does not invoke it. A real webhook smoke requires an R2 test fixture, secret-token validation, persistent `update_id` idempotency, and explicit authorization.
+
+The legacy `deploy-prod.ps1` and `stop-prod.ps1` entrypoints are intentionally local fail-closed stubs. They exit `80` and never invoke SSH, Docker, NAS, or container commands. The R1 suite tests this invariant.

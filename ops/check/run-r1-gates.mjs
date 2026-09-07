@@ -39,7 +39,11 @@ const gates = [
   },
   {
     name: 'R1 tests',
-    args: ['--test', resolve(root, 'ops/check/r1-contracts.test.mjs')],
+    args: [
+      '--test',
+      resolve(root, 'ops/check/r1-contracts.test.mjs'),
+      resolve(root, 'ops/check/legacy-production-entrypoints.test.mjs'),
+    ],
   },
 ];
 
