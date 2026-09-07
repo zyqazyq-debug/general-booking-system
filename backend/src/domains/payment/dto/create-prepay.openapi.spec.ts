@@ -1,11 +1,12 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
+import request from 'supertest';
 import { PaymentController } from '../payment.controller';
 import { PaymentService } from '../payment.service';
 import { PaymentChannel } from '../payment.types';
 
 describe('CreatePrepayDto OpenAPI contract', () => {
-  it('documents constrained payment request properties on the real endpoint', async () => {
+  it('serves constrained payment request properties from /api-json', async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [PaymentController],
       providers: [{ provide: PaymentService, useValue: {} }],
@@ -18,8 +19,14 @@ describe('CreatePrepayDto OpenAPI contract', () => {
         app,
         new DocumentBuilder().setTitle('Payment DTO harness').build(),
       );
-      const schema = document.components?.schemas?.CreatePrepayDto;
+      SwaggerModule.setup('api', app, document);
+      const response = await request(app.getHttpServer()).get('/api-json');
+      const schema = response.body.components?.schemas?.CreatePrepayDto;
 
+      expect(response.status).toBe(200);
+      expect(
+        response.body.paths['/payment/prepay']?.post?.requestBody,
+      ).toBeDefined();
       expect(schema).toMatchObject({
         type: 'object',
         required: ['channel', 'order_no', 'amount', 'subject'],

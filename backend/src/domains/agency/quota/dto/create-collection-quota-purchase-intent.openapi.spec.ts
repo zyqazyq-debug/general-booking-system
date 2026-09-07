@@ -1,11 +1,12 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
+import request from 'supertest';
 import { PaymentChannel } from '../../../payment/payment.types';
 import { CollectionQuotaController } from '../collection-quota.controller';
 import { CollectionQuotaService } from '../collection-quota.service';
 
 describe('CreateCollectionQuotaPurchaseIntentDto OpenAPI contract', () => {
-  it('documents constrained quota purchase properties on the real endpoint', async () => {
+  it('serves constrained quota purchase properties from /api-json', async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CollectionQuotaController],
       providers: [{ provide: CollectionQuotaService, useValue: {} }],
@@ -18,9 +19,17 @@ describe('CreateCollectionQuotaPurchaseIntentDto OpenAPI contract', () => {
         app,
         new DocumentBuilder().setTitle('Quota DTO harness').build(),
       );
+      SwaggerModule.setup('api', app, document);
+      const response = await request(app.getHttpServer()).get('/api-json');
       const schema =
-        document.components?.schemas?.CreateCollectionQuotaPurchaseIntentDto;
+        response.body.components?.schemas
+          ?.CreateCollectionQuotaPurchaseIntentDto;
 
+      expect(response.status).toBe(200);
+      expect(
+        response.body.paths['/agency/collection-quota/purchase-intent']?.post
+          ?.requestBody,
+      ).toBeDefined();
       expect(schema).toMatchObject({
         type: 'object',
         required: ['extra_slots'],
