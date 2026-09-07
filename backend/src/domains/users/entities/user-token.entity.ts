@@ -38,7 +38,7 @@ export class UserToken {
   @Column({ nullable: true })
   last_active_at: Date;
 
-  @Column({ nullable: true })
+  @Column({ type: Date, nullable: true })
   revoked_at: Date | null;
 
   @CreateDateColumn()
