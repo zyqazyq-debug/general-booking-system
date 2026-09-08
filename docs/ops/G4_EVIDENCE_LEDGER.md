@@ -98,6 +98,18 @@ G2/G3 commits that move `sqlite3` to test-only dependencies and add typed
 OpenAPI release-probe schemas. It neither deploys nor validates those commits,
 does not add public ingress, and does not advance G4 acceptance.
 
+## 2026-09-09 next-candidate local artifact receipt
+
+Against clean Git `fc2dd28fcf1a59c0a486c5e51ddb3f1a6871fbe2`, local release
+tools generated source-bound SBOM inputs for the next candidate: backend
+`sha256:e6b9629337dc5578bdd1dae3dcfaa9dda139c62a17f2a4a19804976297e0502e`
+and gateway
+`sha256:ba6f9e9e78f7829274ab1049f29b18c9294123df8b648670dbb81a10ff7196cf`.
+No image digest, provenance, or release manifest was generated because the
+latest source has not been built into immutable images. This is an intentional
+fail-closed boundary: SBOM preparation is not an image, deploy, runtime probe,
+or G4 acceptance receipt.
+
 ## 2026-09-09 Cloudflare preprod read-only audit
 
 The existing healthy `happybooking` Tunnel is a shared route boundary, not a
