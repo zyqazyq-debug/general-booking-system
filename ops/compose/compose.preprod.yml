@@ -64,7 +64,9 @@ services:
       TELEGRAM_ENABLE_WEBHOOK: "false"
       TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
     read_only: true
-    tmpfs: [/tmp]
+    # The backend's optional Telegram traffic logger needs a writable path.
+    # Keep it ephemeral so the candidate root filesystem remains read-only.
+    tmpfs: [/tmp, /app/logs]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     networks: [preprod-edge, preprod-data]
