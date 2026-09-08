@@ -1,0 +1,111 @@
+name: booking-preprod
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      POSTGRES_DB: booking_preprod
+      POSTGRES_USER: booking_preprod
+    volumes:
+      - ${BOOKING_PREPROD_DATA_ROOT:?set isolated data root}/postgres:/var/lib/postgresql/data
+    networks: [preprod-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_preprod -d booking_preprod"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set isolated Redis password}"]
+    volumes:
+      - ${BOOKING_PREPROD_DATA_ROOT:?set isolated data root}/redis:/data
+    networks: [preprod-data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  backend-green:
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
+      BOOKING_SLOT: green
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      TELEGRAM_BOT_MODE: polling
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-edge, preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  gateway-green:
+    image: ${BOOKING_GATEWAY_IMAGE:?set local gateway image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../..
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BOOKING_CANDIDATE_PORT:?set candidate port}:8080"
+    environment:
+      BOOKING_BACKEND_UPSTREAM: backend-green:3001
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      preprod-edge:
+        aliases: [gateway-green]
+    depends_on:
+      backend-green:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+networks:
+  preprod-edge:
+    name: booking-preprod-edge
+  preprod-data:
+    name: booking-preprod-data
