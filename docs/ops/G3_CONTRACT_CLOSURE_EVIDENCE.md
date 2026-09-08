@@ -17,29 +17,29 @@ Owner: Main scheduler (contract and release-gate owner).
 ## Evidence limits and open items
 
 - These are local engineering results. No real user data, NAS container, Cloudflare/Tunnel configuration, DNS, Telegram bot, database, Redis, or external ingress was contacted or changed.
-- Runtime dependency security is **not passed**. A compatibility-only
-  `npm audit fix --prefix backend --package-lock-only --omit=dev` was applied,
-  followed by a clean install and the full quality gate. A fresh
-  `npm audit --prefix backend --omit=dev --json` found 48 vulnerabilities:
-  1 critical, 8 high, 37 moderate, and 2 low. The unused direct `sqlite3`
-  package was then removed after confirming that runtime data sources are
-  PostgreSQL-only; its removal passed the backend build and targeted tests.
-  The lockfile was then pruned and reinstalled cleanly, removing stale
-  `tar`/`node-gyp` entries that were no longer reachable from production
-  dependencies. The final publish-scope audit is 41 vulnerabilities: 0
-  critical, 4 high, 37 moderate, and 0 low. The four high findings are the
-  AdminJS editor/deprecated terser chain; resolving them requires an AdminJS
-  major upgrade. Those remaining findings require compatibility tests and a
-  fresh runtime-image audit before G5 can be considered; they are not silently
-  included in the compatibility lock update.
-- The compatible lockfile remediation is committed locally, but is **not yet
+- Runtime dependency security is locally **passed**, not yet runtime-image
+  verified. A compatibility-only `npm audit fix --prefix backend
+  --package-lock-only --omit=dev` was applied, then the unused direct
+  `sqlite3` package was removed after confirming runtime data sources are
+  PostgreSQL-only. The remaining AdminJS editor chain is a development-only
+  administration panel: `AppModule` now loads it dynamically only outside
+  production and test modes, and its packages are declared in
+  `devDependencies`. A production-module regression test proves the panel
+  cannot load in production. Finally, direct `uuid` is pinned to `13.0.1`.
+  A clean development install, targeted tests, backend build, and fresh
+  `npm audit --prefix backend --omit=dev --json` all pass; the latter reports
+  0 critical, 0 high, 0 moderate, and 0 low findings. `npm ls --omit=dev`
+  also excludes every AdminJS package from the publish dependency graph.
+  This is source/lockfile evidence only; it still requires a freshly built,
+  scanned runtime image before it becomes G4 or G5 evidence.
+- The runtime dependency remediation is committed locally, but is **not yet
   deployed** to `booking-preprod`. The NAS legacy Docker builder completed the
   new image's dependency-install command but remained idle while committing
   the next layer for more than 14 minutes despite 8.4 TB free storage; that
   isolated build was stopped before it produced an image. The currently
   running preprod candidate therefore remains the earlier release and cannot
-  be used as runtime evidence for the new dependency audit. An alternate
-  reproducible image-build path is required before the security remediation
+  be used as runtime-image evidence for the clean production audit. An
+  alternate reproducible image-build path is required before this remediation
   can enter G4. The NAS reports Docker 24 on the Btrfs storage driver and has
   no `docker buildx` command installed; do not install a builder plugin or
   restart Docker without explicit infrastructure authorization.

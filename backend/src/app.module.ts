@@ -28,7 +28,7 @@ import { CalendarSyncModule } from './domains/calendar-sync/runtime';
 import { SystemConfigModule } from './domains/system-config/runtime';
 import { GlobalCacheModule } from './shared/common/cache/global-cache.module';
 import { TasksModule } from './platforms/tasks';
-import { AdminModule, AdminPanelModule } from './domains/admin/runtime';
+import { AdminModule } from './domains/admin/admin.module';
 import { LinkModule } from './domains/link/runtime';
 import { validateEnv } from './config/env.validation';
 import { AppThrottlerGuard } from './shared/common/guards/app-throttler.guard';
@@ -87,6 +87,12 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
+  // Keep the optional AdminJS panel out of the production module graph. Its
+  // development-only dependencies are deliberately omitted from the runtime
+  // image, while the API-facing AdminModule remains available in every mode.
+  const { AdminPanelModule } =
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('./domains/admin/panel/admin-panel.module') as typeof import('./domains/admin/panel/admin-panel.module');
   imports.push(AdminPanelModule);
 }
 
