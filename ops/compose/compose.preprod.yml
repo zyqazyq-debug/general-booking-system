@@ -49,12 +49,12 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_USER: booking_preprod
       POSTGRES_DB: booking_preprod
-        REDIS_HOST: redis
-        REDIS_PORT: 6379
-        # This must stay on the loopback-only candidate listener; it is only
-        # required to construct Telegram UI links and does not enable the bot.
-        H5_URL: ${BOOKING_PREPROD_H5_URL:?set isolated preprod H5 URL}
-        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # This must stay on the loopback-only candidate listener; it is only
+      # required to construct Telegram UI links and does not enable the bot.
+      H5_URL: ${BOOKING_PREPROD_H5_URL:?set isolated preprod H5 URL}
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
       BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
       BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
       BOOKING_SLOT: green
