@@ -1,7 +1,8 @@
 # G4 isolated-preproduction evidence ledger
 
-Status: isolated candidate is deployed and has passed NAS-loopback probes;
-G4 remains pending because no public-preprod ingress, fixture-Telegram,
+Status: isolated candidate is deployed and healthy at HTTP level, but its
+release-probe response contract failed. G4 remains pending because of that
+failure and because no public-preprod ingress, fixture-Telegram,
 backup/restore, lease/switch, or rollback rehearsal evidence exists.
 
 Owner: Booking NAS/Cloudflare release owner. Approval owner: main scheduler.
@@ -41,7 +42,7 @@ only. It does not authorize or evidence a production release.
 | Candidate identity | `booking-20260908T173556Z-f460ae8c2092`; Git `f460ae8c2092f831b36aba903deb00b6fcc04be5`; manifest `sha256:8aa8a9e88234689019560938a7c8c9ba6e9c1d5c7b290e3a6255b44b17866140` | PASS |
 | Artifact binding | Local immutable-artifact generation and recomputation passed. Backend image `sha256:4b040c8dd1120c9897bff9daf59202566a2d2cca6f468e4758763c5ab8944d50`; gateway image `sha256:edc4f7b447272bd683700e04860caf8d5314fef9b9ab17be41752a37e566fc66` | PASS |
 | Isolation | `booking-preprod` project; `booking-preprod-edge` and `booking-preprod-data`; only `127.0.0.1:18082` is published | PASS |
-| Candidate probes | NAS loopback GETs to `/livez`, `/readyz`, and `/__ops/version` each returned HTTP 200. Version payload matched the candidate identity and `slot=green` | PASS, loopback only |
+| Candidate probes | NAS loopback GETs to `/livez`, `/readyz`, and `/__ops/version` each returned HTTP 200. Version payload matched the candidate identity and `slot=green`; however the release gate requires bare top-level contract fields and the deployed candidate returned the normal API envelope. | PARTIAL: HTTP only, not contract pass |
 | Gateway boundary | Image runs as UID 101 (`nginx`), root filesystem is read-only, and the committed preprod config is a read-only bind mount. The gateway is connected only to the edge network. | PASS |
 | Side effects | Backend reports `BOOKING_RUNTIME_ROLE=standby`, `BOOKING_WORKERS_ENABLED=false`, `TELEGRAM_ENABLE_WEBHOOK=false`, and no polling webhook deletion | PASS |
 
@@ -49,6 +50,23 @@ The source archive recorded for this candidate was
 `sha256:cf178e735c0413da417cb1e2b9be4b92c999419c541c529939b554bc8d6b4ecd`.
 The manifest is retained under the isolated project's `.g4/artifacts` path;
 no secret contents are included in this ledger.
+
+## 2026-09-09 release-probe contract finding
+
+The project `probe-slot` gate was run from the isolated backend over
+`booking-preprod-edge` against `gateway-green:8080`. All three checks failed
+with `STATUS_MISMATCH`: the deployed candidate returned the generic API
+envelope rather than the release contract's top-level `status`, `releaseId`,
+and `slot` fields. This is a real G4 failure even though the HTTP status was
+200.
+
+Commit `158b0e60520d1bd9472d9c07d5b47f8edf43098f` adds a narrowly scoped
+raw-response marker for those three release endpoints and passed its four
+targeted controller tests plus the backend build locally. It is **not deployed**:
+the NAS legacy Docker builder remained internally blocked after the compile
+step and was deliberately stopped before it produced a tagged image. The
+currently deployed candidate therefore remains
+`booking-20260908T173556Z-f460ae8c2092` and G4 is not accepted.
 
 ## Required real G4 input and evidence
 
