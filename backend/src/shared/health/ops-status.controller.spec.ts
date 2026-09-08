@@ -1,5 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { OpsStatusController } from './ops-status.controller';
+import { RAW_RESPONSE_METADATA } from '../common/decorators/raw-response.decorator';
 
 describe('OpsStatusController', () => {
   const config = (values: Record<string, string>) => ({
@@ -11,7 +12,13 @@ describe('OpsStatusController', () => {
       config({}) as any,
       { isInitialized: false } as any,
     );
-    expect(controller.live()).toEqual({ status: 'live' });
+    expect(controller.live()).toEqual({
+      status: 'up',
+      releaseId: 'unbound',
+      gitSha: 'unbound',
+      manifestDigest: 'unbound',
+      slot: 'unbound',
+    });
   });
 
   it('requires an initialized database for readiness', async () => {
@@ -35,10 +42,21 @@ describe('OpsStatusController', () => {
       { isInitialized: true, query: jest.fn() } as any,
     );
     expect(controller.version()).toEqual({
+      status: 'up',
       releaseId: 'booking-test',
       gitSha: 'abc123',
       manifestDigest: 'sha256:manifest',
       slot: 'green',
     });
+  });
+
+  it('marks release gate endpoints as raw transport contracts', () => {
+    for (const handler of [
+      OpsStatusController.prototype.live,
+      OpsStatusController.prototype.ready,
+      OpsStatusController.prototype.version,
+    ]) {
+      expect(Reflect.getMetadata(RAW_RESPONSE_METADATA, handler)).toBe(true);
+    }
   });
 });
