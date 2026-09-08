@@ -68,15 +68,17 @@ function rejectSecretFields(value, path = 'manifest') {
 }
 
 function validateImageArtifact(value, path, gateway = false) {
-  const required = ['image', 'digest', 'sbomDigest'];
+  const required = ['image', 'digest', 'sbomDigest', 'provenanceDigest'];
   if (gateway) required.push('frontendAssetDigest', 'routeContractDigest');
   exactKeys(value, required, required, path);
   const image = requireString(value.image, `${path}.image`);
-  if (image === 'latest' || image.endsWith(':latest') || image.includes('@')) {
+  const finalSegment = image.slice(image.lastIndexOf('/') + 1);
+  if (image === 'latest' || image.endsWith(':latest') || image.includes('@') || image.includes('registry.example.invalid') || finalSegment.includes(':')) {
     throw new ContractError(`${path}.image must be a repository without tag or digest`, EXIT.IDENTITY);
   }
   requireDigest(value.digest, `${path}.digest`);
   requireDigest(value.sbomDigest, `${path}.sbomDigest`);
+  requireDigest(value.provenanceDigest, `${path}.provenanceDigest`);
   if (gateway) {
     requireDigest(value.frontendAssetDigest, `${path}.frontendAssetDigest`);
     requireDigest(value.routeContractDigest, `${path}.routeContractDigest`);
@@ -98,12 +100,17 @@ export function validateReleaseManifest(value) {
   validateImageArtifact(value.artifacts.backend, 'manifest.artifacts.backend');
   validateImageArtifact(value.artifacts.gateway, 'manifest.artifacts.gateway', true);
 
-  const contractKeys = ['configSchema', 'apiVersion', 'frontendCompatibleApi', 'migrationExpandFloor', 'rollbackCompatibleRelease'];
+  const contractKeys = ['configSchema', 'apiVersion', 'frontendCompatibleApi', 'migration', 'rollbackCompatibleRelease'];
   exactKeys(value.contracts, contractKeys, contractKeys, 'manifest.contracts');
   requireString(value.contracts.configSchema, 'manifest.contracts.configSchema', /^booking\.config\/v[1-9][0-9]*$/);
   requireString(value.contracts.apiVersion, 'manifest.contracts.apiVersion', /^v[1-9][0-9]*$/);
   requireString(value.contracts.frontendCompatibleApi, 'manifest.contracts.frontendCompatibleApi', /^v[1-9][0-9]*$/);
-  requireString(value.contracts.migrationExpandFloor, 'manifest.contracts.migrationExpandFloor');
+  exactKeys(value.contracts.migration, ['expandFloor', 'catalogDigest', 'compatibility'], ['expandFloor', 'catalogDigest', 'compatibility'], 'manifest.contracts.migration');
+  requireString(value.contracts.migration.expandFloor, 'manifest.contracts.migration.expandFloor', /^[0-9]{10,}-[A-Za-z0-9][A-Za-z0-9-]*$/);
+  requireDigest(value.contracts.migration.catalogDigest, 'manifest.contracts.migration.catalogDigest');
+  if (value.contracts.migration.compatibility !== 'expand-contract') {
+    throw new ContractError('manifest.contracts.migration.compatibility is invalid');
+  }
   if (value.contracts.rollbackCompatibleRelease !== null) {
     requireString(value.contracts.rollbackCompatibleRelease, 'manifest.contracts.rollbackCompatibleRelease', RELEASE_ID);
   }
@@ -120,6 +127,9 @@ export function validateReleaseManifest(value) {
   }
   if (value.probes.live === value.probes.ready) {
     throw new ContractError('liveness and readiness paths must be distinct');
+  }
+  if (value.probes.live !== '/livez' || value.probes.ready !== '/readyz' || value.probes.version !== '/__ops/version') {
+    throw new ContractError('manifest probe paths must use the immutable release probe contract');
   }
   return value;
 }

@@ -149,3 +149,13 @@ export class ClientDebugLogDto {
   @IsBoolean()
   fallbackToWindowOpen?: boolean;
 }
+
+/**
+ * The diagnostics endpoint acknowledges accepted client telemetry with this
+ * exact envelope. Keep this separate from the request DTO so Swagger records
+ * the 201 body the controller actually emits.
+ */
+export class ClientDebugLogResponseDto {
+  @ApiProperty({ type: 'boolean', example: true })
+  success: boolean;
+}

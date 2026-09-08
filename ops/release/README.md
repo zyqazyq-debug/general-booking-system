@@ -17,3 +17,9 @@ Exit codes:
 | 80 | rollback failure or rollback forbidden |
 
 Future mutating commands must require all of `--execute`, `--approval-id`, `--expected-generation`, and `--manifest-digest`. Dry-run remains the default. No such command is implemented in R1.
+
+## Local immutable-artifact gate
+
+`generate-sbom.mjs`, `generate-provenance.mjs`, and `generate-manifest.mjs` are local-only: they do not build or push images, and all refuse a dirty Git worktree. Generate artifact files outside the repository (otherwise their untracked files intentionally make the gate fail). The manifest binds the checked-out Git SHA, immutable backend/gateway image digests, both SBOM and SLSA-style provenance document digests, an H5 directory digest, `pages.json` route-contract digest, migration catalog digest, and the fixed probe paths.
+
+Use an immutable image repository (no tag, digest supplied separately); placeholder registries and mutable tags are rejected. `validate-artifacts.mjs` recomputes every local binding from the same inputs and rejects drift. A passing local gate is evidence of reproducible inputs only; it is not an image push, registry attestation, deployment, or live probe.

@@ -62,6 +62,8 @@ services:
     <<: *gateway-common
     profiles: ["blue"]
     image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_BLUE_GATEWAY_DIGEST:?set blue gateway digest}
+    environment:
+      BOOKING_BACKEND_UPSTREAM: backend-blue:3001
     networks:
       prod-edge:
         aliases: [gateway-blue]
@@ -93,6 +95,8 @@ services:
     <<: *gateway-common
     profiles: ["green"]
     image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_GREEN_GATEWAY_DIGEST:?set green gateway digest}
+    environment:
+      BOOKING_BACKEND_UPSTREAM: backend-green:3001
     networks:
       prod-edge:
         aliases: [gateway-green]

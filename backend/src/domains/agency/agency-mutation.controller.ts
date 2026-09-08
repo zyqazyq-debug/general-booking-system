@@ -15,6 +15,8 @@ import {
   SetCollectionStatusDto,
   UpdateCollectionDto,
 } from './dto/collection-mutation.dto';
+import { ApiOkResponse } from '@nestjs/swagger';
+import { AgencyNodeEnvelopeDto, RemoveCollectionEnvelopeDto } from './dto/agency-response.dto';
 
 @Controller('agency')
 export class AgencyMutationController {
@@ -22,6 +24,7 @@ export class AgencyMutationController {
 
   @Delete('collection/:id')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: RemoveCollectionEnvelopeDto })
   async removeFromCollection(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -31,6 +34,7 @@ export class AgencyMutationController {
 
   @Patch('collection/:id/status')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: AgencyNodeEnvelopeDto })
   async setCollectionStatus(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -45,6 +49,7 @@ export class AgencyMutationController {
 
   @Patch('collection/:id/reparent')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: AgencyNodeEnvelopeDto })
   async reparentCollection(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
@@ -59,6 +64,7 @@ export class AgencyMutationController {
 
   @Patch('collection/:id')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: AgencyNodeEnvelopeDto })
   async updateCollection(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,

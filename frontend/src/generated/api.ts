@@ -4,6 +4,918 @@
  */
 
 export interface paths {
+    "/api/debug/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AppController_clientLog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/r/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AppController_handleReferral"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AppController_handleShareSlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["UsersController_addRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["UsersController_findAll"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["UsersController_getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["UsersController_findOne"];
+        put?: never;
+        post?: never;
+        delete: operations["UsersController_remove"];
+        options?: never;
+        head?: never;
+        patch: operations["UsersController_update"];
+        trace?: never;
+    };
+    "/api/users/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["UsersController_changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/me/credit/purchase-intent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["UsersController_createCreditPurchaseIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/wechat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_wechatLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/qq": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_qqLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/social/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AuthPublicController_getSocialProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/social/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_socialLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/telegram": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_telegramLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/telegram/login-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_getTelegramLoginTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/telegram/webapp-login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_telegramWebAppLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/phone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_phoneLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sms/send-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_sendSmsCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/sms/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthSessionController_smsLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/telegram/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_mergeTelegramAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/phone/bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_bindPhone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/account/merge-by-phone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_mergeByPhone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/identity/bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_bindIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/identity/merge-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_mergeByIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/identity/scan/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_startIdentityScan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/identity/scan/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_checkIdentityScanStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/identity/unbind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthIdentityController_unbindIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ServicesController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/my": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_findMyServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ServicesController_ensureShareSlug"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}/slots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_getAvailableSlots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}/available-slots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_getAvailableSlotsAlias"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_getAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}/availability/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_getManagementAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_findOne"];
+        put?: never;
+        post?: never;
+        delete: operations["ServicesController_remove"];
+        options?: never;
+        head?: never;
+        patch: operations["ServicesController_update"];
+        trace?: never;
+    };
+    "/api/services/{id}/deactivate-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_checkDeactivate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/blocks/global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ServicesController_getGlobalBlocks"];
+        put?: never;
+        post: operations["ServicesController_addGlobalBlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/blocks/global/{blockId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["ServicesController_removeGlobalBlock"];
+        options?: never;
+        head?: never;
+        patch: operations["ServicesController_updateGlobalBlock"];
+        trace?: never;
+    };
+    "/api/services/{id}/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ServicesController_addBlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/blocks/{blockId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["ServicesController_removeBlock"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["OrderController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/my": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OrderController_findMyOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OrderController_findOwnerOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/credit-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OrderController_getCreditSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/credit-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OrderController_checkCredit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["OrderController_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["OrderController_complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/{id}/no-show": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["OrderController_noShow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["OrderController_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/order/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OrderController_findOne"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/payment/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["PaymentController_getChannels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/payment/prepay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["PaymentController_createPrepay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/payment/{channel}/{orderNo}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["PaymentController_getStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -11,8 +923,366 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read the public health snapshot */
-        get: operations["getHealth"];
+        /**
+         * 系统健康检查
+         * @description 检查数据库、内存和磁盘状态
+         */
+        get: operations["HealthController_check"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/collection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyCollectionController_getMyCollection"];
+        put?: never;
+        post: operations["AgencyOnboardingController_addToCollection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/collection/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyCollectionController_getCollectionAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/nodes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyCollectionController_getNodeById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/collection/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["AgencyMutationController_removeFromCollection"];
+        options?: never;
+        head?: never;
+        patch: operations["AgencyMutationController_updateCollection"];
+        trace?: never;
+    };
+    "/api/agency/collection/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["AgencyMutationController_setCollectionStatus"];
+        trace?: never;
+    };
+    "/api/agency/collection/{id}/reparent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["AgencyMutationController_reparentCollection"];
+        trace?: never;
+    };
+    "/api/agency/slug/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyPublicReadController_resolveBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/s/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyPublicReadController_resolveByShortSlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AgencyOnboardingController_createNode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/import/check/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AgencyOnboardingController_preCheckImport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/import/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AgencyOnboardingController_executeImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/import/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AgencyOnboardingController_importByCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/collection-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["CollectionQuotaController_getQuota"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agency/collection-quota/purchase-intent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["CollectionQuotaController_createPurchaseIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/referral/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get referral logs for the current user */
+        get: operations["ReferralController_getMyLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AdminController_findAllUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AdminController_findAllServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AdminController_findAllOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/collections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["AdminController_findAllCollections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{id}/credit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AdminController_adjustCredit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar-sync/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview events from an ICS URL */
+        get: operations["CalendarSyncController_preview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/link/resolve/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve a referral or shared-booking link */
+        get: operations["LinkController_resolve"];
         put?: never;
         post?: never;
         delete?: never;
@@ -25,24 +1295,1590 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        HealthSnapshot: {
-            /** @description Aggregate Terminus health state. */
-            status: string;
-            info: components["schemas"]["HealthIndicatorMap"];
-            error: components["schemas"]["HealthIndicatorMap"];
-            details: components["schemas"]["HealthIndicatorMap"];
-        };
-        HealthIndicatorMap: {
-            [key: string]: components["schemas"]["HealthIndicator"];
-        };
-        HealthIndicator: {
-            /** @enum {string} */
-            status: "up" | "down";
+        ClientDebugLogDto: {
+            event: string;
+            url?: string;
+            hasToken?: boolean;
+            isWaiting?: boolean;
             message?: string;
+            stack?: string;
+            filename?: string;
+            lineno?: number;
+            colno?: number;
+            total_reads?: number;
+            new_field_reads?: number;
+            legacy_field_reads?: number;
+            legacy_ratio?: number;
+            by_scene?: {
+                [key: string]: {
+                    newFieldRead: number;
+                    legacyFieldRead: number;
+                };
+            };
+            scene?: string;
+            hasBotDeepLink?: boolean;
+            shareLinkLength?: number;
+            runtimeHost?: string;
+            method?: string;
+            fallbackToWebApp?: boolean;
+            fallbackToWindowOpen?: boolean;
+        };
+        ClientDebugLogResponseDto: {
+            /** @example true */
+            success: boolean;
+        };
+        AddUserRoleDto: {
+            role: string;
+        };
+        /** @enum {string} */
+        UserStatus: "ACTIVE" | "MERGED" | "DISABLED";
+        UserResponseDataDto: {
+            /** Format: uuid */
+            id: string;
+            username: string;
+            status: components["schemas"]["UserStatus"];
+            /** Format: int32 */
+            auth_version: number;
+            /** Format: uuid */
+            merged_into_id: string | null;
+            locale: string | null;
+            roles: string[];
+            referral_code: string | null;
+            nickname: string | null;
+            avatar: string | null;
+            is_verified: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        UserRoleAssignmentResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["UserResponseDataDto"];
+        };
+        UserListMetaDto: {
+            /** Format: int32 */
+            total: number;
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            limit: number;
+            /** Format: int32 */
+            totalPages: number;
+        };
+        UserListResponseDataDto: {
+            data: components["schemas"]["UserResponseDataDto"][];
+            meta: components["schemas"]["UserListMetaDto"];
+        };
+        UserListResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["UserListResponseDataDto"];
+        };
+        UserResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["UserResponseDataDto"] | null;
+        };
+        UpdateUserDto: {
             username?: string;
-            id?: number;
-        } & {
-            [key: string]: unknown;
+            /** Format: password */
+            password?: string;
+            locale?: string;
+            /** Format: email */
+            email?: string;
+        };
+        ChangePasswordDto: {
+            /** Format: password */
+            oldPassword: string;
+            /** Format: password */
+            newPassword: string;
+        };
+        UserPasswordChangeResponseDataDto: {
+            /**
+             * @example true
+             * @enum {number}
+             */
+            success: true;
+        };
+        UserPasswordChangeResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["UserPasswordChangeResponseDataDto"];
+        };
+        CreateCreditPurchaseIntentDto: {
+            /** Format: int32 */
+            required_credit?: number;
+        };
+        CreditPurchaseIntentResponseDataDto: {
+            /** @enum {string} */
+            status: "PENDING_INTEGRATION";
+            /** Format: uuid */
+            user_id: string;
+            /** Format: int32 */
+            required_credit: number;
+            suggested_packages: number[];
+            /** Format: uri */
+            purchase_url: string | null;
+            /** @enum {string} */
+            message: "Credit purchase API placeholder";
+        };
+        CreditPurchaseIntentResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["CreditPurchaseIntentResponseDataDto"];
+        };
+        UserDeleteResponseDataDto: {
+            /** Format: int32 */
+            affected: number | null;
+        };
+        UserDeleteResponseDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["UserDeleteResponseDataDto"];
+        };
+        ApiSuccessEnvelopeDto: {
+            /** @enum {number} */
+            code: 0;
+            /** @enum {string} */
+            message: "OK";
+        };
+        AuthLoginUserResponseDto: {
+            id: string;
+            username: string;
+            referral_code: string;
+            email: string;
+            roles: string[];
+            wallet_balance: number;
+            credit_balance: number;
+            frozen_credit: number;
+        };
+        AuthLoginResponseDto: {
+            access_token: string;
+            refresh_token: string;
+            user: components["schemas"]["AuthLoginUserResponseDto"];
+        };
+        CreateAuthUserDto: {
+            username: string;
+            /** Format: password */
+            password: string;
+            locale?: string;
+            referral_code?: string;
+            /** Format: email */
+            email?: string;
+        };
+        SocialIdentityProofDto: {
+            proof: string;
+            deviceInfo?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @enum {string} */
+        SocialProvider: "wechat" | "qq" | "telegram" | "weibo" | "douyin" | "xiaohongshu" | "facebook" | "google" | "apple";
+        SocialProviderResponseDto: {
+            provider: components["schemas"]["SocialProvider"];
+            /** @enum {string} */
+            status: "ready" | "reserved";
+        };
+        ReservedSocialLoginResponseDto: {
+            /** @enum {string} */
+            status: "reserved";
+            provider: components["schemas"]["SocialProvider"];
+            auth_code: string;
+            message: string;
+        };
+        SocialLoginDto: {
+            provider: components["schemas"]["SocialProvider"];
+            auth_code: string;
+            redirect_uri?: string;
+            extra?: {
+                [key: string]: unknown;
+            };
+        };
+        TelegramLoginDto: {
+            /** Format: int64 */
+            id: number;
+            first_name: string;
+            last_name?: string;
+            username?: string;
+            photo_url?: string;
+            /**
+             * Format: int64
+             * @description Unix timestamp supplied by Telegram.
+             */
+            auth_date: number;
+            /** @description Telegram login signature. */
+            hash: string;
+            deviceInfo?: {
+                [key: string]: unknown;
+            };
+        };
+        TelegramLoginTicketResponseDto: {
+            ticket_id: string;
+            bot_url: string;
+            expires_in: number;
+        };
+        TelegramWebAppLoginDto: {
+            /** @description Signed initData payload supplied by Telegram Web Apps. */
+            initData: string;
+        };
+        LoginDto: {
+            username: string;
+            /** Format: password */
+            password: string;
+            deviceInfo?: {
+                [key: string]: unknown;
+            };
+        };
+        AuthTokenPairResponseDto: {
+            access_token: string;
+            refresh_token: string;
+        };
+        RefreshTokenDto: {
+            /** @description Refresh token issued by a prior login response. */
+            refresh_token: string;
+        };
+        LogoutResponseDto: {
+            /** @enum {number} */
+            success: true;
+        };
+        VerifySmsLoginDto: {
+            /**
+             * Format: phone
+             * @description Mainland China mobile phone number
+             */
+            phone: string;
+            code: string;
+            deviceInfo?: {
+                [key: string]: unknown;
+            };
+        };
+        ReservedSmsCodeResponseDto: {
+            /** @enum {string} */
+            status: "reserved";
+            /** Format: phone */
+            phone: string;
+            scene: string;
+            message: string;
+        };
+        SendSmsCodeDto: {
+            /**
+             * Format: phone
+             * @description Mainland China mobile phone number
+             */
+            phone: string;
+            scene?: string;
+        };
+        MergeTelegramAccountDto: {
+            /**
+             * Format: phone
+             * @description Mainland China mobile phone number
+             */
+            phone: string;
+            code: string;
+        };
+        IdentityBoundResponseDto: {
+            access_token: string;
+            refresh_token: string;
+            user: components["schemas"]["AuthLoginUserResponseDto"];
+            /** @enum {string} */
+            status: "bound";
+        };
+        IdentityMergeRequiredResponseDto: {
+            /** @enum {string} */
+            status: "merge_required";
+            /** @enum {string} */
+            provider: "phone" | "wechat" | "qq" | "telegram";
+        };
+        IdentityBindDto: {
+            /** @enum {string} */
+            provider: "phone" | "wechat" | "qq" | "telegram";
+            /** @description Required only when provider is phone. */
+            identity?: string;
+            /** @description Required only when provider is phone. */
+            code?: string;
+            /** @description Required only when provider is wechat, qq, or telegram; raw identity is not accepted. */
+            proof?: string;
+        };
+        TelegramScanExtraResponseDto: {
+            bot_username: string;
+            bot_name: string;
+        };
+        TelegramIdentityScanStartResponseDto: {
+            /** @enum {string} */
+            status: "ready";
+            /** @enum {string} */
+            provider: "telegram";
+            ticket_id: string;
+            qr_url: string;
+            expires_in: number;
+            message: string;
+            extra: components["schemas"]["TelegramScanExtraResponseDto"];
+        };
+        ReservedIdentityScanStartResponseDto: {
+            /** @enum {string} */
+            status: "reserved";
+            user_id: string;
+            /** @enum {string} */
+            provider: "wechat" | "qq";
+            ticket_id: string;
+            qr_url: string;
+            expires_in: number;
+            message: string;
+        };
+        IdentityScanStartDto: {
+            /** @enum {string} */
+            provider: "wechat" | "qq" | "telegram";
+        };
+        IdentityScanPendingResponseDto: {
+            /** @enum {string} */
+            status: "pending" | "expired";
+            ticket_id: string;
+            message: string;
+        };
+        IdentityScanSuccessResponseDto: {
+            access_token: string;
+            refresh_token: string;
+            user: components["schemas"]["AuthLoginUserResponseDto"];
+            /** @enum {string} */
+            status: "success";
+            ticket_id: string;
+            message: string;
+        };
+        IdentityScanStatusDto: {
+            ticket_id: string;
+        };
+        IdentityUnbindResponseDto: {
+            /** @enum {string} */
+            status: "success";
+            message: string;
+        };
+        IdentityUnbindDto: {
+            /** @enum {string} */
+            provider: "wechat" | "qq" | "telegram";
+        };
+        AvailabilityRulesResponseDto: {
+            weekdays: number[];
+            start_hour?: number;
+            end_hour?: number;
+            duration_minutes: number;
+            buffer_minutes: number;
+        };
+        AvailabilityWindowDto: {
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+        };
+        /** @enum {string} */
+        ServiceBlockType: "TIME_OFF" | "HOLIDAY" | "MAINTENANCE";
+        ManagementAvailabilityBlockDto: {
+            id: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            type: components["schemas"]["ServiceBlockType"];
+            reason: string | null;
+            description: string | null;
+            notes: string | null;
+        };
+        ManagementAvailabilityWindowDto: {
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+        };
+        ManagementAvailabilityResponseDto: {
+            rules: components["schemas"]["AvailabilityRulesResponseDto"];
+            busy_slots: components["schemas"]["ManagementAvailabilityWindowDto"][];
+            blocks: components["schemas"]["ManagementAvailabilityBlockDto"][];
+        };
+        PublicAvailabilityResponseDto: {
+            rules: components["schemas"]["AvailabilityRulesResponseDto"];
+            busy_slots: components["schemas"]["AvailabilityWindowDto"][];
+            blocks: components["schemas"]["AvailabilityWindowDto"][];
+        };
+        DeactivateCheckResponseDto: {
+            allow: boolean;
+            message: string;
+            pending_orders: number;
+        };
+        GlobalServiceBlockResponseDto: {
+            id: string;
+            type: components["schemas"]["ServiceBlockType"];
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            reason: string | null;
+            description: string | null;
+            notes: string | null;
+            block_count: number;
+            service_count: number;
+            total_service_count: number;
+            is_global: boolean;
+        };
+        DeletedCountResponseDto: {
+            deleted_count: number;
+        };
+        MyServiceResponseDto: {
+            id: string;
+            title: string;
+            base_price: number;
+            deposit_points: number;
+            duration_minutes: number;
+            is_active: boolean;
+            /** Format: date-time */
+            created_at: string;
+            description: string | null;
+            share_slug: string;
+        };
+        PaginationMetaResponseDto: {
+            total: number;
+            page: number;
+            limit: number;
+            totalPages: number;
+        };
+        MyServicesPageResponseDto: {
+            data: components["schemas"]["MyServiceResponseDto"][];
+            meta: components["schemas"]["PaginationMetaResponseDto"];
+        };
+        ServiceBlockResponseDto: {
+            id: string;
+            service_id: string;
+            type: components["schemas"]["ServiceBlockType"];
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            reason: string | null;
+            description: string | null;
+            notes: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        ServiceCancellationPolicyResponseDto: {
+            /** @enum {string} */
+            type: "flexible" | "moderate" | "strict" | "custom";
+            window_minutes: number;
+            penalty_percent: number;
+        };
+        ServiceLocationResponseDto: {
+            name: string;
+            address: string;
+            latitude: number;
+            longitude: number;
+        };
+        ServiceOwnerResponseDto: {
+            id: string;
+            username: string;
+            status: string;
+            auth_version: number;
+            merged_into_id: string | null;
+            locale: string | null;
+            roles: string[];
+            referral_code: string | null;
+            nickname: string | null;
+            avatar: string | null;
+            is_verified: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ServiceRulesDto: {
+            start_hour: number;
+            end_hour: number;
+            weekdays?: number[];
+        };
+        ServiceResponseDto: {
+            id: string;
+            owner_id: string;
+            resource_template_id: string | null;
+            owner?: components["schemas"]["ServiceOwnerResponseDto"];
+            title: string;
+            base_price: number;
+            deposit_points: number;
+            duration_minutes: number;
+            buffer_minutes: number;
+            is_active: boolean;
+            is_deleted: boolean;
+            description: string | null;
+            original_notes: string | null;
+            rules: components["schemas"]["ServiceRulesDto"] | null;
+            cancellation_policy: components["schemas"]["ServiceCancellationPolicyResponseDto"] | null;
+            index_weekdays: number[] | null;
+            index_start_hour: number | null;
+            index_end_hour: number | null;
+            location: components["schemas"]["ServiceLocationResponseDto"] | null;
+            metadata: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ServiceShareResponseDto: {
+            share_slug: string;
+            agency_node_id: string;
+        };
+        TimeSlotResponseDto: {
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            /** @enum {string} */
+            status: "available" | "booked";
+        };
+        UpdatedCountResponseDto: {
+            updated_count: number;
+        };
+        CancellationPolicyDto: {
+            penalty_percent: number;
+            window_minutes: number;
+        };
+        CreateServiceDto: {
+            resource_template_id?: string;
+            title: string;
+            base_price: number;
+            deposit_points: number;
+            duration_minutes?: number;
+            buffer_minutes?: number;
+            is_active?: boolean;
+            description?: string;
+            original_notes?: string;
+            rules?: components["schemas"]["ServiceRulesDto"];
+            cancellation_policy?: components["schemas"]["CancellationPolicyDto"];
+            location?: {
+                [key: string]: unknown;
+            };
+            /** @description Optional service metadata. Values must be supplied as a JSON object; arbitrary keys are supported. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        UpdateServiceDto: {
+            resource_template_id?: string;
+            title?: string;
+            base_price?: number;
+            deposit_points?: number;
+            duration_minutes?: number;
+            buffer_minutes?: number;
+            is_active?: boolean;
+            description?: string;
+            original_notes?: string;
+            rules?: components["schemas"]["ServiceRulesDto"];
+            cancellation_policy?: components["schemas"]["CancellationPolicyDto"];
+            location?: {
+                [key: string]: unknown;
+            };
+            /** @description Optional service metadata. Values must be supplied as a JSON object; arbitrary keys are supported. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        CreateServiceBlockDto: {
+            /** @enum {string} */
+            type: "TIME_OFF" | "HOLIDAY" | "MAINTENANCE";
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            reason?: string;
+            description?: string;
+            notes?: string;
+        };
+        UpdateServiceBlockDto: {
+            /** @enum {string} */
+            type?: "TIME_OFF" | "HOLIDAY" | "MAINTENANCE";
+            /** Format: date-time */
+            start_time?: string;
+            /** Format: date-time */
+            end_time?: string;
+            reason?: string;
+            description?: string;
+            notes?: string;
+        };
+        OrderServiceSnapshotResponseDto: {
+            title?: string;
+            description?: string;
+            duration_minutes: number;
+            base_price: number;
+            provider_base_price?: number;
+            cost_price?: number;
+            sale_price?: number;
+            owner_name?: string;
+        };
+        OrderMetadataResponseDto: {
+            completed_by?: string;
+            /** Format: date-time */
+            completed_at?: string;
+            /** @enum {string} */
+            completed_role?: "PROVIDER" | "SYSTEM";
+            auto_completed?: boolean;
+            forfeited_by?: string;
+            /** Format: date-time */
+            forfeited_at?: string;
+            forfeit_grace_minutes?: number;
+            cancelled_by?: string;
+            /** Format: date-time */
+            cancelled_at?: string;
+            cancellation_reason?: string;
+            /** @enum {string} */
+            cancelled_role?: "CONSUMER" | "PROVIDER";
+            penalty_amount?: number;
+            refund_amount?: number;
+        };
+        OrderResponseDto: {
+            /** Format: uuid */
+            id: string;
+            order_no: string;
+            /** Format: uuid */
+            consumer_id: string;
+            /** Format: uuid */
+            owner_id: string;
+            /** Format: uuid */
+            service_id?: string | null;
+            /** Format: uuid */
+            agency_node_id?: string | null;
+            service_snapshot?: components["schemas"]["OrderServiceSnapshotResponseDto"] | null;
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            /** @enum {string} */
+            status: "PENDING" | "RESERVED" | "COMPLETED" | "CANCELLED" | "FORFEITED" | "DISPUTED";
+            frozen_points: number;
+            display_price_snapshot: number;
+            metadata?: components["schemas"]["OrderMetadataResponseDto"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        OrderCommissionResponseDto: {
+            cost_price: number;
+            markup_amount: number;
+            final_price: number;
+            level: number;
+            child_agent_id?: string | null;
+        };
+        OrderCommissionByRoleResponseDto: {
+            PROVIDER?: components["schemas"]["OrderCommissionResponseDto"];
+            AGENT?: components["schemas"]["OrderCommissionResponseDto"];
+        };
+        OrderWithRolesResponseDto: {
+            /** Format: uuid */
+            id: string;
+            order_no: string;
+            /** Format: uuid */
+            consumer_id: string;
+            /** Format: uuid */
+            owner_id: string;
+            /** Format: uuid */
+            service_id?: string | null;
+            /** Format: uuid */
+            agency_node_id?: string | null;
+            service_snapshot?: components["schemas"]["OrderServiceSnapshotResponseDto"] | null;
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            /** @enum {string} */
+            status: "PENDING" | "RESERVED" | "COMPLETED" | "CANCELLED" | "FORFEITED" | "DISPUTED";
+            frozen_points: number;
+            display_price_snapshot: number;
+            metadata?: components["schemas"]["OrderMetadataResponseDto"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            roles: ("CONSUMER" | "PROVIDER" | "AGENT")[];
+            commission: components["schemas"]["OrderCommissionByRoleResponseDto"];
+        };
+        OrderPageMetaResponseDto: {
+            total: number;
+            page: number;
+            limit: number;
+            totalPages: number;
+        };
+        MyOrdersResponseDto: {
+            data: components["schemas"]["OrderWithRolesResponseDto"][];
+            meta: components["schemas"]["OrderPageMetaResponseDto"];
+        };
+        ManagedOrdersResponseDto: {
+            data: components["schemas"]["OrderResponseDto"][];
+            meta: components["schemas"]["OrderPageMetaResponseDto"];
+        };
+        CreditSummaryResponseDto: {
+            available_credit: number;
+            frozen_total: number;
+            active_reserved_orders: number;
+            credit_total: number;
+            purchase_endpoint: string;
+        };
+        CreditCheckResponseDto: {
+            can_book: boolean;
+            required_credit: number;
+            available_credit: number;
+            shortfall: number;
+            purchase_endpoint: string;
+        };
+        OrderContextPartyResponseDto: {
+            id: string;
+            nickname: string;
+            /** @enum {string} */
+            role: "CONSUMER" | "PROVIDER" | "AGENT";
+        };
+        OrderContextCommissionResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order_id: string;
+            /** Format: uuid */
+            agent_id: string;
+            /** @enum {string} */
+            role: "PROVIDER" | "AGENT";
+            cost_price: number;
+            markup_amount: number;
+            snapshot_markup_type?: string | null;
+            snapshot_markup_value?: number | null;
+            final_price: number;
+            /** Format: uuid */
+            child_agent_id?: string | null;
+            level: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        OrderContextInfoResponseDto: {
+            upstream?: components["schemas"]["OrderContextPartyResponseDto"] | null;
+            downstream?: components["schemas"]["OrderContextPartyResponseDto"] | null;
+            commission?: components["schemas"]["OrderContextCommissionResponseDto"] | null;
+        };
+        OrderContextResponseDto: {
+            /** Format: uuid */
+            id: string;
+            order_no: string;
+            /** Format: uuid */
+            consumer_id: string;
+            /** Format: uuid */
+            owner_id: string;
+            /** Format: uuid */
+            service_id?: string | null;
+            /** Format: uuid */
+            agency_node_id?: string | null;
+            service_snapshot?: components["schemas"]["OrderServiceSnapshotResponseDto"] | null;
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            /** @enum {string} */
+            status: "PENDING" | "RESERVED" | "COMPLETED" | "CANCELLED" | "FORFEITED" | "DISPUTED";
+            frozen_points: number;
+            display_price_snapshot: number;
+            metadata?: components["schemas"]["OrderMetadataResponseDto"] | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** @enum {string|null} */
+            context_role?: "CONSUMER" | "PROVIDER" | "AGENT" | null;
+            context_info: components["schemas"]["OrderContextInfoResponseDto"];
+        };
+        OrderCreatedResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["OrderResponseDto"];
+        };
+        MyOrdersResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["MyOrdersResponseDto"];
+        };
+        ManagedOrdersResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["ManagedOrdersResponseDto"];
+        };
+        CreditSummaryResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["CreditSummaryResponseDto"];
+        };
+        CreditCheckResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["CreditCheckResponseDto"];
+        };
+        OrderContextResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["OrderContextResponseDto"];
+        };
+        CreateOrderDto: {
+            /** @description Service to book. */
+            service_id: string;
+            /** @description Optional agency node used to attribute the booking source. */
+            agency_node_id?: string;
+            /**
+             * Format: date-time
+             * @description Appointment start time in ISO 8601 date-time format.
+             */
+            start_time: string;
+            /**
+             * Format: date-time
+             * @description Appointment end time in ISO 8601 date-time format.
+             */
+            end_time: string;
+        };
+        CancelOrderDto: {
+            /** @description Optional reason supplied by the consumer or provider. */
+            reason?: string;
+        };
+        PaymentChannelAvailabilityResponseDto: {
+            /**
+             * @example wechat
+             * @enum {string}
+             */
+            channel: "wechat" | "alipay";
+            /** @example 微信支付 */
+            label: string;
+            /**
+             * @example active
+             * @enum {string}
+             */
+            status: "active" | "unavailable";
+        };
+        PaymentChannelAvailabilityResponseEnvelopeDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["PaymentChannelAvailabilityResponseDto"][];
+        };
+        CreatePrepayDto: {
+            /**
+             * @description Payment provider channel.
+             * @example wechat
+             * @enum {string}
+             */
+            channel: "wechat" | "alipay";
+            /**
+             * @description Merchant order number, unique per payment transaction.
+             * @example quota_20260907_abc123
+             */
+            order_no: string;
+            /**
+             * Format: double
+             * @description Positive CNY amount, with at most two decimal places.
+             * @example 12.5
+             */
+            amount: number;
+            /**
+             * @description Customer-visible payment subject.
+             * @example Collection quota expansion
+             */
+            subject: string;
+            /**
+             * Format: uri
+             * @description Optional client return URL after payment.
+             * @example https://app.example.com/payment/return
+             */
+            return_url?: string;
+            /**
+             * Format: uri
+             * @description Optional provider callback URL.
+             * @example https://api.example.com/api/payment/notify/wechat
+             */
+            notify_url?: string;
+            /**
+             * @description Optional opaque payment metadata.
+             * @example {
+             *       "business_type": "collection_quota"
+             *     }
+             */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        CreatePrepayResponseDto: {
+            /** Format: uuid */
+            transaction_id: string;
+            order_no: string;
+            /** Format: int32 */
+            amount_minor: number;
+            /**
+             * @example CNY
+             * @enum {string}
+             */
+            currency: "CNY";
+            /** @example true */
+            success: true;
+            prepay_id?: string;
+            payment_url?: string;
+            qr_code?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+            error_message?: string;
+        };
+        CreatePrepayResponseEnvelopeDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["CreatePrepayResponseDto"];
+        };
+        PaymentStatusResponseDto: {
+            order_no: string;
+            /** @enum {string} */
+            status: "pending" | "success" | "failed" | "cancelled";
+            trade_no?: string;
+            /** Format: uuid */
+            payment_event_id?: string;
+        };
+        PaymentStatusResponseEnvelopeDto: {
+            /**
+             * @example 0
+             * @enum {number}
+             */
+            code: 0;
+            /**
+             * @example OK
+             * @enum {string}
+             */
+            message: "OK";
+            data: components["schemas"]["PaymentStatusResponseDto"];
+        };
+        AgencyServiceOwnerResponseDto: {
+            id: string;
+            nickname?: string | null;
+            avatar?: string | null;
+        };
+        AgencyServiceSnapshotResponseDto: {
+            id: string;
+            title: string;
+            base_price: number;
+            provider_base_price?: number;
+            cost_price?: number;
+            sale_price?: number;
+            is_active: boolean;
+            duration_minutes: number;
+            deposit_points?: number;
+            buffer_minutes?: number;
+            rules?: {
+                [key: string]: unknown;
+            };
+            original_notes?: string;
+            description?: string;
+            owner?: components["schemas"]["AgencyServiceOwnerResponseDto"];
+        };
+        AgencyUserResponseDto: {
+            id: string;
+            nickname?: string | null;
+            avatar?: string | null;
+        };
+        AgencyParentNodeResponseDto: {
+            id: string;
+            alias?: string | null;
+            inherited_name?: string | null;
+            status: string;
+        };
+        AgencyNodeResponseDto: {
+            id: string;
+            node_type: string;
+            parent_node_id: string | null;
+            service_id: string;
+            agent_id: string;
+            markup_amount: number;
+            cache_cost_price: number;
+            cache_total_price: number;
+            markup_type: string;
+            markup_value: number;
+            alias: string | null;
+            inherited_name: string | null;
+            private_notes: string | null;
+            public_notes: string | null;
+            compliance_content: string | null;
+            compliance_signature: string | null;
+            share_slug: string;
+            status: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            service?: components["schemas"]["AgencyServiceSnapshotResponseDto"];
+            agent?: components["schemas"]["AgencyUserResponseDto"];
+            parent_node?: components["schemas"]["AgencyParentNodeResponseDto"];
+        };
+        AgencyCollectionEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AgencyNodeResponseDto"][];
+        };
+        CollectionAvailabilityEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: {
+                [key: string]: string;
+            };
+        };
+        AgencyNodeViewServiceResponseDto: {
+            id: string;
+            title: string;
+            duration_minutes: number;
+            deposit_points?: number;
+            buffer_minutes?: number;
+            rules?: {
+                [key: string]: unknown;
+            };
+            base_price: number;
+            description: string;
+            is_active: boolean;
+        };
+        AgencyNodeViewAgentResponseDto: {
+            id: string;
+            nickname?: string | null;
+            avatar?: string | null;
+        };
+        AgencyNodeViewResponseDto: {
+            id: string;
+            status: string;
+            alias: string | null;
+            inherited_name: string | null;
+            parent_node_id: string | null;
+            service_id: string;
+            share_slug: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            service: components["schemas"]["AgencyNodeViewServiceResponseDto"];
+            agent: components["schemas"]["AgencyNodeViewAgentResponseDto"];
+            is_unavailable: boolean;
+        };
+        AgencyNodeViewEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AgencyNodeViewResponseDto"];
+        };
+        RemoveCollectionDataDto: {
+            /** @example true */
+            success: boolean;
+        };
+        RemoveCollectionEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["RemoveCollectionDataDto"];
+        };
+        SetCollectionStatusDto: {
+            is_active: boolean;
+        };
+        AgencyNodeEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AgencyNodeResponseDto"] | null;
+        };
+        ReparentCollectionDto: {
+            newParentNodeId: string;
+        };
+        UpdateCollectionDto: {
+            markup_type?: string;
+            markup_value?: number;
+            private_notes?: string;
+            public_notes?: string;
+            alias?: string;
+        };
+        PublicAgencyNodeViewResponseDto: {
+            id: string;
+            alias: string | null;
+            inherited_name: string | null;
+            parent_node_id: string | null;
+            service_id: string;
+            share_slug: string;
+            service: components["schemas"]["AgencyNodeViewServiceResponseDto"];
+            agent: components["schemas"]["AgencyNodeViewAgentResponseDto"];
+            is_unavailable: boolean;
+            node_status: string;
+            importInfo?: {
+                parentNodeId: string;
+                serviceId: string;
+            };
+        };
+        PublicAgencyNodeViewEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["PublicAgencyNodeViewResponseDto"];
+        };
+        BatchImportResultResponseDto: {
+            id: string;
+            success: boolean;
+            data?: components["schemas"]["AgencyNodeResponseDto"];
+            error?: string;
+        };
+        LightweightRegistrationUserResponseDto: {
+            id: string;
+            username: string;
+            referral_code: string;
+            email: string | null;
+            roles: string[];
+            wallet_balance: number;
+            credit_balance: number;
+            frozen_credit: number;
+        };
+        LightweightRegistrationResponseDto: {
+            access_token: string;
+            refresh_token: string;
+            user: components["schemas"]["LightweightRegistrationUserResponseDto"];
+        };
+        AuthenticatedCollectionResponseDataDto: {
+            auth: components["schemas"]["LightweightRegistrationResponseDto"];
+            collection: components["schemas"]["AgencyNodeResponseDto"];
+        };
+        AuthenticatedBatchImportResponseDataDto: {
+            auth: components["schemas"]["LightweightRegistrationResponseDto"];
+            results: components["schemas"]["BatchImportResultResponseDto"][];
+        };
+        CreateAgencyNodeDto: {
+            serviceId?: string;
+            listingId?: string;
+            listingIds?: string[];
+            parentNodeId?: string;
+            markup_type?: string;
+            markup_value?: number;
+            alias?: string;
+            private_notes?: string;
+            public_notes?: string;
+            compliance_content?: string;
+            compliance_signature?: string;
+            deviceInfo?: {
+                [key: string]: unknown;
+            };
+        };
+        AgencyOnboardingEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AgencyNodeResponseDto"] | components["schemas"]["BatchImportResultResponseDto"][] | components["schemas"]["AuthenticatedCollectionResponseDataDto"] | components["schemas"]["AuthenticatedBatchImportResponseDataDto"];
+        };
+        PreCheckImportDataDto: {
+            /** @enum {string} */
+            action_type: "DEPTH_BLOCKED" | "SAME_PARENT" | "SELF_IN_UPSTREAM" | "NORMAL";
+            prompt_msg?: string;
+            parent_id?: string;
+            service_id?: string;
+        };
+        PreCheckImportEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["PreCheckImportDataDto"];
+        };
+        ExecuteImportDto: {
+            /** @description Import code or token. */
+            token: string;
+            force?: boolean;
+            import_as_child?: boolean;
+        };
+        AgencyCreationDataDto: {
+            node: components["schemas"]["AgencyNodeResponseDto"];
+            isNew: boolean;
+        };
+        AgencyCreationEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AgencyCreationDataDto"];
+        };
+        CollectionQuotaDataDto: {
+            base_limit: number;
+            extra_slots: number;
+            active_limit: number;
+            active_count: number;
+            remaining_slots: number;
+            unit_price_monthly: number;
+            purchase_endpoint: string;
+        };
+        CollectionQuotaEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["CollectionQuotaDataDto"];
+        };
+        CreateCollectionQuotaPurchaseIntentDto: {
+            /**
+             * Format: int32
+             * @description Number of additional collection slots to purchase.
+             * @example 10
+             */
+            extra_slots: number;
+            /**
+             * Format: int32
+             * @description Subscription duration in months. Defaults to one month.
+             * @default 1
+             * @example 3
+             */
+            months: number;
+            /**
+             * @description Payment channel. Defaults to WeChat Pay.
+             * @default wechat
+             * @example wechat
+             * @enum {string}
+             */
+            channel: "wechat" | "alipay";
+        };
+        CollectionQuotaPaymentPayloadDto: {
+            channel: string;
+            order_no: string;
+            amount: number;
+            subject: string;
+            metadata?: {
+                /** @enum {string} */
+                business_type: "collection_quota";
+                user_id: string;
+                extra_slots: number;
+                months: number;
+            };
+        };
+        CollectionQuotaPurchaseIntentDataDto: {
+            /** @enum {string} */
+            status: "PENDING_INTEGRATION";
+            order_no: string;
+            user_id: string;
+            extra_slots: number;
+            months: number;
+            unit_price_monthly: number;
+            amount: number;
+            subject: string;
+            channel: string;
+            purchase_endpoint: string;
+            payment_payload: components["schemas"]["CollectionQuotaPaymentPayloadDto"];
+            message: string;
+        };
+        CollectionQuotaPurchaseIntentEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["CollectionQuotaPurchaseIntentDataDto"];
+        };
+        ReferralLogSourceUserResponseDto: {
+            /** Format: uuid */
+            id: string;
+            username: string;
+            status: components["schemas"]["UserStatus"];
+            /** Format: int32 */
+            auth_version: number;
+            /** Format: uuid */
+            merged_into_id: string | null;
+            locale: string | null;
+            roles: string[];
+            referral_code: string | null;
+            nickname: string | null;
+            avatar: string | null;
+            is_verified: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @enum {string} */
+        ReferralType: "SOFTWARE_FEE";
+        /** @enum {string} */
+        ReferralStatus: "PENDING" | "COMPLETED" | "CANCELLED";
+        ReferralLogResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sourceUserId: string;
+            sourceUser: components["schemas"]["ReferralLogSourceUserResponseDto"];
+            /** Format: uuid */
+            beneficiaryId: string;
+            amount: number;
+            base_amount: number;
+            /** Format: int32 */
+            level: number;
+            type: components["schemas"]["ReferralType"];
+            status: components["schemas"]["ReferralStatus"];
+            /** Format: date-time */
+            created_at: string;
+        };
+        ReferralLogListResponseDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["ReferralLogResponseDto"][];
+        };
+        AdminUserResponseDto: {
+            id: string;
+            username?: string | null;
+            nickname?: string | null;
+            telegram_chat_id?: string | null;
+            credit_balance?: number | null;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
+        AdminPageMetaResponseDto: {
+            total: number;
+            page: number;
+            limit: number;
+            totalPages: number;
+        };
+        AdminUsersPageResponseDto: {
+            data: components["schemas"]["AdminUserResponseDto"][];
+            meta: components["schemas"]["AdminPageMetaResponseDto"];
+        };
+        AdminUsersResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AdminUsersPageResponseDto"];
+        };
+        AdminServiceResponseDto: {
+            id: string;
+            owner_id: string;
+            title: string | null;
+            description?: string | null;
+            duration_minutes: number;
+            base_price: number | null;
+            provider_base_price?: number | null;
+            cost_price?: number | null;
+            deposit_points?: number | null;
+            is_active?: boolean;
+        };
+        AdminServicesPageResponseDto: {
+            data: components["schemas"]["AdminServiceResponseDto"][];
+            meta: components["schemas"]["AdminPageMetaResponseDto"];
+        };
+        AdminServicesResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AdminServicesPageResponseDto"];
+        };
+        AdminOrderServiceSummaryResponseDto: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+        };
+        AdminUserSummaryResponseDto: {
+            /** Format: uuid */
+            id: string;
+            username: string;
+            nickname: string | null;
+        };
+        AdminOrderAgencyNodeSummaryResponseDto: {
+            /** Format: uuid */
+            id: string;
+            share_slug: string;
+            agent: components["schemas"]["AdminUserSummaryResponseDto"] | null;
+        };
+        AdminOrderResponseDto: {
+            /** Format: uuid */
+            id: string;
+            order_no: string;
+            /** Format: uuid */
+            consumer_id: string;
+            /** Format: uuid */
+            owner_id: string;
+            /** Format: uuid */
+            service_id: string | null;
+            /** Format: uuid */
+            agency_node_id: string | null;
+            /** Format: date-time */
+            start_time: string;
+            /** Format: date-time */
+            end_time: string;
+            status: string;
+            frozen_points: number;
+            display_price_snapshot: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            service: components["schemas"]["AdminOrderServiceSummaryResponseDto"] | null;
+            consumer: components["schemas"]["AdminUserSummaryResponseDto"] | null;
+            agency_node: components["schemas"]["AdminOrderAgencyNodeSummaryResponseDto"] | null;
+        };
+        AdminOrdersResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AdminOrderResponseDto"][];
+        };
+        AdminAgencyUserSummaryResponseDto: {
+            /** Format: uuid */
+            id: string;
+            nickname: string | null;
+        };
+        AdminAgencyServiceSummaryResponseDto: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            is_active: boolean;
+        };
+        AdminCollectionResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            node_type: "STANDARD" | "CONTRACT";
+            /** Format: uuid */
+            parent_node_id: string | null;
+            /** Format: uuid */
+            service_id: string;
+            /** Format: uuid */
+            agent_id: string;
+            markup_amount: number;
+            cache_cost_price: number;
+            cache_total_price: number;
+            markup_type: string;
+            markup_value: number;
+            alias: string | null;
+            inherited_name: string | null;
+            share_slug: string;
+            status: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            agent: components["schemas"]["AdminAgencyUserSummaryResponseDto"] | null;
+            service: components["schemas"]["AdminAgencyServiceSummaryResponseDto"] | null;
+        };
+        AdminCollectionsResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["AdminCollectionResponseDto"][];
+        };
+        AdjustUserCreditDto: {
+            /** Format: double */
+            amount: number;
+        };
+        AdminCreditAdjustmentResponseEnvelopeDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: {
+                [key: string]: unknown;
+            };
+        };
+        CalendarSyncPreviewEventDto: {
+            uid: string;
+            summary: string;
+            description?: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            location?: string;
+            isAllDay: boolean;
+            rrule?: string;
+        };
+        CalendarSyncPreviewResponseDto: {
+            /** @example 0 */
+            code: number;
+            /** @example OK */
+            message: string;
+            data: components["schemas"]["CalendarSyncPreviewEventDto"][];
         };
     };
     responses: never;
@@ -53,7 +2889,99 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    getHealth: {
+    AppController_clientLog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientDebugLogDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientDebugLogResponseDto"];
+                };
+            };
+        };
+    };
+    AppController_handleReferral: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirects to registration with the referral code. */
+            302: {
+                headers: {
+                    /** @description Registration route containing the encoded referral code. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AppController_handleShareSlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirects to booking detail for the shared slug. */
+            302: {
+                headers: {
+                    /** @description Booking detail route containing the encoded shared slug. */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UsersController_addRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddUserRoleDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRoleAssignmentResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_findAll: {
         parameters: {
             query?: never;
             header?: never;
@@ -62,13 +2990,2121 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Health indicator snapshot */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HealthSnapshot"];
+                    "application/json": components["schemas"]["UserListResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserDeleteResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserPasswordChangeResponseDto"];
+                };
+            };
+        };
+    };
+    UsersController_createCreditPurchaseIntent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCreditPurchaseIntentDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditPurchaseIntentResponseDto"];
+                };
+            };
+        };
+    };
+    AuthPublicController_register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAuthUserDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_wechatLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SocialIdentityProofDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_qqLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SocialIdentityProofDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_getSocialProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["SocialProviderResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_socialLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SocialLoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["ReservedSocialLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_telegramLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TelegramLoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_getTelegramLoginTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["TelegramLoginTicketResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_telegramWebAppLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TelegramWebAppLoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_refresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthTokenPairResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefreshTokenDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["LogoutResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_phoneLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifySmsLoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_sendSmsCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendSmsCodeDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["ReservedSmsCodeResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthSessionController_smsLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifySmsLoginDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_mergeTelegramAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergeTelegramAccountDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_bindPhone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergeTelegramAccountDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_mergeByPhone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergeTelegramAccountDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_bindIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityBindDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["IdentityBoundResponseDto"] | components["schemas"]["IdentityMergeRequiredResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_mergeByIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityBindDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["AuthLoginResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_startIdentityScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityScanStartDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["TelegramIdentityScanStartResponseDto"] | components["schemas"]["ReservedIdentityScanStartResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_checkIdentityScanStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityScanStatusDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["IdentityScanPendingResponseDto"] | components["schemas"]["IdentityScanSuccessResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthIdentityController_unbindIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityUnbindDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["IdentityUnbindResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateServiceDto"];
+            };
+        };
+        responses: {
+            /** @description Successful response. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_findMyServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["MyServicesPageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_ensureShareSlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceShareResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_getAvailableSlots: {
+        parameters: {
+            query: {
+                date: string;
+                node: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["TimeSlotResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_getAvailableSlotsAlias: {
+        parameters: {
+            query: {
+                date: string;
+                node: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["TimeSlotResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_getAvailability: {
+        parameters: {
+            query: {
+                startDate: string;
+                endDate: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["PublicAvailabilityResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_getManagementAvailability: {
+        parameters: {
+            query: {
+                startDate: string;
+                endDate: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ManagementAvailabilityResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateServiceDto"];
+            };
+        };
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_checkDeactivate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["DeactivateCheckResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_getGlobalBlocks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["GlobalServiceBlockResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_addGlobalBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateServiceBlockDto"];
+            };
+        };
+        responses: {
+            /** @description Successful response. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceBlockResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_removeGlobalBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                blockId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["DeletedCountResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_updateGlobalBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                blockId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateServiceBlockDto"];
+            };
+        };
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["UpdatedCountResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_addBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateServiceBlockDto"];
+            };
+        };
+        responses: {
+            /** @description Successful response. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["ServiceBlockResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    ServicesController_removeBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                blockId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 0 */
+                        code: number;
+                        /** @example OK */
+                        message: string;
+                        data: components["schemas"]["DeletedCountResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    OrderController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrderDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderCreatedResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_findMyOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyOrdersResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_findOwnerOrders: {
+        parameters: {
+            query?: {
+                /** @description One-based page number. */
+                page?: number;
+                /** @description Maximum number of orders to return. */
+                limit?: number;
+                /** @description Optional inclusive order start-time filter in ISO 8601 format. */
+                start_time?: string;
+                /** @description Optional inclusive order end-time filter in ISO 8601 format. */
+                end_time?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagedOrdersResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_getCreditSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditSummaryResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_checkCredit: {
+        parameters: {
+            query: {
+                serviceId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditCheckResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderCreatedResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_complete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderCreatedResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_noShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderCreatedResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelOrderDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderCreatedResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    OrderController_findOne: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderContextResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    PaymentController_getChannels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configured payment channels and their runtime availability. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentChannelAvailabilityResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    PaymentController_createPrepay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePrepayDto"];
+            };
+        };
+        responses: {
+            /** @description Provider prepay initiation details for the persisted transaction. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatePrepayResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    PaymentController_getStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                channel: string;
+                orderNo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted payment transaction state for the requested channel and order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentStatusResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    HealthController_check: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Health Check is successful */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example ok */
+                        status?: string;
+                        /**
+                         * @example {
+                         *       "database": {
+                         *         "status": "up"
+                         *       }
+                         *     }
+                         */
+                        info?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } | null;
+                        /** @example {} */
+                        error?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } | null;
+                        /**
+                         * @example {
+                         *       "database": {
+                         *         "status": "up"
+                         *       }
+                         *     }
+                         */
+                        details?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description The Health Check is not successful */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example error */
+                        status?: string;
+                        /**
+                         * @example {
+                         *       "database": {
+                         *         "status": "up"
+                         *       }
+                         *     }
+                         */
+                        info?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } | null;
+                        /**
+                         * @example {
+                         *       "redis": {
+                         *         "status": "down",
+                         *         "message": "Could not connect"
+                         *       }
+                         *     }
+                         */
+                        error?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } | null;
+                        /**
+                         * @example {
+                         *       "database": {
+                         *         "status": "up"
+                         *       },
+                         *       "redis": {
+                         *         "status": "down",
+                         *         "message": "Could not connect"
+                         *       }
+                         *     }
+                         */
+                        details?: {
+                            [key: string]: {
+                                status: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    AgencyCollectionController_getMyCollection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyCollectionEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyOnboardingController_addToCollection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgencyNodeDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyOnboardingEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyCollectionController_getCollectionAvailability: {
+        parameters: {
+            query: {
+                date: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionAvailabilityEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyCollectionController_getNodeById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyNodeViewEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyMutationController_removeFromCollection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoveCollectionEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyMutationController_updateCollection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCollectionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyNodeEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyMutationController_setCollectionStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetCollectionStatusDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyNodeEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyMutationController_reparentCollection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReparentCollectionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyNodeEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyPublicReadController_resolveBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicAgencyNodeViewEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyPublicReadController_resolveByShortSlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicAgencyNodeViewEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyOnboardingController_createNode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgencyNodeDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyOnboardingEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyOnboardingController_preCheckImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreCheckImportEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyOnboardingController_executeImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecuteImportDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyCreationEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AgencyOnboardingController_importByCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCollectionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyCreationEnvelopeDto"];
+                };
+            };
+        };
+    };
+    CollectionQuotaController_getQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionQuotaEnvelopeDto"];
+                };
+            };
+        };
+    };
+    CollectionQuotaController_createPurchaseIntent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCollectionQuotaPurchaseIntentDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionQuotaPurchaseIntentEnvelopeDto"];
+                };
+            };
+        };
+    };
+    ReferralController_getMyLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Referral reward logs for the authenticated beneficiary. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferralLogListResponseDto"];
+                };
+            };
+        };
+    };
+    AdminController_findAllUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUsersResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AdminController_findAllServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminServicesResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AdminController_findAllOrders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminOrdersResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AdminController_findAllCollections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminCollectionsResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    AdminController_adjustCredit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdjustUserCreditDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminCreditAdjustmentResponseEnvelopeDto"];
+                };
+            };
+        };
+    };
+    CalendarSyncController_preview: {
+        parameters: {
+            query: {
+                /** @description ICS subscription URL */
+                url: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Parsed calendar events ordered by start time. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSyncPreviewResponseDto"];
+                };
+            };
+        };
+    };
+    LinkController_resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description HTML page that immediately forwards the visitor to the resolved route. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description HTML page explaining that the requested link is unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
                 };
             };
         };

@@ -1,6 +1,9 @@
 import type { PlatformAdapter, AuthData } from '../adapter.interface';
 import { isTelegramWebAppRuntime } from '@/utils/runtime-env';
-import { markAuthInitIdle, markAuthInitPending } from '@/core/auth/auth-init-state';
+import {
+  markAuthInitIdle,
+  markAuthInitPending,
+} from '@/core/auth/auth-init-state';
 
 export class TelegramAdapter implements PlatformAdapter {
   name = 'telegram';
@@ -12,28 +15,14 @@ export class TelegramAdapter implements PlatformAdapter {
   async login(): Promise<AuthData | null> {
     if (typeof window === 'undefined') return null;
     const tg = (window as any).Telegram?.WebApp;
-    const ua = navigator.userAgent;
-    
-    // Robust API URL detection
-    const getBaseUrl = () => {
-        const envUrl = import.meta.env.VITE_API_BASE_URL;
-        if (envUrl && envUrl.startsWith('http')) return envUrl.replace(/\/+$/, '');
-        return window.location.origin + (envUrl || '/api').replace(/\/+$/, '');
-    };
-    const API_BASE_URL = getBaseUrl();
-    
+
     if (!tg) {
-        uni.request({
-            url: API_BASE_URL + '/debug/log',
-            method: 'POST',
-            data: { event: 'TG_LOGIN_FAILED_NO_TG_OBJECT', ua, href: window.location.href }
-        }).catch(() => {});
-        return null;
+      return null;
     }
 
     // --- InitData Extraction Logic from App.vue ---
     markAuthInitIdle();
-    
+
     tg.ready();
     tg.expand();
 
@@ -46,7 +35,10 @@ export class TelegramAdapter implements PlatformAdapter {
       let decoded = trimmed;
       for (let i = 0; i < 4; i++) {
         if (!seen.has(decoded)) {
-          initDataCandidates.push({ value: decoded, source: `${source}:d${i}` });
+          initDataCandidates.push({
+            value: decoded,
+            source: `${source}:d${i}`,
+          });
           seen.add(decoded);
         }
         try {
@@ -82,93 +74,67 @@ export class TelegramAdapter implements PlatformAdapter {
 
     const matchedCandidate = initDataCandidates.find((item) => {
       const p = new URLSearchParams(item.value);
-      return !!p.get('hash') && (!!p.get('user') || !!p.get('auth_date') || !!p.get('query_id'));
+      return (
+        !!p.get('hash') &&
+        (!!p.get('user') || !!p.get('auth_date') || !!p.get('query_id'))
+      );
     });
-    const initData = matchedCandidate?.value || initDataCandidates[0]?.value || '';
-    const initDataSource = matchedCandidate?.source || initDataCandidates[0]?.source || 'none';
+    // Do not forward arbitrary URL data as an authentication credential. The
+    // server performs the cryptographic verification, but the client must at
+    // least require the Telegram init-data envelope before making that request.
+    const initData = matchedCandidate?.value || '';
 
-    // Clean up URL parameters
-    if (initData && typeof window !== 'undefined' && (window.location.search.includes('tgWebAppData') || window.location.hash.includes('tgWebAppData'))) {
+    // Telegram may include initData in the address bar. Remove it promptly so
+    // it is not left in copied URLs, browser history, or client diagnostics.
+    if (
+      window.location.search.includes('tgWebAppData') ||
+      window.location.hash.includes('tgWebAppData')
+    ) {
       try {
         const url = new URL(window.location.href);
-        const keysToRemove = ['tgWebAppData', 'tgWebAppVersion', 'tgWebAppPlatform', 'tgWebAppThemeParams'];
-        
-        keysToRemove.forEach(key => url.searchParams.delete(key));
-        
+        const keysToRemove = [
+          'tgWebAppData',
+          'tgWebAppVersion',
+          'tgWebAppPlatform',
+          'tgWebAppThemeParams',
+        ];
+
+        keysToRemove.forEach((key) => url.searchParams.delete(key));
+
         if (url.hash.includes('tgWebAppData=')) {
-             const [path, query] = url.hash.split('?');
-             if (query) {
-                 const hashParams = new URLSearchParams(query);
-                 keysToRemove.forEach(key => hashParams.delete(key));
-                 const newQuery = hashParams.toString();
-                 url.hash = path + (newQuery ? `?${newQuery}` : '');
-             }
+          const [path, query] = url.hash.split('?');
+          if (query) {
+            const hashParams = new URLSearchParams(query);
+            keysToRemove.forEach((key) => hashParams.delete(key));
+            const newQuery = hashParams.toString();
+            url.hash = path + (newQuery ? `?${newQuery}` : '');
+          }
         }
-        
+
         window.history.replaceState({}, '', url.toString());
-      } catch (e) {
-        console.error('Failed to clean TG URL params', e);
+      } catch {
+        // URL cleanup is best effort; never log a URL because it may contain initData.
       }
     }
 
     if (!initData) {
-        // Fallback: If platform is present but initData is empty, try to construct a partial login
-        // This is UNSAFE and should only be used for non-critical reads or debugging
-        if (tg.platform && tg.platform !== 'unknown') {
-             console.warn('[TelegramAdapter] initData missing, using platform fallback');
-             uni.request({
-                url: API_BASE_URL + '/debug/log',
-                method: 'POST',
-                data: { event: 'TG_LOGIN_FALLBACK_PLATFORM', ua, href: window.location.href, platform: tg.platform }
-            }).catch(() => {});
-            
-            // We cannot login without initData hash, so we just return null.
-            // The Sentinel Guard will redirect to login page.
-            return null;
-        }
-
-        uni.request({
-            url: API_BASE_URL + '/debug/log',
-            method: 'POST',
-            data: { event: 'TG_LOGIN_FAILED_NO_INITDATA', ua, href: window.location.href, tgPlatform: tg.platform }
-        }).catch(() => {});
-        return null;
+      // A Telegram WebApp login is only valid with signed initData. Do not
+      // synthesize a partial login from initDataUnsafe or platform metadata.
+      return null;
     }
 
     // --- Auto-Login Signal ---
-    const params = new URLSearchParams(initData);
     uni.$emit('TG_INIT_DATA', {
-      initData: initData.substring(0, 50) + '...',
-      hash: params.get('hash') || 'NONE',
-      authDate: params.get('auth_date') || 'NONE'
+      available: true,
     });
-    
-    console.log('[TelegramAdapter] InitData found, length:', initData.length);
-    
+
     markAuthInitPending();
-    
-    uni.request({
-        url: API_BASE_URL + '/debug/log',
-        method: 'POST',
-        data: {
-            event: 'TG_INIT_DATA_FOUND',
-            initDataLength: initData.length,
-            source: initDataSource,
-            sample: initData.substring(0, 20)
-        }
-    }).catch(() => {});
-    uni.request({
-        url: API_BASE_URL + '/debug/log',
-        method: 'POST',
-        data: {
-            event: 'TG_INIT_DATA_PAYLOAD',
-            initData
-        }
-    }).catch(() => {});
 
     return {
-        user: tg.initDataUnsafe?.user,
-        platform_token: initData
+      // The server derives the authenticated user from verified initData.
+      // initDataUnsafe must never become an application identity source.
+      user: null,
+      platform_token: initData,
     };
   }
 
@@ -189,7 +155,7 @@ export class TelegramAdapter implements PlatformAdapter {
   setNavigationBarColor(options: any): void {
     const tg = (window as any).Telegram?.WebApp;
     if (options.backgroundColor) {
-        tg.setHeaderColor(options.backgroundColor);
+      tg.setHeaderColor(options.backgroundColor);
     }
   }
 }

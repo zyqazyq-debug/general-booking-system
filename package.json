@@ -1,4 +1,5 @@
 {
+  "workspaces": ["backend", "frontend", "packages/shared"],
   "scripts": {
     "dev": "npm run dev:h5",
     "dev:h5": "npm run dev:h5 --prefix frontend",

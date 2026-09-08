@@ -73,6 +73,8 @@ R2 must replace the current nominal migration guards with:
 - additive expand migration compatible with active and candidate releases;
 - an isolated restore drill.
 
+The repository preflight is deliberately local/isolated only: `tools/migrate` rejects non-loopback hosts and production/NAS target markers. Its default output is a plan receipt. An operator must supply the separate isolated-target acknowledgement before it can invoke `psql`, `pg_dump`, `pg_restore`, or TypeORM; the executable path records a checksum/readability receipt and has no migration-revert operation.
+
 Application rollback does not invoke `migration:revert`. Contract/drop occurs only in a later release after the rollback window closes.
 
 ## Images and frontend development

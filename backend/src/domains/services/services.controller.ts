@@ -16,6 +16,7 @@ import {
   ValidationPipe,
   Inject,
 } from '@nestjs/common';
+import { ApiExcludeEndpoint, ApiExtraModels, ApiTags } from '@nestjs/swagger';
 import { ServicesService } from './services.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import type { CreateServiceCommand } from './commands/create-service.command';
@@ -31,8 +32,56 @@ import type {
 } from '../../shared/common/types/auth-request.type';
 import { PaginationDto } from '../../shared/common/dto/pagination.dto';
 import { ServiceAvailabilityService } from './service-availability.service';
+import {
+  AvailabilityRulesResponseDto,
+  AvailabilityWindowDto,
+  ManagementAvailabilityBlockDto,
+  ManagementAvailabilityResponseDto,
+  ManagementAvailabilityWindowDto,
+  PublicAvailabilityResponseDto,
+} from './dto/availability-response.dto';
+import {
+  DeactivateCheckResponseDto,
+  DeletedCountResponseDto,
+  GlobalServiceBlockResponseDto,
+  MyServiceResponseDto,
+  MyServicesPageResponseDto,
+  PaginationMetaResponseDto,
+  ServiceBlockResponseDto,
+  ServiceCancellationPolicyResponseDto,
+  ServiceLocationResponseDto,
+  ServiceOwnerResponseDto,
+  ServiceResponseDto,
+  ServiceShareResponseDto,
+  TimeSlotResponseDto,
+  UpdatedCountResponseDto,
+} from './dto/service-response.dto';
+import { ApiSuccessResponse } from './dto/api-success-response.decorator';
 
 @Controller('services')
+@ApiTags('services')
+@ApiExtraModels(
+  AvailabilityRulesResponseDto,
+  AvailabilityWindowDto,
+  ManagementAvailabilityBlockDto,
+  ManagementAvailabilityResponseDto,
+  ManagementAvailabilityWindowDto,
+  PublicAvailabilityResponseDto,
+  DeactivateCheckResponseDto,
+  GlobalServiceBlockResponseDto,
+  DeletedCountResponseDto,
+  MyServiceResponseDto,
+  MyServicesPageResponseDto,
+  PaginationMetaResponseDto,
+  ServiceBlockResponseDto,
+  ServiceCancellationPolicyResponseDto,
+  ServiceLocationResponseDto,
+  ServiceOwnerResponseDto,
+  ServiceResponseDto,
+  ServiceShareResponseDto,
+  TimeSlotResponseDto,
+  UpdatedCountResponseDto,
+)
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class ServicesController {
   constructor(
@@ -44,6 +93,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Post()
+  @ApiSuccessResponse(201, ServiceResponseDto)
   create(
     @Body(
       new ValidationPipe({
@@ -64,6 +114,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Get('my')
+  @ApiSuccessResponse(200, MyServicesPageResponseDto)
   async findMyServices(
     @Request() req: AuthenticatedRequest,
     @Query() paginationDto: PaginationDto,
@@ -73,6 +124,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/share')
+  @ApiSuccessResponse(201, ServiceShareResponseDto)
   async ensureShareSlug(
     @Param('id') id: string,
     @Request() req: AuthenticatedRequest,
@@ -85,6 +137,7 @@ export class ServicesController {
   }
 
   @Get(':id/slots')
+  @ApiSuccessResponse(200, TimeSlotResponseDto, { isArray: true })
   async getAvailableSlots(
     @Param('id') id: string,
     @Query('date') dateStr: string,
@@ -109,6 +162,7 @@ export class ServicesController {
   }
 
   @Get(':id/available-slots')
+  @ApiSuccessResponse(200, TimeSlotResponseDto, { isArray: true })
   async getAvailableSlotsAlias(
     @Param('id') id: string,
     @Query('date') dateStr: string,
@@ -127,6 +181,7 @@ export class ServicesController {
   }
 
   @Get(':id/availability')
+  @ApiSuccessResponse(200, PublicAvailabilityResponseDto)
   getAvailability(
     @Param('id') id: string,
     @Query('startDate') startDate: string,
@@ -138,6 +193,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Get(':id/availability/manage')
+  @ApiSuccessResponse(200, ManagementAvailabilityResponseDto)
   async getManagementAvailability(
     @Param('id') id: string,
     @Query('startDate') startDate: string,
@@ -162,6 +218,7 @@ export class ServicesController {
   }
 
   @Get()
+  @ApiExcludeEndpoint()
   findAll() {
     // Public endpoint: Only show active services, and potentially limit/paginate
     // Actually, "all services" shouldn't be public.
@@ -177,6 +234,7 @@ export class ServicesController {
 
   @Get(':id')
   @UseGuards(OptionalJwtAuthGuard)
+  @ApiSuccessResponse(200, ServiceResponseDto)
   async findOne(
     @Param('id') id: string,
     @Request() req: OptionalAuthenticatedRequest,
@@ -200,6 +258,7 @@ export class ServicesController {
 
   @Get(':id/deactivate-check')
   @UseGuards(JwtAuthGuard)
+  @ApiSuccessResponse(200, DeactivateCheckResponseDto)
   async checkDeactivate(
     @Param('id') id: string,
     @Request() req: AuthenticatedRequest,
@@ -225,6 +284,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Patch(':id')
+  @ApiSuccessResponse(200, ServiceResponseDto)
   async update(
     @Param('id') id: string,
     @Body() updateServiceDto: UpdateServiceDto,
@@ -241,6 +301,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
+  @ApiSuccessResponse(200, ServiceResponseDto)
   async remove(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     const service = await this.servicesService.findOne(id);
     if (!service) throw new NotFoundException('Service not found');
@@ -252,6 +313,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Post('blocks/global')
+  @ApiSuccessResponse(201, ServiceBlockResponseDto, { isArray: true })
   async addGlobalBlock(
     @Body() createBlockDto: CreateServiceBlockDto,
     @Request() req: AuthenticatedRequest,
@@ -261,12 +323,14 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Get('blocks/global')
+  @ApiSuccessResponse(200, GlobalServiceBlockResponseDto, { isArray: true })
   async getGlobalBlocks(@Request() req: AuthenticatedRequest) {
     return this.servicesService.getGlobalBlocks(req.user.id);
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch('blocks/global/:blockId')
+  @ApiSuccessResponse(200, UpdatedCountResponseDto)
   async updateGlobalBlock(
     @Param('blockId') blockId: string,
     @Body() updateBlockDto: UpdateServiceBlockDto,
@@ -281,6 +345,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Delete('blocks/global/:blockId')
+  @ApiSuccessResponse(200, DeletedCountResponseDto)
   async removeGlobalBlock(
     @Param('blockId') blockId: string,
     @Request() req: AuthenticatedRequest,
@@ -290,6 +355,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/blocks')
+  @ApiSuccessResponse(201, ServiceBlockResponseDto)
   async addBlock(
     @Param('id') id: string,
     @Body() createBlockDto: CreateServiceBlockDto,
@@ -300,6 +366,7 @@ export class ServicesController {
 
   @UseGuards(JwtAuthGuard)
   @Delete('blocks/:blockId')
+  @ApiSuccessResponse(200, DeletedCountResponseDto)
   async removeBlock(
     @Param('blockId') blockId: string,
     @Request() req: AuthenticatedRequest,

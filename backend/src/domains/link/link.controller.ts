@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Res, Inject } from '@nestjs/common';
+import { ApiOperation, ApiProduces, ApiResponse } from '@nestjs/swagger';
 import type { Response } from 'express';
 import type { AgencyLinkQueryPort } from '../agency';
 import { AGENCY_LINK_QUERY_PORT } from '../agency';
@@ -11,6 +12,10 @@ export class LinkController {
   ) {}
 
   @Get('resolve/:code')
+  @ApiOperation({ summary: 'Resolve a referral or shared-booking link' })
+  @ApiProduces('text/html')
+  @ApiResponse({ status: 200, description: 'HTML page that immediately forwards the visitor to the resolved route.', content: { 'text/html': { schema: { type: 'string' } } } })
+  @ApiResponse({ status: 404, description: 'HTML page explaining that the requested link is unavailable.', content: { 'text/html': { schema: { type: 'string' } } } })
   async resolve(
     @Param('code') rawCode: string,
     @Res() res: Response,

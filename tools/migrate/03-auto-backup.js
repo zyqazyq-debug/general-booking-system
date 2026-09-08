@@ -1,43 +1,70 @@
-const { spawnSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const { join } = path;
+const fs = require('node:fs');
+const path = require('node:path');
+const {
+  commandForBackup,
+  inspectMigrations,
+  receipt,
+  run,
+  sha256File,
+  transition,
+  validateTarget,
+  verifyTargetIdentity,
+  verifyExpandOnly,
+  writeReceipt,
+  STATES,
+  MigrationSafetyError,
+} = require('./lib/migration-safety');
+
+function loadEnvironment() {
+  const dotenvPath = path.join(process.cwd(), 'backend', '.env');
+  if (fs.existsSync(dotenvPath)) require('dotenv').config({ path: dotenvPath });
+}
+
+function backupPathFor(target) {
+  const root = path.resolve(process.cwd(), 'artifacts', 'migration-backups');
+  const requested = process.env.BOOKING_MIGRATION_BACKUP_PATH;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const candidate = path.resolve(requested || path.join(root, `${target.database}-${timestamp}.dump`));
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+    throw new MigrationSafetyError('backup path must remain below artifacts/migration-backups');
+  }
+  return candidate;
+}
+
+function main() {
+  loadEnvironment();
+  const execute = process.argv.includes('--execute');
+  let state = STATES.IDLE;
+  const target = validateTarget(process.env, { requireExecutionArm: execute });
+  state = transition(state, STATES.TARGET_VALIDATED);
+  const inspection = inspectMigrations(path.join(process.cwd(), 'backend', 'src', 'migrations'));
+  const plan = verifyExpandOnly({ entries: inspection.entries, applied: [] });
+  state = transition(state, STATES.PLAN_VERIFIED);
+  const backupPath = backupPathFor(target);
+  const command = commandForBackup(target, backupPath);
+  state = transition(state, STATES.BACKUP_PLANNED);
+
+  if (!execute) {
+    console.log(JSON.stringify(receipt({ operation: 'backup', state, target, migrationPlan: plan, backupPath }), null, 2));
+    console.log('[MIGRATE GUARD 03] PLAN ONLY. No database command was run; pass --execute and explicitly arm an isolated target to create a backup.');
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true, mode: 0o700 });
+  verifyTargetIdentity(target);
+  run(command, target);
+  run({ command: 'pg_restore', args: ['--list', backupPath] }, target);
+  state = transition(state, STATES.BACKUP_VERIFIED);
+  const value = receipt({ operation: 'backup', state, target, migrationPlan: plan, backupPath, checksum: sha256File(backupPath), executed: true });
+  writeReceipt(`${backupPath}.receipt.json`, value);
+  console.log(JSON.stringify(value, null, 2));
+  console.log('[MIGRATE GUARD 03] PASS backup checksum and pg_restore readability receipt written');
+}
 
 try {
-  const dotenvPath = join(process.cwd(), 'backend', '.env');
-  if (fs.existsSync(dotenvPath)) {
-    require('dotenv').config({ path: dotenvPath });
-  }
-} catch (e) {}
-
-const NODE_ENV = process.env.NODE_ENV;
-const DB_DATABASE = process.env.DB_DATABASE || 'unknown';
-
-if (NODE_ENV !== 'production') {
-  console.log(
-    '\x1b[33m[MIGRATE GUARD 03] SKIP\x1b[0m NODE_ENV=%s (not production)',
-    NODE_ENV
-  );
-  process.exit(0);
+  main();
+} catch (error) {
+  const detail = error instanceof MigrationSafetyError ? error.message : 'backup guard failed';
+  console.error('[MIGRATE GUARD 03] FAIL: %s', detail);
+  process.exitCode = 1;
 }
-
-const checkResult = spawnSync('pg_dump', ['--version'], {
-  encoding: 'utf8',
-  stdio: ['ignore', 'pipe', 'pipe']
-});
-
-if (checkResult.status !== 0) {
-  console.error(
-    '\x1b[31m[MIGRATE GUARD 03] FAIL: pg_dump not found in PATH (required for production backups)\x1b[0m'
-  );
-  process.exit(1);
-}
-
-const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-const backupPath = `backups/${DB_DATABASE}-${timestamp}.dump`;
-
-console.log(
-  '\x1b[32m[MIGRATE GUARD 03] PASS\x1b[0m pg_dump available, would dump to %s',
-  backupPath
-);
-process.exit(0);

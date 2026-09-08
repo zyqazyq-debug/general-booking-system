@@ -19,8 +19,11 @@ import {
   ExecuteImportDto,
   UpdateCollectionDto,
 } from './dto/collection-mutation.dto';
+import { ApiCreatedResponse, ApiExtraModels, ApiOkResponse } from '@nestjs/swagger';
+import { AgencyCreationEnvelopeDto, AgencyNodeResponseDto, AgencyOnboardingEnvelopeDto, AuthenticatedBatchImportResponseDataDto, AuthenticatedCollectionResponseDataDto, BatchImportResultResponseDto, PreCheckImportEnvelopeDto } from './dto/agency-response.dto';
 
 @Controller('agency')
+@ApiExtraModels(AgencyNodeResponseDto, BatchImportResultResponseDto, AuthenticatedCollectionResponseDataDto, AuthenticatedBatchImportResponseDataDto)
 export class AgencyOnboardingController {
   constructor(
     private readonly onboardingFacade: AgencyOnboardingFacade,
@@ -29,6 +32,7 @@ export class AgencyOnboardingController {
 
   @Post('collection')
   @UseGuards(OptionalJwtAuthGuard)
+  @ApiCreatedResponse({ type: AgencyOnboardingEnvelopeDto })
   async addToCollection(
     @Request() req: OptionalAuthenticatedRequest,
     @Body() body: CreateAgencyNodeDto,
@@ -44,6 +48,7 @@ export class AgencyOnboardingController {
 
   @Post('nodes')
   @UseGuards(OptionalJwtAuthGuard)
+  @ApiCreatedResponse({ type: AgencyOnboardingEnvelopeDto })
   async createNode(
     @Request() req: OptionalAuthenticatedRequest,
     @Body() body: CreateAgencyNodeDto,
@@ -53,6 +58,7 @@ export class AgencyOnboardingController {
 
   @Get('import/check/:code')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: PreCheckImportEnvelopeDto })
   async preCheckImport(
     @Request() req: AuthenticatedRequest,
     @Param('code') code: string,
@@ -62,6 +68,7 @@ export class AgencyOnboardingController {
 
   @Post('import/execute')
   @UseGuards(JwtAuthGuard)
+  @ApiCreatedResponse({ type: AgencyCreationEnvelopeDto })
   async executeImport(
     @Request() req: AuthenticatedRequest,
     @Body() body: ExecuteImportDto,
@@ -74,6 +81,7 @@ export class AgencyOnboardingController {
 
   @Post('import/:code')
   @UseGuards(JwtAuthGuard)
+  @ApiCreatedResponse({ type: AgencyCreationEnvelopeDto })
   async importByCode(
     @Request() req: AuthenticatedRequest,
     @Param('code') code: string,

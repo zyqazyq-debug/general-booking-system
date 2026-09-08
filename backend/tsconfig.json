@@ -19,6 +19,10 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": false,
     "strictBindCallApply": false,
-    "noFallthroughCasesInSwitch": false
+    "noFallthroughCasesInSwitch": false,
+    "paths": {
+      "@app/shared/*": ["../../packages/shared/src/*"],
+      "@app/shared": ["../../packages/shared/src/index.ts"]
+    }
   }
 }

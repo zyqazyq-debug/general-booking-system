@@ -29,12 +29,21 @@
     "contracts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["configSchema", "apiVersion", "frontendCompatibleApi", "migrationExpandFloor", "rollbackCompatibleRelease"],
+      "required": ["configSchema", "apiVersion", "frontendCompatibleApi", "migration", "rollbackCompatibleRelease"],
       "properties": {
         "configSchema": { "type": "string", "pattern": "^booking\\.config/v[1-9][0-9]*$" },
         "apiVersion": { "type": "string", "pattern": "^v[1-9][0-9]*$" },
         "frontendCompatibleApi": { "type": "string", "pattern": "^v[1-9][0-9]*$" },
-        "migrationExpandFloor": { "type": "string", "minLength": 1 },
+        "migration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expandFloor", "catalogDigest", "compatibility"],
+          "properties": {
+            "expandFloor": { "type": "string", "pattern": "^[0-9]{10,}-[A-Za-z0-9][A-Za-z0-9-]*$" },
+            "catalogDigest": { "$ref": "#/$defs/digest" },
+            "compatibility": { "const": "expand-contract" }
+          }
+        },
         "rollbackCompatibleRelease": {
           "oneOf": [
             { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
@@ -68,22 +77,24 @@
     "imageArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "digest", "sbomDigest"],
+      "required": ["image", "digest", "sbomDigest", "provenanceDigest"],
       "properties": {
         "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
         "digest": { "$ref": "#/$defs/digest" },
-        "sbomDigest": { "$ref": "#/$defs/digest" }
+        "sbomDigest": { "$ref": "#/$defs/digest" },
+        "provenanceDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "backendArtifact": { "$ref": "#/$defs/imageArtifact" },
     "gatewayArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "digest", "sbomDigest", "frontendAssetDigest", "routeContractDigest"],
+      "required": ["image", "digest", "sbomDigest", "provenanceDigest", "frontendAssetDigest", "routeContractDigest"],
       "properties": {
         "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
         "digest": { "$ref": "#/$defs/digest" },
         "sbomDigest": { "$ref": "#/$defs/digest" },
+        "provenanceDigest": { "$ref": "#/$defs/digest" },
         "frontendAssetDigest": { "$ref": "#/$defs/digest" },
         "routeContractDigest": { "$ref": "#/$defs/digest" }
       }

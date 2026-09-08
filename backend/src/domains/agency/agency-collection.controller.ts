@@ -9,6 +9,8 @@ import {
 import { AgencyService } from './agency.service';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
+import { ApiOkResponse } from '@nestjs/swagger';
+import { AgencyCollectionEnvelopeDto, AgencyNodeViewEnvelopeDto, CollectionAvailabilityEnvelopeDto } from './dto/agency-response.dto';
 
 @Controller('agency')
 export class AgencyCollectionController {
@@ -16,12 +18,14 @@ export class AgencyCollectionController {
 
   @Get('collection')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: AgencyCollectionEnvelopeDto })
   async getMyCollection(@Request() req: AuthenticatedRequest) {
     return this.agencyService.getMyCollection(req.user.id);
   }
 
   @Get('collection/availability')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: CollectionAvailabilityEnvelopeDto })
   async getCollectionAvailability(
     @Request() req: AuthenticatedRequest,
     @Query('date') date: string,
@@ -31,6 +35,7 @@ export class AgencyCollectionController {
 
   @Get('nodes/:id')
   @UseGuards(JwtAuthGuard)
+  @ApiOkResponse({ type: AgencyNodeViewEnvelopeDto })
   async getNodeById(
     @Param('id') id: string,
     @Request() req: AuthenticatedRequest,

@@ -6,6 +6,14 @@ import { SocialIdentityProofDto } from './dto/social-identity-proof.dto';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
 import { TelegramLoginDto } from './dto/telegram-login.dto';
 import { TelegramWebAppLoginDto } from './dto/telegram-webapp-login.dto';
+import {
+  ApiCreatedAuthSuccessResponse,
+  ApiOkAuthSuccessResponse,
+  AuthLoginResponseDto,
+  ReservedSocialLoginResponseDto,
+  SocialProviderResponseDto,
+  TelegramLoginTicketResponseDto,
+} from './dto/auth-response.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -15,11 +23,13 @@ export class AuthPublicController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async register(@Body() req: CreateAuthUserDto) {
     return this.authService.register(req);
   }
 
   @Post('wechat')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async wechatLogin(@Body() body: SocialIdentityProofDto) {
     return this.authService.loginWithSocialProof(
       'wechat',
@@ -29,6 +39,7 @@ export class AuthPublicController {
   }
 
   @Post('qq')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async qqLogin(@Body() body: SocialIdentityProofDto) {
     return this.authService.loginWithSocialProof(
       'qq',
@@ -38,16 +49,19 @@ export class AuthPublicController {
   }
 
   @Get('social/providers')
+  @ApiOkAuthSuccessResponse(SocialProviderResponseDto, { isArray: true })
   getSocialProviders() {
     return this.authService.getSocialProviders();
   }
 
   @Post('social/login')
+  @ApiCreatedAuthSuccessResponse(ReservedSocialLoginResponseDto)
   socialLogin(@Body() body: SocialLoginDto) {
     return this.authService.reserveSocialLogin(body.provider, body.auth_code);
   }
 
   @Post('telegram')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async telegramLogin(@Body() telegramData: TelegramLoginDto) {
     return this.authService.loginTelegram(
       telegramData,
@@ -56,11 +70,13 @@ export class AuthPublicController {
   }
 
   @Post('telegram/login-ticket')
+  @ApiCreatedAuthSuccessResponse(TelegramLoginTicketResponseDto)
   async getTelegramLoginTicket() {
     return this.authService.generateTelegramLoginTicket();
   }
 
   @Post('telegram/webapp-login')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async telegramWebAppLogin(@Body() body: TelegramWebAppLoginDto) {
     const { initData } = body;
     this.logger.log(

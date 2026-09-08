@@ -14,6 +14,13 @@ import { RefreshTokenDto } from './dto/session-token.dto';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
+import {
+  ApiCreatedAuthSuccessResponse,
+  AuthLoginResponseDto,
+  AuthTokenPairResponseDto,
+  LogoutResponseDto,
+  ReservedSmsCodeResponseDto,
+} from './dto/auth-response.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -21,6 +28,7 @@ export class AuthSessionController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('login')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async login(@Body() req: LoginDto) {
     const user = await this.authService.validateUser(
       req.username,
@@ -33,11 +41,13 @@ export class AuthSessionController {
   }
 
   @Post('refresh')
+  @ApiCreatedAuthSuccessResponse(AuthTokenPairResponseDto)
   async refresh(@Body() body: RefreshTokenDto) {
     return this.authService.refresh(body.refresh_token);
   }
 
   @Post('logout')
+  @ApiCreatedAuthSuccessResponse(LogoutResponseDto)
   @UseGuards(JwtAuthGuard)
   async logout(
     @Request() req: AuthenticatedRequest,
@@ -47,17 +57,20 @@ export class AuthSessionController {
   }
 
   @Post('phone')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   async phoneLogin(@Body() body: VerifySmsLoginDto) {
     return this.authService.loginPhone(body.phone, body.code, body.deviceInfo);
   }
 
   @Post('sms/send-code')
+  @ApiCreatedAuthSuccessResponse(ReservedSmsCodeResponseDto)
   @Throttle({ default: { limit: 1, ttl: 60000 } })
   sendSmsCode(@Body() body: SendSmsCodeDto) {
     return this.authService.sendSmsCode(body.phone, body.scene);
   }
 
   @Post('sms/login')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   async smsLogin(@Body() body: VerifySmsLoginDto) {
     return this.authService.loginPhone(body.phone, body.code, body.deviceInfo);

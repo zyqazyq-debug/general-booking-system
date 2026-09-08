@@ -1,7 +1,7 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { PaymentChannel } from '../../../payment/payment.types';
+import { PaymentChannel } from '../../../payment';
 import { CollectionQuotaController } from '../collection-quota.controller';
 import { CollectionQuotaService } from '../collection-quota.service';
 

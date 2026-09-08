@@ -1,3 +1,6 @@
+// TODO(D2): migrate types to @app/shared and src/generated/api.ts after CI green
+import type { components } from '@/generated/api';
+import type { Pagination, BusinessErrorCode } from '@app/shared';
 // Lightweight API type definitions to centralize shapes used by frontend
 // Generic response wrapper
 export interface ApiResponse<T = unknown> {

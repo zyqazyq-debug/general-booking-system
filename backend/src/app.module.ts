@@ -28,7 +28,7 @@ import { CalendarSyncModule } from './domains/calendar-sync/runtime';
 import { SystemConfigModule } from './domains/system-config/runtime';
 import { GlobalCacheModule } from './shared/common/cache/global-cache.module';
 import { TasksModule } from './platforms/tasks';
-import { AdminPanelModule } from './domains/admin/runtime';
+import { AdminModule, AdminPanelModule } from './domains/admin/runtime';
 import { LinkModule } from './domains/link/runtime';
 import { validateEnv } from './config/env.validation';
 import { AppThrottlerGuard } from './shared/common/guards/app-throttler.guard';
@@ -72,6 +72,7 @@ const imports: any[] = [
   ReferralModule,
   NotificationModule,
   DomainPortsModule,
+  AdminModule,
   PlatformPortsModule,
   PlatformsModule,
   CalendarSyncModule,

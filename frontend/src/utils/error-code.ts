@@ -1,3 +1,6 @@
+// TODO(D2): migrate types to @app/shared and src/generated/api.ts after CI green
+import type { components } from '@/generated/api';
+import type { Pagination, BusinessErrorCode } from '@app/shared';
 import { i18n } from '@/core/i18n/instance';
 
 const ERROR_CODE_I18N_KEY: Record<string, string> = {

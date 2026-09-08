@@ -24,7 +24,7 @@
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js",
     "migration:generate": "npm run typeorm -- -d ./data-source.ts migration:generate",
     "migration:run": "npm run typeorm -- -d ./data-source.ts migration:run",
-    "migration:revert": "npm run typeorm -- -d ./data-source.ts migration:revert",
+    "migration:revert": "node ../tools/migrate/05-revert-forbidden.js",
     "reset:business-data": "node ../tools/ci/reset_business_data.js",
     "test:full": "node ../tools/ci/test-full-workflow.js",
     "lint:runtime": "node ../tools/lint/check-runtime-imports.js",
@@ -32,7 +32,8 @@
     "migration:guard:01": "node ../tools/migrate/01-validate-db-name.js",
     "migration:guard:02": "node ../tools/migrate/02-dry-run-diff.js",
     "migration:guard:03": "node ../tools/migrate/03-auto-backup.js",
-    "migration:run:safe": "npm run migration:guard:01 && npm run migration:guard:02 && npm run migration:guard:03 && npm run migration:run"
+    "migration:restore-drill:isolated": "node ../tools/migrate/04-restore-drill.js",
+    "migration:run:safe": "node ../tools/migrate/06-apply-isolated.js --execute"
   },
   "dependencies": {
     "@adminjs/express": "^5.1.0",

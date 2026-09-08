@@ -5,7 +5,9 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@/components/*": ["./src/shared/components/*"]
+      "@/components/*": ["./src/shared/components/*"],
+      "@app/shared/*": ["../../packages/shared/src/*"],
+      "@app/shared": ["../../packages/shared/src/index.ts"]
     },
     "lib": ["esnext", "dom"],
     "types": ["@dcloudio/types"],

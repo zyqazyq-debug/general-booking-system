@@ -1,0 +1,10 @@
+.git
+.trae
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+coverage
+logs
+data
+*.log

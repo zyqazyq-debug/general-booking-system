@@ -10,6 +10,17 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
 import { AppThrottlerGuard } from '../../shared/common/guards/app-throttler.guard';
 import { IdentityUnbindDto } from './dto/identity-unbind.dto';
+import {
+  ApiCreatedAuthSuccessResponse,
+  AuthLoginResponseDto,
+  IdentityBoundResponseDto,
+  IdentityMergeRequiredResponseDto,
+  IdentityScanPendingResponseDto,
+  IdentityScanSuccessResponseDto,
+  IdentityUnbindResponseDto,
+  ReservedIdentityScanStartResponseDto,
+  TelegramIdentityScanStartResponseDto,
+} from './dto/auth-response.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -17,6 +28,7 @@ export class AuthIdentityController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('telegram/merge')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   @UseGuards(JwtAuthGuard)
   async mergeTelegramAccount(
     @Req() req: AuthenticatedRequest,
@@ -30,6 +42,7 @@ export class AuthIdentityController {
   }
 
   @Post('phone/bind')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   @UseGuards(JwtAuthGuard)
   async bindPhone(
     @Req() req: AuthenticatedRequest,
@@ -43,6 +56,7 @@ export class AuthIdentityController {
   }
 
   @Post('account/merge-by-phone')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   @UseGuards(JwtAuthGuard)
   async mergeByPhone(
     @Req() req: AuthenticatedRequest,
@@ -56,6 +70,7 @@ export class AuthIdentityController {
   }
 
   @Post('identity/bind')
+  @ApiCreatedAuthSuccessResponse([IdentityBoundResponseDto, IdentityMergeRequiredResponseDto])
   @UseGuards(JwtAuthGuard)
   async bindIdentity(
     @Req() req: AuthenticatedRequest,
@@ -71,6 +86,7 @@ export class AuthIdentityController {
   }
 
   @Post('identity/merge-confirm')
+  @ApiCreatedAuthSuccessResponse(AuthLoginResponseDto)
   @UseGuards(JwtAuthGuard)
   async mergeByIdentity(
     @Req() req: AuthenticatedRequest,
@@ -86,6 +102,7 @@ export class AuthIdentityController {
   }
 
   @Post('identity/scan/start')
+  @ApiCreatedAuthSuccessResponse([TelegramIdentityScanStartResponseDto, ReservedIdentityScanStartResponseDto])
   @UseGuards(JwtAuthGuard)
   async startIdentityScan(
     @Req() req: AuthenticatedRequest,
@@ -98,12 +115,14 @@ export class AuthIdentityController {
   }
 
   @Post('identity/scan/status')
+  @ApiCreatedAuthSuccessResponse([IdentityScanPendingResponseDto, IdentityScanSuccessResponseDto])
   @UseGuards(JwtAuthGuard)
   checkIdentityScanStatus(@Body() body: IdentityScanStatusDto) {
     return this.authService.checkIdentityScanBindingStatus(body.ticket_id);
   }
 
   @Post('identity/unbind')
+  @ApiCreatedAuthSuccessResponse(IdentityUnbindResponseDto)
   @UseGuards(JwtAuthGuard)
   async unbindIdentity(
     @Req() req: AuthenticatedRequest,

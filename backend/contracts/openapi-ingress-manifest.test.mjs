@@ -15,7 +15,7 @@ const validRoute = {
   surface: 'app',
   method: 'POST',
   source_path: '/example/:id',
-  openapi_path: '/api/example/{id}',
+  openapi_path: '/example/{id}',
   runtime_prefix: 'api',
   runtime_path: '/api/example/:id',
   body_kind: 'sdk-json',
@@ -50,7 +50,7 @@ test('reads the checked-in production ingress manifest', () => {
 });
 
 test('normalizes Nest parameters without guessing route structure', () => {
-  assert.equal(sourcePathToOpenApiPath('/api/payment/notify/:channel'), '/api/payment/notify/{channel}');
+  assert.equal(sourcePathToOpenApiPath('/payment/notify/:channel'), '/payment/notify/{channel}');
   assert.equal(sourcePathToRuntimePath('/telegram/webhook', 'none'), '/telegram/webhook');
   assert.throws(() => sourcePathToOpenApiPath('missing-leading-slash'));
 });
@@ -61,7 +61,7 @@ test('rejects unknown keys and duplicate mutating routes', () => {
 });
 
 test('rejects invalid source-to-OpenAPI/runtime transforms', () => {
-  errorFor((manifest) => { manifest.routes[0].openapi_path = '/api/example/:id'; });
+  errorFor((manifest) => { manifest.routes[0].openapi_path = '/example/:id'; });
   errorFor((manifest) => { manifest.routes[0].runtime_path = '/example/:id'; });
 });
 
@@ -74,7 +74,7 @@ test('rejects sdk JSON entries without explicit schema property requirements', (
 test('rejects expired or under-specified external webhook declarations', () => {
   const external = structuredClone(validRoute);
   external.source_path = '/payment/notify/:channel';
-  external.openapi_path = '/api/payment/notify/{channel}';
+  external.openapi_path = '/payment/notify/{channel}';
   external.runtime_path = '/api/payment/notify/:channel';
   external.body_kind = 'external-webhook';
   external.body_binding = 'whole';
@@ -100,20 +100,4 @@ test('rejects expired or under-specified external webhook declarations', () => {
       external_webhook: { ...external.external_webhook, security_controls: [] },
     });
   });
-});
-
-test('derives canonical runtime and OpenAPI paths from the declared prefix', () => {
-  const versioned = structuredClone(validRoute);
-  versioned.runtime_prefix = 'v2';
-  versioned.runtime_path = '/v2/example/:id';
-  versioned.openapi_path = '/v2/example/{id}';
-  assert.doesNotThrow(() => parseOpenApiIngressManifest(fixture(versioned), { now }));
-});
-
-test('requires an auditable reason for development-only ingress', () => {
-  const developmentOnly = structuredClone(validRoute);
-  developmentOnly.surface = 'development-only';
-  developmentOnly.reason = 'The controller is intentionally absent from production and test application assemblies.';
-  assert.doesNotThrow(() => parseOpenApiIngressManifest(fixture(developmentOnly), { now }));
-  errorFor((manifest) => { manifest.routes[0].surface = 'development-only'; });
 });

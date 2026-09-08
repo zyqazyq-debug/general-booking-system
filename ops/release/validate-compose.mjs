@@ -63,6 +63,8 @@ export async function validateComposeContracts(paths) {
   requirePattern(edge, /BOOKING_TRUSTED_PROXY_CIDR:\?/, 'trusted proxy CIDR must be explicit');
   requirePattern(release, /BOOKING_WORKERS_ENABLED:\s*\$\{BOOKING_(BLUE|GREEN)_WORKERS_ENABLED:-false\}/, 'candidate workers must default to disabled');
   requirePattern(release, /TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE/, 'webhook secret file handoff is missing');
+  requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-blue:3001/, 'blue gateway backend upstream is missing');
+  requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-green:3001/, 'green gateway backend upstream is missing');
 
   requirePattern(network, /location\s*=\s*\/telegram\/webhook\s*\{/, 'root Telegram webhook route is missing');
   rejectPattern(network, /\/api\/telegram\/webhook/, 'Telegram webhook must not be routed below /api');

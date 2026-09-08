@@ -12,6 +12,7 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { ApiCreatedResponse, ApiExtraModels, ApiOkResponse } from '@nestjs/swagger';
 import { OrderService } from './order.service';
 import {
   CreateOrderDto,
@@ -22,10 +23,31 @@ import { OrderFilterDto } from './dto/order-filter.dto';
 import { JwtAuthGuard } from '../auth';
 import type { AuthenticatedRequest } from '../../shared/common/types/auth-request.type';
 import { PaginationDto } from '../../shared/common/dto/pagination.dto';
+import {
+  CreditCheckResponseDto,
+  CreditCheckResponseEnvelopeDto,
+  CreditSummaryResponseDto,
+  CreditSummaryResponseEnvelopeDto,
+  ManagedOrdersResponseDto,
+  ManagedOrdersResponseEnvelopeDto,
+  MyOrdersResponseDto,
+  MyOrdersResponseEnvelopeDto,
+  OrderContextResponseDto,
+  OrderContextResponseEnvelopeDto,
+  OrderCreatedResponseEnvelopeDto,
+  OrderResponseDto,
+} from './dto/order-response.dto';
 
 @Controller('order')
 @UseGuards(JwtAuthGuard)
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+@ApiExtraModels(
+  OrderResponseDto, MyOrdersResponseDto, ManagedOrdersResponseDto,
+  CreditSummaryResponseDto, CreditCheckResponseDto, OrderContextResponseDto,
+  OrderCreatedResponseEnvelopeDto, MyOrdersResponseEnvelopeDto,
+  ManagedOrdersResponseEnvelopeDto, CreditSummaryResponseEnvelopeDto,
+  CreditCheckResponseEnvelopeDto, OrderContextResponseEnvelopeDto,
+)
 export class OrderController {
   private readonly logger = new Logger(OrderController.name);
   private static readonly manageWindow = new Map<
@@ -78,6 +100,7 @@ export class OrderController {
 
   @Post()
   @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   create(
     @Request() req: AuthenticatedRequest,
     @Body() createOrderDto: CreateOrderDto,
@@ -93,6 +116,7 @@ export class OrderController {
   }
 
   @Get('my')
+  @ApiOkResponse({ type: MyOrdersResponseEnvelopeDto })
   findMyOrders(
     @Request() req: AuthenticatedRequest,
     @Query() paginationDto: PaginationDto,
@@ -102,6 +126,7 @@ export class OrderController {
   }
 
   @Get('manage')
+  @ApiOkResponse({ type: ManagedOrdersResponseEnvelopeDto })
   findOwnerOrders(
     @Request() req: AuthenticatedRequest,
     @Query() filter: OrderFilterDto,
@@ -140,11 +165,13 @@ export class OrderController {
   }
 
   @Get('credit-summary')
+  @ApiOkResponse({ type: CreditSummaryResponseEnvelopeDto })
   getCreditSummary(@Request() req: AuthenticatedRequest) {
     return this.orderService.getCreditSummary(req.user.id);
   }
 
   @Get('credit-check')
+  @ApiOkResponse({ type: CreditCheckResponseEnvelopeDto })
   checkCredit(
     @Request() req: AuthenticatedRequest,
     @Query('serviceId') serviceId: string,
@@ -154,21 +181,25 @@ export class OrderController {
 
   // TODO: Add ownership check for these actions (ensure it's the owner of the schedule)
   @Post(':id/confirm')
+  @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   confirm(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.orderService.confirm(id, req.user.id);
   }
 
   @Post(':id/complete')
+  @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   complete(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.orderService.complete(id, req.user.id);
   }
 
   @Post(':id/no-show')
+  @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   noShow(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.orderService.noShow(id, req.user.id);
   }
 
   @Post(':id/cancel')
+  @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   cancel(
     @Param('id') id: string,
     @Body() cancelOrderDto: CancelOrderDto,
@@ -181,6 +212,7 @@ export class OrderController {
   // Use AdminController for administrative listing.
 
   @Get(':id')
+  @ApiOkResponse({ type: OrderContextResponseEnvelopeDto })
   findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.orderService.findOne(id, req.user.id);
   }
