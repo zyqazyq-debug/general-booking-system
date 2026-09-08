@@ -10,7 +10,7 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 RUN apk add --no-cache libstdc++
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
 # 设置环境变量
