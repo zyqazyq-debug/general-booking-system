@@ -83,6 +83,21 @@ while the required canonical identity is the value recorded above. The first
 deployment attempt exposed this distinction; the corrected candidate passed
 the exact version check.
 
+## 2026-09-09 read-only continuity receipt
+
+An authorized NAS read-only check observed `booking-preprod` gateway, backend,
+PostgreSQL, and Redis healthy, with the distinct `booking-preprod-edge` and
+`booking-preprod-data` networks still present beside (not joined to)
+`booking-prod_default`. Loopback reads on `127.0.0.1:18082` returned the same
+bare release identity from `/livez`, `/readyz`, and `/__ops/version`:
+`booking-20260908T180317Z-af88755036e1`, slot `green`, and canonical manifest
+digest `sha256:70525c89730e6d4b8556e1ddc724d3e937645cf9008943ceac7b58baed25d7f3`.
+
+This is continuity evidence only. The running candidate predates the later
+G2/G3 commits that move `sqlite3` to test-only dependencies and add typed
+OpenAPI release-probe schemas. It neither deploys nor validates those commits,
+does not add public ingress, and does not advance G4 acceptance.
+
 ## 2026-09-09 Cloudflare preprod read-only audit
 
 The existing healthy `happybooking` Tunnel is a shared route boundary, not a
