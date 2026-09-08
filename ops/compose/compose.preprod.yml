@@ -36,8 +36,8 @@ services:
   backend-green:
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
     build:
-      context: ../..
-      dockerfile: backend/Dockerfile
+      context: ../../backend
+      dockerfile: Dockerfile
     restart: unless-stopped
     env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
