@@ -33,6 +33,27 @@ services:
       retries: 12
       start_period: 20s
 
+  schema-bootstrap:
+    profiles: [bootstrap]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_SCHEMA_BOOTSTRAP: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+    command: ["node", "dist/src/scripts/bootstrap-preprod-schema.js"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend-green:
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
     build:
