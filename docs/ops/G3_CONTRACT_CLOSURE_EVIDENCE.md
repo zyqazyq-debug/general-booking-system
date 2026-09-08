@@ -19,9 +19,10 @@ Owner: Main scheduler (contract and release-gate owner).
 - These are local engineering results. No real user data, NAS container, Cloudflare/Tunnel configuration, DNS, Telegram bot, database, Redis, or external ingress was contacted or changed.
 - Backend runtime dependency security is locally **passed**, not yet
   runtime-image verified. A compatibility-only `npm audit fix --prefix backend
-  --package-lock-only --omit=dev` was applied, then the unused direct
-  `sqlite3` package was removed after confirming runtime data sources are
-  PostgreSQL-only. The remaining AdminJS editor chain is a development-only
+  --package-lock-only --omit=dev` was applied, then `sqlite3` was moved from
+  production dependencies into the development/test dependency graph after
+  confirming runtime data sources are PostgreSQL-only. The remaining AdminJS
+  editor chain is a development-only
   administration panel: `AppModule` now loads it dynamically only outside
   production and test modes, and its packages are declared in
   `devDependencies`. A production-module regression test proves the panel
@@ -42,6 +43,13 @@ Owner: Main scheduler (contract and release-gate owner).
   findings and is not an application-runtime image. Both must be tracked and
   remediated or explicitly risk-accepted before G5; neither is hidden by the
   clean backend result.
+- The OpenAPI generation gate deliberately starts a test-only in-memory
+  database. It requires the test `sqlite3` driver, which is absent from the
+  production graph. This workstation runs Node 25 and has no compatible
+  prebuilt `sqlite3` binding; its locally installed Visual Studio toolchain
+  also lacks ClangCL, so the contract-generation process cannot start here.
+  CI is pinned to Node 20, but a fresh Node-20 gate receipt is still required
+  before treating generated-interface reproducibility as current G2 evidence.
 - The runtime dependency remediation is committed locally, but is **not yet
   deployed** to `booking-preprod`. The NAS legacy Docker builder completed the
   new image's dependency-install command but remained idle while committing

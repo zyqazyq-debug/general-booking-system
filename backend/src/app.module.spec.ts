@@ -5,6 +5,7 @@ describe('AppModule production dependency boundary', () => {
   afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
     jest.resetModules();
+    jest.unmock('./shared/database/database.module');
     jest.unmock('./domains/admin/panel/admin-panel.module');
   });
 
@@ -12,6 +13,9 @@ describe('AppModule production dependency boundary', () => {
     process.env.NODE_ENV = 'production';
 
     jest.isolateModules(() => {
+      jest.doMock('./shared/database/database.module', () => ({
+        DatabaseModule: class DatabaseModule {},
+      }));
       jest.doMock('./domains/admin/panel/admin-panel.module', () => {
         throw new Error('AdminJS panel must not load in production');
       });
