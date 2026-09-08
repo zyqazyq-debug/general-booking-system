@@ -1,8 +1,7 @@
 # G4 isolated-preproduction evidence ledger
 
-Status: isolated candidate is deployed and healthy at HTTP level, but its
-release-probe response contract failed. G4 remains pending because of that
-failure and because no public-preprod ingress, fixture-Telegram,
+Status: isolated candidate has passed the internal release-probe contract.
+G4 remains pending because no public-preprod ingress, fixture-Telegram,
 backup/restore, lease/switch, or rollback rehearsal evidence exists.
 
 Owner: Booking NAS/Cloudflare release owner. Approval owner: main scheduler.
@@ -62,11 +61,27 @@ and `slot` fields. This is a real G4 failure even though the HTTP status was
 
 Commit `158b0e60520d1bd9472d9c07d5b47f8edf43098f` adds a narrowly scoped
 raw-response marker for those three release endpoints and passed its four
-targeted controller tests plus the backend build locally. It is **not deployed**:
-the NAS legacy Docker builder remained internally blocked after the compile
-step and was deliberately stopped before it produced a tagged image. The
-currently deployed candidate therefore remains
-`booking-20260908T173556Z-f460ae8c2092` and G4 is not accepted.
+targeted controller tests plus the backend build locally. It is included in
+the superseding candidate receipt below; the old candidate remains historical
+failure evidence and is not G4 acceptance evidence.
+
+## 2026-09-09 superseding isolated candidate receipt
+
+| Area | Observed receipt | Result |
+| --- | --- | --- |
+| Candidate identity | `booking-20260908T180317Z-af88755036e1`; Git `af88755036e1a8ea6f0e097624e2281074139f79`; runtime manifest identity `sha256:70525c89730e6d4b8556e1ddc724d3e937645cf9008943ceac7b58baed25d7f3` | PASS |
+| Source and artifacts | Source archive `sha256:4182d6728e2adf1f16beeead4c160514374d873fb580a22de0fb75a9043de7f1`; backend image `sha256:7b6f8116603bf65e260c08ea59f6c92abe130f0e28a92e4cd7ec2b939717f24f`; gateway image `sha256:edc4f7b447272bd683700e04860caf8d5314fef9b9ab17be41752a37e566fc66` | PASS |
+| Artifact reproducibility | Local SBOM, provenance, manifest generation, and `validate-artifacts` recomputation passed for the candidate | PASS |
+| Release contract | `probe-slot` was run from the isolated backend over `booking-preprod-edge` to `gateway-green:8080`; liveness, readiness, and version all returned `HTTP_IDENTITY_OK` | PASS |
+| Exposure | Candidate remains published only as `127.0.0.1:18082`; no Cloudflare, DNS, Tunnel, or public ingress was changed | PASS, isolated only |
+
+`BOOKING_MANIFEST_DIGEST` must use the release contract's canonical object
+digest (`sha256(manifest)`), not the byte digest of the newline-terminated
+manifest file. For this candidate the byte digest is
+`sha256:e8d19ed15ac53a323bbcecd78ec701e7a2b86e84766bbe359ceb05ad99f8e9d8`,
+while the required canonical identity is the value recorded above. The first
+deployment attempt exposed this distinction; the corrected candidate passed
+the exact version check.
 
 ## Required real G4 input and evidence
 
@@ -74,7 +89,7 @@ currently deployed candidate therefore remains
 | --- | --- | --- | --- |
 | Isolation | Real `booking-preprod` project, data, secret roots and distinct edge/data network names | NAS release owner | PASS (candidate only) |
 | Immutable identity | Candidate manifest path plus manifest, backend-image, and gateway-image digests | Runtime/CI owner | PASS (candidate only) |
-| Read-only probes | Candidate slot and preprod ingress base URLs; `/livez`, `/readyz`, `/__ops/version` receipts | Runtime/CI owner | PARTIAL: loopback candidate PASS; public preprod absent |
+| Read-only probes | Candidate slot and preprod ingress base URLs; `/livez`, `/readyz`, `/__ops/version` receipts | Runtime/CI owner | PARTIAL: internal slot contract PASS; public preprod absent |
 | Edge | Stable preprod edge reference, active-upstream path, candidate upstream name | NAS/Cloudflare owner | NOT PROVIDED |
 | Telegram | Separate fixture-bot reference and duplicate-delivery receipt location; root webhook remains `/telegram/webhook` | Telegram owner | NOT PROVIDED |
 | Database | Isolated armed-gate, backup, and restore receipt locations plus explicit isolated-target acknowledgement | Database owner | PARTIAL: isolated bootstrap exists; no backup/restore drill |
