@@ -83,6 +83,23 @@ while the required canonical identity is the value recorded above. The first
 deployment attempt exposed this distinction; the corrected candidate passed
 the exact version check.
 
+## 2026-09-09 Cloudflare preprod read-only audit
+
+The existing healthy `happybooking` Tunnel is a shared route boundary, not a
+preprod ingress: its visible `app-dev.happybooking.uk` route targets
+`http://192.168.3.11:8443`, while this candidate is isolated on the NAS at
+`127.0.0.1:18082`. The NAS also hosts a running `cf-tunnel-happybooking`
+container, so attaching that shared connector to `booking-preprod-edge` or
+rewriting `app-dev` would mutate a production-adjacent route boundary.
+
+Do not reuse, repoint, or network-attach the existing Tunnel. The required
+next design is a new, dedicated preprod Tunnel and a dedicated preprod
+hostname, with its connector attached only to `booking-preprod-edge` and an
+upstream of `gateway-green:8080`. Provisioning either the Cloudflare Tunnel,
+hostname/DNS route, token, or connector is an external mutation and requires
+an explicit user-approved change window. Until then, public ingress is
+correctly recorded as absent.
+
 ## Required real G4 input and evidence
 
 | Area | Required non-secret evidence | Owner | Status |
