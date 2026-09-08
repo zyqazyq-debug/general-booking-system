@@ -32,6 +32,15 @@ Owner: Main scheduler (contract and release-gate owner).
   major upgrade. Those remaining findings require compatibility tests and a
   fresh runtime-image audit before G5 can be considered; they are not silently
   included in the compatibility lock update.
+- The compatible lockfile remediation is committed locally, but is **not yet
+  deployed** to `booking-preprod`. The NAS legacy Docker builder completed the
+  new image's dependency-install command but remained idle while committing
+  the next layer for more than 14 minutes despite 8.4 TB free storage; that
+  isolated build was stopped before it produced an image. The currently
+  running preprod candidate therefore remains the earlier release and cannot
+  be used as runtime evidence for the new dependency audit. An alternate
+  reproducible image-build path is required before the security remediation
+  can enter G4.
 - G4 is **not passed**. The internal `booking-preprod` release-slot probe now
   passes, but the public isolated ingress, fixture Telegram duplicate-delivery,
   isolated backup/restore, fenced singleton transfer, and rollback rehearsal
