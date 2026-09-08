@@ -44,6 +44,13 @@ Owner: Main scheduler (contract and release-gate owner).
   findings and is not an application-runtime image. Both must be tracked and
   remediated or explicitly risk-accepted before G5; neither is hidden by the
   clean backend result.
+- A local lockfile-only trial of Vite `5.4.21` was rejected and fully
+  reverted: the pinned `@dcloudio/vite-plugin-uni`
+  `3.0.0-4080420251103001` declares an exact `vite@5.2.8` peer dependency.
+  Forcing a newer Vite would violate the framework contract. The remaining
+  Vite/Uni-App findings therefore require a coordinated Uni-App toolchain
+  upgrade with H5 and target-platform regression evidence, not an isolated
+  package override.
 - The OpenAPI generation gate deliberately starts a test-only in-memory
   database. It requires the test `sqlite3` driver, which is absent from the
   production graph. This workstation runs Node 25 and has no compatible
