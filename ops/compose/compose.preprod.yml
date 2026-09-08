@@ -113,6 +113,10 @@ services:
       - "127.0.0.1:${BOOKING_CANDIDATE_PORT:?set candidate port}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-green:3001
+      # The NAS Docker runtime discards tmpfs mode options. Avoid rendering a
+      # writable config at startup: bind the candidate's committed static
+      # upstream configuration read-only and skip the image template directory.
+      NGINX_ENVSUBST_TEMPLATE_DIR: /tmp/empty-nginx-templates
     read_only: true
     # nginx renders the upstream-specific template at startup. Keep generated
     # configuration ephemeral while retaining a read-only image filesystem.
@@ -123,13 +127,10 @@ services:
         target: /var/run
       - type: tmpfs
         target: /tmp
-      # The image runs as the unprivileged nginx user, while Docker creates a
-      # tmpfs mount as root.  Compose's short tmpfs syntax loses mode on this
-      # NAS runtime, so declare the rendered-config permission explicitly.
-      - type: tmpfs
-        target: /etc/nginx/conf.d
-        tmpfs:
-          mode: 1023
+      - type: bind
+        source: ../../frontend/nginx.preprod.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]

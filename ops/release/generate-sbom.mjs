@@ -14,7 +14,7 @@ try {
   const source = cleanGitSource(root);
   const inputs = component === 'backend'
     ? ['backend/Dockerfile', 'backend/package.json', 'backend/package-lock.json']
-    : ['frontend/Dockerfile', 'frontend/nginx.release.conf.template', 'frontend/package.json', 'frontend/package-lock.json'];
+    : ['frontend/Dockerfile', 'frontend/nginx.release.conf.template', 'frontend/nginx.preprod.conf', 'frontend/package.json', 'frontend/package-lock.json'];
   const files = [];
   for (const path of inputs) files.push({ path, digest: await digestFile(resolve(root, path)) });
   const document = { schema: 'booking.local-sbom/v1', component, source: { gitSha: source.gitSha }, files };
