@@ -24,12 +24,14 @@ Owner: Main scheduler (contract and release-gate owner).
   1 critical, 8 high, 37 moderate, and 2 low. The unused direct `sqlite3`
   package was then removed after confirming that runtime data sources are
   PostgreSQL-only; its removal passed the backend build and targeted tests.
-  The resulting audit is 47 vulnerabilities: 1 critical, 7 high, 37 moderate,
-  and 2 low. The remaining high/moderate AdminJS editor stack requires an
-  AdminJS major upgrade. The remaining critical `tar` chain and all residual
-  findings require package-path-specific remediation, compatibility tests, and
-  a fresh runtime-image audit before G5 can be considered; they are not
-  silently included in the compatibility lock update.
+  The lockfile was then pruned and reinstalled cleanly, removing stale
+  `tar`/`node-gyp` entries that were no longer reachable from production
+  dependencies. The final publish-scope audit is 41 vulnerabilities: 0
+  critical, 4 high, 37 moderate, and 0 low. The four high findings are the
+  AdminJS editor/deprecated terser chain; resolving them requires an AdminJS
+  major upgrade. Those remaining findings require compatibility tests and a
+  fresh runtime-image audit before G5 can be considered; they are not silently
+  included in the compatibility lock update.
 - G4 is **not passed**. The internal `booking-preprod` release-slot probe now
   passes, but the public isolated ingress, fixture Telegram duplicate-delivery,
   isolated backup/restore, fenced singleton transfer, and rollback rehearsal
