@@ -116,7 +116,14 @@ services:
     read_only: true
     # nginx renders the upstream-specific template at startup. Keep generated
     # configuration ephemeral while retaining a read-only image filesystem.
-    tmpfs: [/var/cache/nginx, /var/run, /tmp, /etc/nginx/conf.d]
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+      # The image runs as the unprivileged nginx user, while Docker creates a
+      # tmpfs mount as root.  Allow only this ephemeral rendered-config target
+      # to be written during entrypoint template expansion.
+      - /etc/nginx/conf.d:mode=1777
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
