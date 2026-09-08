@@ -17,8 +17,8 @@ Owner: Main scheduler (contract and release-gate owner).
 ## Evidence limits and open items
 
 - These are local engineering results. No real user data, NAS container, Cloudflare/Tunnel configuration, DNS, Telegram bot, database, Redis, or external ingress was contacted or changed.
-- Runtime dependency security is locally **passed**, not yet runtime-image
-  verified. A compatibility-only `npm audit fix --prefix backend
+- Backend runtime dependency security is locally **passed**, not yet
+  runtime-image verified. A compatibility-only `npm audit fix --prefix backend
   --package-lock-only --omit=dev` was applied, then the unused direct
   `sqlite3` package was removed after confirming runtime data sources are
   PostgreSQL-only. The remaining AdminJS editor chain is a development-only
@@ -32,6 +32,16 @@ Owner: Main scheduler (contract and release-gate owner).
   also excludes every AdminJS package from the publish dependency graph.
   This is source/lockfile evidence only; it still requires a freshly built,
   scanned runtime image before it becomes G4 or G5 evidence.
+- This backend result is deliberately not a whole-repository security claim.
+  The frontend is compiled in a multi-stage image and only static assets enter
+  the final Nginx image, so its package audit is build-supply-chain evidence,
+  not a final-runtime-image scan. Its current publish-scope audit has 52
+  findings (15 high, 15 moderate, 22 low), concentrated in the pinned Uni-App
+  compiler stack and Vite; a fresh final gateway-image scan is not yet
+  available. The root workspace's tool-only dependency audit likewise has
+  findings and is not an application-runtime image. Both must be tracked and
+  remediated or explicitly risk-accepted before G5; neither is hidden by the
+  clean backend result.
 - The runtime dependency remediation is committed locally, but is **not yet
   deployed** to `booking-preprod`. The NAS legacy Docker builder completed the
   new image's dependency-install command but remained idle while committing
