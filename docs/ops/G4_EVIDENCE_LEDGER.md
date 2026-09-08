@@ -105,6 +105,11 @@ tools generated source-bound SBOM inputs for the next candidate: backend
 `sha256:e6b9629337dc5578bdd1dae3dcfaa9dda139c62a17f2a4a19804976297e0502e`
 and gateway
 `sha256:ba6f9e9e78f7829274ab1049f29b18c9294123df8b648670dbb81a10ff7196cf`.
+The exact Git source archive is
+`sha256:09e30e7c8d535cc811b86d4fb5f74cab608b33f0c02ead2d8fe040a0ec7702ec`
+(64,532,480 bytes); its tracked-file listing contains no `.env` entry.
+The repository's `.dockerignore` excludes `**/node_modules`, including an
+unrelated tracked MCP dependency tree, from Docker build contexts.
 No image digest, provenance, or release manifest was generated because the
 latest source has not been built into immutable images. This is an intentional
 fail-closed boundary: SBOM preparation is not an image, deploy, runtime probe,
