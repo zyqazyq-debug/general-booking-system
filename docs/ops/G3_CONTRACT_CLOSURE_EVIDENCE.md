@@ -40,7 +40,9 @@ Owner: Main scheduler (contract and release-gate owner).
   running preprod candidate therefore remains the earlier release and cannot
   be used as runtime evidence for the new dependency audit. An alternate
   reproducible image-build path is required before the security remediation
-  can enter G4.
+  can enter G4. The NAS reports Docker 24 on the Btrfs storage driver and has
+  no `docker buildx` command installed; do not install a builder plugin or
+  restart Docker without explicit infrastructure authorization.
 - G4 is **not passed**. The internal `booking-preprod` release-slot probe now
   passes, but the public isolated ingress, fixture Telegram duplicate-delivery,
   isolated backup/restore, fenced singleton transfer, and rollback rehearsal
