@@ -1,9 +1,20 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  ApiOkResponse,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
 import { RawResponse } from '../common/decorators/raw-response.decorator';
+import {
+  OpsLivenessResponseDto,
+  OpsNotReadyResponseDto,
+  OpsReadinessResponseDto,
+} from './ops-status.response.dto';
 
 @Controller()
+@ApiTags('ops')
 export class OpsStatusController {
   constructor(
     private readonly config: ConfigService,
@@ -12,12 +23,15 @@ export class OpsStatusController {
 
   @Get('livez')
   @RawResponse()
+  @ApiOkResponse({ type: OpsLivenessResponseDto })
   live() {
     return { status: 'up', ...this.identity() };
   }
 
   @Get('readyz')
   @RawResponse()
+  @ApiOkResponse({ type: OpsReadinessResponseDto })
+  @ApiServiceUnavailableResponse({ type: OpsNotReadyResponseDto })
   async ready() {
     try {
       if (!this.dataSource.isInitialized) {
@@ -32,6 +46,7 @@ export class OpsStatusController {
 
   @Get('__ops/version')
   @RawResponse()
+  @ApiOkResponse({ type: OpsLivenessResponseDto })
   version() {
     return { status: 'up', ...this.identity() };
   }

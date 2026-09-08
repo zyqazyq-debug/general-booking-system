@@ -10,7 +10,8 @@ Owner: Main scheduler (contract and release-gate owner).
 | Item | Closure | Re-runnable evidence |
 | --- | --- | --- |
 | Runtime OpenAPI had SDK-facing success responses without payload schemas | Every discovered success response is now described with a concrete DTO or, for HTML link resolution, an explicit `text/html` response. | `npm --prefix frontend run generate:api -- --input http://127.0.0.1:3101/api-json` reports `Generated 88 operations`. |
-| Generated client could drift from runtime OpenAPI | The generator compares a fresh runtime document with `frontend/src/generated/api.ts`. | `node tools/ci/verify-generated-api.js` passes ingress coverage and reproducibility. |
+| Generated client could drift from runtime OpenAPI | The generator compares a fresh runtime document with `frontend/src/generated/api.ts`. | Under the Node 20 CI/container baseline, `node tools/ci/verify-generated-api.js` passes ingress coverage and reproducibility after generating 91 operations. |
+| Release probes had runtime bodies but no OpenAPI success-payload schemas | `/livez`, `/readyz`, and `/__ops/version` retain their raw release transport contract and now declare concrete, non-secret Swagger DTOs (including `503 not-ready`). | The regenerated client contains typed operations and `OpsLivenessResponseDto` / `OpsReadinessResponseDto`; the same Node 20 generated-API gate passes. |
 | Admin order and collection ports returned `unknown` and could leak entity relations | `AdminOrderPort` and `AdminAgencyPort` now publish narrow read-only projections. Their owning adapters map values explicitly and exclude credentials, contact identifiers, internal notes, wallet values, and relation internals. | `npm --prefix backend test -- --runInBand --runTestsByPath src/domains/order/adapters/admin-order.adapter.spec.ts src/domains/agency/adapters/admin-agency.adapter.spec.ts` passes 2/2 tests. |
 | Cross-domain boundary regression | Backend dependency-cruiser and runtime-import checks remain clean after the new adapter projections. | `npm run quality:gates` passes the backend dependency-boundary gate and the full G2 sequence. |
 
@@ -48,8 +49,10 @@ Owner: Main scheduler (contract and release-gate owner).
   production graph. This workstation runs Node 25 and has no compatible
   prebuilt `sqlite3` binding; its locally installed Visual Studio toolchain
   also lacks ClangCL, so the contract-generation process cannot start here.
-  CI is pinned to Node 20, but a fresh Node-20 gate receipt is still required
-  before treating generated-interface reproducibility as current G2 evidence.
+  A SHA-256-verified, temporary official Node 20.20.2 runtime was therefore
+  used to rebuild the test binding and run `verify-generated-api.js`; the gate
+  passed after regeneration. CI remains pinned to Node 20 and must retain this
+  check as the durable cross-machine receipt.
 - The runtime dependency remediation is committed locally, but is **not yet
   deployed** to `booking-preprod`. The NAS legacy Docker builder completed the
   new image's dependency-install command but remained idle while committing

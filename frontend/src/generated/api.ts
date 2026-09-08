@@ -936,6 +936,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/livez": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OpsStatusController_live"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OpsStatusController_ready"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__ops/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["OpsStatusController_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agency/collection": {
         parameters: {
             query?: never;
@@ -1422,7 +1470,7 @@ export interface components {
         UserPasswordChangeResponseDataDto: {
             /**
              * @example true
-             * @enum {number}
+             * @enum {boolean}
              */
             success: true;
         };
@@ -1588,7 +1636,7 @@ export interface components {
             refresh_token: string;
         };
         LogoutResponseDto: {
-            /** @enum {number} */
+            /** @enum {boolean} */
             success: true;
         };
         VerifySmsLoginDto: {
@@ -2324,6 +2372,49 @@ export interface components {
              */
             message: "OK";
             data: components["schemas"]["PaymentStatusResponseDto"];
+        };
+        OpsLivenessResponseDto: {
+            /** @example booking-20260909T000000Z-abcdef123456 */
+            releaseId: string;
+            /** @example abcdef1234567890abcdef1234567890abcdef12 */
+            gitSha: string;
+            /** @example sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef */
+            manifestDigest: string;
+            /**
+             * @example green
+             * @enum {string}
+             */
+            slot: "blue" | "green" | "unbound";
+            /**
+             * @example up
+             * @enum {string}
+             */
+            status: "up";
+        };
+        OpsReadinessResponseDto: {
+            /** @example booking-20260909T000000Z-abcdef123456 */
+            releaseId: string;
+            /** @example abcdef1234567890abcdef1234567890abcdef12 */
+            gitSha: string;
+            /** @example sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef */
+            manifestDigest: string;
+            /**
+             * @example green
+             * @enum {string}
+             */
+            slot: "blue" | "green" | "unbound";
+            /**
+             * @example ready
+             * @enum {string}
+             */
+            status: "ready";
+        };
+        OpsNotReadyResponseDto: {
+            /**
+             * @example not-ready
+             * @enum {string}
+             */
+            status: "not-ready";
         };
         AgencyServiceOwnerResponseDto: {
             id: string;
@@ -4574,6 +4665,71 @@ export interface operations {
                             };
                         };
                     };
+                };
+            };
+        };
+    };
+    OpsStatusController_live: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsLivenessResponseDto"];
+                };
+            };
+        };
+    };
+    OpsStatusController_ready: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsReadinessResponseDto"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsNotReadyResponseDto"];
+                };
+            };
+        };
+    };
+    OpsStatusController_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpsLivenessResponseDto"];
                 };
             };
         };
