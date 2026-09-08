@@ -20,13 +20,16 @@ Owner: Main scheduler (contract and release-gate owner).
 - Runtime dependency security is **not passed**. A compatibility-only
   `npm audit fix --prefix backend --package-lock-only --omit=dev` was applied,
   followed by a clean install and the full quality gate. A fresh
-  `npm audit --prefix backend --omit=dev --json` now finds 48 vulnerabilities:
-  1 critical, 8 high, 37 moderate, and 2 low. The remaining critical `tar`
-  chain is introduced through SQLite's legacy build tooling; the remaining
-  high/moderate AdminJS editor stack requires an AdminJS major upgrade, and
-  SQLite's available remediation is likewise a major upgrade. Those migrations
-  require compatibility tests and a fresh runtime-image audit before G5 can be
-  considered; they are not silently included in the compatibility lock update.
+  `npm audit --prefix backend --omit=dev --json` found 48 vulnerabilities:
+  1 critical, 8 high, 37 moderate, and 2 low. The unused direct `sqlite3`
+  package was then removed after confirming that runtime data sources are
+  PostgreSQL-only; its removal passed the backend build and targeted tests.
+  The resulting audit is 47 vulnerabilities: 1 critical, 7 high, 37 moderate,
+  and 2 low. The remaining high/moderate AdminJS editor stack requires an
+  AdminJS major upgrade. The remaining critical `tar` chain and all residual
+  findings require package-path-specific remediation, compatibility tests, and
+  a fresh runtime-image audit before G5 can be considered; they are not
+  silently included in the compatibility lock update.
 - G4 is **not passed**. The internal `booking-preprod` release-slot probe now
   passes, but the public isolated ingress, fixture Telegram duplicate-delivery,
   isolated backup/restore, fenced singleton transfer, and rollback rehearsal
