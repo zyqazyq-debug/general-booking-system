@@ -17,13 +17,16 @@ Owner: Main scheduler (contract and release-gate owner).
 ## Evidence limits and open items
 
 - These are local engineering results. No real user data, NAS container, Cloudflare/Tunnel configuration, DNS, Telegram bot, database, Redis, or external ingress was contacted or changed.
-- Runtime dependency security is **not passed**. A fresh
-  `npm audit --prefix backend --omit=dev --json` found 99 vulnerabilities:
-  1 critical, 27 high, 67 moderate, and 4 low. The critical item is the
-  indirect `tar` range `<=7.5.20`; direct high-severity dependencies include
-  Nest packages, Axios, AdminJS, NanoID, SQLite, and TypeORM. This must be
-  remediated with compatibility tests and a fresh runtime-image audit before
-  G5 can be considered.
+- Runtime dependency security is **not passed**. A compatibility-only
+  `npm audit fix --prefix backend --package-lock-only --omit=dev` was applied,
+  followed by a clean install and the full quality gate. A fresh
+  `npm audit --prefix backend --omit=dev --json` now finds 48 vulnerabilities:
+  1 critical, 8 high, 37 moderate, and 2 low. The remaining critical `tar`
+  chain is introduced through SQLite's legacy build tooling; the remaining
+  high/moderate AdminJS editor stack requires an AdminJS major upgrade, and
+  SQLite's available remediation is likewise a major upgrade. Those migrations
+  require compatibility tests and a fresh runtime-image audit before G5 can be
+  considered; they are not silently included in the compatibility lock update.
 - G4 is **not passed**. The internal `booking-preprod` release-slot probe now
   passes, but the public isolated ingress, fixture Telegram duplicate-delivery,
   isolated backup/restore, fenced singleton transfer, and rollback rehearsal
