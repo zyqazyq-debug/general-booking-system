@@ -33,11 +33,12 @@
     "signer": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "cosignVersion", "publicKeyDigest"],
+      "required": ["mode", "cosignVersion", "publicKeyDigest", "signingMode"],
       "properties": {
         "mode": { "const": "self-managed-key" },
         "cosignVersion": { "const": "3.1.2" },
-        "publicKeyDigest": { "$ref": "#/$defs/digest" }
+        "publicKeyDigest": { "$ref": "#/$defs/digest" },
+        "signingMode": { "type": "string", "const": "cosign-v3.1.2-key-offline" }
       }
     },
     "verification": {

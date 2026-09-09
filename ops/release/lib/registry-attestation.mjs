@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { ContractError, canonicalJson, sha256 } from './contracts.mjs';
 
 export const COSIGN_VERSION = '3.1.2';
+export const COSIGN_SIGNING_MODE = 'cosign-v3.1.2-key-offline';
 export const LOOPBACK_HTTP_REGISTRY = '127.0.0.1:15001';
 export const ATTESTATION_TYPES = Object.freeze({
   'image-sbom': 'https://happybooking.uk/attestations/image-sbom/v2',
@@ -156,9 +157,10 @@ export function validateRegistryAttestationReceipt(value, expected = {}) {
   exactObject(value.evidence, ['sbomDigest', 'provenanceDigest'], 'receipt evidence');
   digest(value.evidence.sbomDigest, 'receipt SBOM digest');
   digest(value.evidence.provenanceDigest, 'receipt provenance digest');
-  exactObject(value.signer, ['mode', 'cosignVersion', 'publicKeyDigest'], 'receipt signer');
+  exactObject(value.signer, ['mode', 'cosignVersion', 'publicKeyDigest', 'signingMode'], 'receipt signer');
   if (value.signer.mode !== 'self-managed-key' || value.signer.cosignVersion !== COSIGN_VERSION) throw new ContractError('receipt signer is unsupported');
   digest(value.signer.publicKeyDigest, 'receipt public key digest');
+  if (value.signer.signingMode !== COSIGN_SIGNING_MODE) throw new ContractError('receipt signing mode is unsupported');
   exactObject(value.verification, ['imageSignaturePayloadDigests', 'attestations', 'pullBackVerified'], 'receipt verification');
   digestSet(value.verification.imageSignaturePayloadDigests, 'receipt signature payload digests');
   if (value.verification.pullBackVerified !== true || !Array.isArray(value.verification.attestations) || value.verification.attestations.length !== 2) {
@@ -176,6 +178,7 @@ export function validateRegistryAttestationReceipt(value, expected = {}) {
     component: value.component, registryTransport: value.registryTransport, releaseId: value.releaseId, gitSha: value.gitSha, manifestDigest: value.manifestDigest,
     image: value.image.name, imageDigest: value.image.digest, sbomDigest: value.evidence.sbomDigest,
     provenanceDigest: value.evidence.provenanceDigest, publicKeyDigest: value.signer.publicKeyDigest,
+    signingMode: value.signer.signingMode,
   })) {
     if (expected[path] !== undefined && expected[path] !== observed) throw new ContractError(`registry attestation receipt binding drifted: ${path}`);
   }

@@ -8,7 +8,7 @@ import test from 'node:test';
 import { attestRegistryEvidence, parseRegistryAttestationArgs } from '../release/attest-registry-evidence.mjs';
 import { canonicalDocument, createLocalProvenance, digestFile } from '../release/lib/artifacts.mjs';
 import { canonicalJson, sha256 } from '../release/lib/contracts.mjs';
-import { ATTESTATION_TYPES, COSIGN_VERSION, evidencePredicate, validateRegistryAttestationReceipt,
+import { ATTESTATION_TYPES, COSIGN_SIGNING_MODE, COSIGN_VERSION, evidencePredicate, validateRegistryAttestationReceipt,
   verifyAttestationOutput, verifyImageSignatureOutput } from '../release/lib/registry-attestation.mjs';
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
@@ -74,7 +74,8 @@ async function fixture({ repository = image, registryTransport } = {}) {
     manifestDocument, manifestDigest: sha256(manifestDocument), sbomDocument, provenanceDocument, sbomDigest, provenanceDigest,
     args: { execute: 'true', component: 'backend', manifest: manifestPath, 'manifest-digest': sha256(manifestDocument),
       'native-sbom': nativePath, sbom: sbomPath, provenance: provenancePath, 'private-key': privateKey, 'public-key': publicKey,
-      'public-key-digest': publicKeyDigest, ...(registryTransport ? { 'registry-transport': registryTransport } : {}), receipt },
+      'public-key-digest': publicKeyDigest, 'signing-mode': COSIGN_SIGNING_MODE,
+      ...(registryTransport ? { 'registry-transport': registryTransport } : {}), receipt },
   };
 }
 
@@ -154,6 +155,9 @@ test('attaches signature and two typed predicates, then independently pulls back
     assert.ok(cosign.calls.filter((call) => !['sign', 'attest'].includes(call.args[0]))
       .every((call) => call.env.COSIGN_PASSWORD === undefined));
     assert.ok(cosign.calls.find((call) => call.args[0] === 'sign').args.includes(`${image}@${imageDigest}`));
+    assert.ok(cosign.calls.filter((call) => ['sign', 'attest'].includes(call.args[0]))
+      .every((call) => call.args.includes('--use-signing-config=false') && call.args.includes('--tlog-upload=false') &&
+        !call.args.includes('--signing-config')));
     assert.ok(cosign.calls.filter((call) => ['verify', 'verify-attestation'].includes(call.args[0]))
       .every((call) => call.args.includes('--insecure-ignore-tlog')));
     assert.ok(cosign.calls.every((call) => !call.args.includes('--allow-insecure-registry')));
@@ -226,7 +230,7 @@ test('pure validators reject wrong subjects, malformed base64, predicate type co
       schema: 'booking.registry-attestation-receipt/v1', component: 'backend', registryTransport: 'https', releaseId, gitSha,
       manifestDigest: f.manifestDigest, image: { name: image, digest: imageDigest },
       evidence: { sbomDigest: f.sbomDigest, provenanceDigest: f.provenanceDigest },
-      signer: { mode: 'self-managed-key', cosignVersion: COSIGN_VERSION, publicKeyDigest: digest('9') },
+      signer: { mode: 'self-managed-key', cosignVersion: COSIGN_VERSION, publicKeyDigest: digest('9'), signingMode: COSIGN_SIGNING_MODE },
       verification: { imageSignaturePayloadDigests: [digest('7')], attestations: [
         { kind: 'image-sbom', predicateType: ATTESTATION_TYPES['image-sbom'], evidenceDigest: f.sbomDigest, statementDigests: [digest('5')] },
         { kind: 'local-provenance', predicateType: ATTESTATION_TYPES['local-provenance'], evidenceDigest: f.provenanceDigest, statementDigests: [digest('6')] },
@@ -311,5 +315,24 @@ test('loopback registry without explicit transport remains HTTPS and never recei
       allowInsecureTestPaths: true, env: { COSIGN_PASSWORD: 'not-logged' } });
     assert.equal(result.receipt.registryTransport, 'https');
     assert.ok(cosign.calls.every((call) => !call.args.includes('--allow-insecure-registry')));
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('missing, unknown, or replay-drifted signing mode is rejected before any new Cosign or registry I/O', async () => {
+  const f = await fixture();
+  const cosign = mockCosign();
+  const runtime = { cosignExecutable: '/trusted/cosign', commandRunner: cosign.runner, allowInsecureTestPaths: true,
+    env: { COSIGN_PASSWORD: 'not-logged' } };
+  try {
+    const missingMode = { ...f.args };
+    delete missingMode['signing-mode'];
+    await assert.rejects(attestRegistryEvidence(missingMode, runtime), /--signing-mode is required/);
+    await assert.rejects(attestRegistryEvidence({ ...f.args, 'signing-mode': 'default' }, runtime), /--signing-mode must be/);
+    assert.equal(cosign.calls.length, 0);
+    await attestRegistryEvidence(f.args, runtime);
+    cosign.calls.length = 0;
+    await assert.rejects(attestRegistryEvidence({ ...f.args, 'signing-mode': 'default' }, { ...runtime, env: {} }),
+      /--signing-mode must be/);
+    assert.equal(cosign.calls.length, 0);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
