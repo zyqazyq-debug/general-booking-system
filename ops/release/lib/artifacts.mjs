@@ -167,8 +167,8 @@ export function validateBuildInputInventory(document, { component, gitSha, expec
 }
 
 export function validateImageSbom(document, { component, gitSha, image, digest } = {}) {
-  exactObject(document, ['schema', 'component', 'image', 'source', 'packages', 'files'], 'image SBOM');
-  if (document.schema !== 'booking.image-sbom/v1') throw new ContractError('image SBOM schema is unsupported');
+  exactObject(document, ['schema', 'component', 'image', 'source', 'scanner', 'packages', 'files'], 'image SBOM');
+  if (document.schema !== 'booking.image-sbom/v2') throw new ContractError('image SBOM schema is unsupported');
   if (!COMPONENTS.has(document.component) || (component && document.component !== component)) {
     throw new ContractError('image SBOM component is invalid');
   }
@@ -182,6 +182,13 @@ export function validateImageSbom(document, { component, gitSha, image, digest }
   if (!SHA.test(document.source.gitSha || '') || (gitSha && document.source.gitSha !== gitSha)) {
     throw new ContractError('image SBOM does not bind the release Git SHA');
   }
+  exactObject(document.scanner, ['name', 'version', 'schemaVersion', 'nativeDigest', 'fileSelection', 'fileDigestAlgorithm'], 'image SBOM scanner');
+  if (document.scanner.name !== 'syft' || document.scanner.version !== '1.51.1' ||
+      !/^16\.[0-9]+\.[0-9]+$/.test(document.scanner.schemaVersion || '') ||
+      document.scanner.fileSelection !== 'all' || document.scanner.fileDigestAlgorithm !== 'sha256') {
+    throw new ContractError('image SBOM scanner binding is unsupported');
+  }
+  exactDigest(document.scanner.nativeDigest, 'image SBOM scanner native digest');
   if (!Array.isArray(document.packages) || document.packages.length === 0) {
     throw new ContractError('image SBOM package inventory must not be empty');
   }
@@ -271,6 +278,10 @@ export async function readArtifact(path, component, gitSha, image, digest, kind,
   const document = await readJsonFile(path);
   if (kind === 'SBOM') {
     validateImageSbom(document, { component, gitSha, image, digest });
+    if (!options.nativePath) throw new ContractError('native Syft document is required to verify the normalized SBOM');
+    if (await digestFile(options.nativePath) !== document.scanner.nativeDigest) {
+      throw new ContractError('normalized SBOM does not bind the supplied native Syft document');
+    }
   } else if (kind === 'provenance') {
     validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest: options.sbomDigest });
   } else {
@@ -300,9 +311,10 @@ export async function releaseInputs(root, args) {
     const image = imageRepository(args[`${component}-image`], `--${component}-image`);
     const digest = imageDigest(args[`${component}-digest`], `--${component}-digest`);
     const sbomPath = args[`${component}-sbom`];
+    const nativeSbomPath = args[`${component}-native-sbom`];
     const provenancePath = args[`${component}-provenance`];
-    if (!sbomPath || !provenancePath) throw new ContractError(`${component} SBOM and provenance inputs are required`);
-    const sbomDigest = await readArtifact(sbomPath, component, source.gitSha, image, digest, 'SBOM', { root });
+    if (!sbomPath || !nativeSbomPath || !provenancePath) throw new ContractError(`${component} native/normalized SBOM and provenance inputs are required`);
+    const sbomDigest = await readArtifact(sbomPath, component, source.gitSha, image, digest, 'SBOM', { root, nativePath: nativeSbomPath });
     artifact[component] = {
       image,
       digest,

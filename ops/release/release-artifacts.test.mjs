@@ -11,6 +11,7 @@ import {
   createBuildInputInventory,
   createLocalProvenance,
   createReleaseManifest,
+  digestFile,
   directoryDigest,
   imageRepository,
   readArtifact,
@@ -31,10 +32,11 @@ const migration = { expandFloor: '1774200000002-RemoveAgencyNodeUniqueIndex', ca
 
 function imageSbom(component, artifact) {
   return {
-    schema: 'booking.image-sbom/v1',
+    schema: 'booking.image-sbom/v2',
     component,
     image: { name: artifact.image, digest: artifact.digest },
     source: { gitSha: source.gitSha },
+    scanner: { name: 'syft', version: '1.51.1', schemaVersion: '16.1.10', nativeDigest: digest('d'), fileSelection: 'all', fileDigestAlgorithm: 'sha256' },
     packages: [{ name: 'booking-runtime', version: '1.0.0', purl: 'pkg:npm/booking-runtime@1.0.0' }],
     files: [{ path: '/app/package.json', digest: digest('c') }],
   };
@@ -100,7 +102,7 @@ test('legacy source-only SBOM generator fails closed instead of claiming image e
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./generate-sbom.mjs', import.meta.url))], { encoding: 'utf8' });
   assert.equal(result.status, 10);
   assert.match(result.stderr, /source inputs are not an image SBOM/);
-  assert.match(result.stderr, /G4 still requires/);
+  assert.match(result.stderr, /generate-image-sbom\.mjs/);
 });
 
 test('image SBOM requires exact image identity and non-empty package and file inventories', () => {
@@ -119,6 +121,26 @@ test('image SBOM requires exact image identity and non-empty package and file in
   const extra = structuredClone(valid);
   extra.files[0].size = 123;
   assert.throws(() => validateImageSbom(extra), /exact schema/);
+  const scannerDrift = structuredClone(valid);
+  scannerDrift.scanner.version = '1.50.0';
+  assert.throws(() => validateImageSbom(scannerDrift), /scanner binding/);
+});
+
+test('normalized image SBOM cannot be admitted without the exact native Syft document', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-native-sbom-'));
+  const native = join(root, 'native.json');
+  const wrongNative = join(root, 'wrong-native.json');
+  const normalized = join(root, 'normalized.json');
+  try {
+    await writeFile(native, '{"syft":"native"}\n');
+    await writeFile(wrongNative, '{"syft":"wrong"}\n');
+    const value = imageSbom('backend', artifacts.backend);
+    value.scanner.nativeDigest = await digestFile(native);
+    await writeFile(normalized, JSON.stringify(value));
+    await assert.rejects(readArtifact(normalized, 'backend', source.gitSha, artifacts.backend.image, artifacts.backend.digest, 'SBOM'), /native Syft document is required/);
+    await assert.rejects(readArtifact(normalized, 'backend', source.gitSha, artifacts.backend.image, artifacts.backend.digest, 'SBOM', { nativePath: wrongNative }), /does not bind/);
+    assert.match(await readArtifact(normalized, 'backend', source.gitSha, artifacts.backend.image, artifacts.backend.digest, 'SBOM', { nativePath: native }), /^sha256:/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('provenance exact schema binds its SBOM digest and one immutable image identity', async () => {

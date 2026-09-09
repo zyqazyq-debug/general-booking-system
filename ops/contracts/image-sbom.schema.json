@@ -4,9 +4,9 @@
   "title": "Booking normalized immutable-image SBOM",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "component", "image", "source", "packages", "files"],
+  "required": ["schema", "component", "image", "source", "scanner", "packages", "files"],
   "properties": {
-    "schema": { "const": "booking.image-sbom/v1" },
+    "schema": { "const": "booking.image-sbom/v2" },
     "component": { "enum": ["backend", "gateway"] },
     "image": {
       "type": "object",
@@ -22,6 +22,19 @@
       "additionalProperties": false,
       "required": ["gitSha"],
       "properties": { "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" } }
+    },
+    "scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "schemaVersion", "nativeDigest", "fileSelection", "fileDigestAlgorithm"],
+      "properties": {
+        "name": { "const": "syft" },
+        "version": { "const": "1.51.1" },
+        "schemaVersion": { "type": "string", "pattern": "^16\\.[0-9]+\\.[0-9]+$" },
+        "nativeDigest": { "$ref": "#/$defs/digest" },
+        "fileSelection": { "const": "all" },
+        "fileDigestAlgorithm": { "const": "sha256" }
+      }
     },
     "packages": {
       "type": "array",
