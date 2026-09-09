@@ -514,6 +514,7 @@ const SHAPE_PREFLIGHT: Record<string, ShapeObject[]> = {
       'claim_token',
       'lease_expires_at',
       'sent_at',
+      'provider_message_id',
       'last_error_type',
       'created_at',
       'updated_at',
@@ -538,6 +539,11 @@ const SHAPE_PREFLIGHT: Record<string, ShapeObject[]> = {
       kind: 'constraint',
       table: 'order_notification_deliveries',
       name: 'chk_order_notification_delivery_status',
+    },
+    {
+      kind: 'constraint',
+      table: 'order_notification_deliveries',
+      name: 'chk_order_notification_delivery_receipt',
     },
   ],
 };

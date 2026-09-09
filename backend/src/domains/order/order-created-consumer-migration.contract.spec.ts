@@ -19,7 +19,9 @@ describe('Order created consumer idempotency migration contract', () => {
     expect(sql).toContain('"order_notification_deliveries"');
     expect(sql).toContain('UNIQUE ("event_id", "recipient_id")');
     expect(sql).toContain(
-      "CHECK (\"status\" IN ('pending', 'sending', 'sent', 'uncertain'))",
+      "CHECK (\"status\" IN ('pending', 'sending', 'sent', 'failed', 'uncertain'))",
     );
+    expect(sql).toContain('"provider_message_id" varchar(64) NULL');
+    expect(sql).toContain('"chk_order_notification_delivery_receipt"');
   });
 });

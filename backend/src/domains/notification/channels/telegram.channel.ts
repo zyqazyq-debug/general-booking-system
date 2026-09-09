@@ -2,6 +2,7 @@ import { Injectable, Logger, Inject } from '@nestjs/common';
 import { NotificationChannel } from './notification-channel.interface';
 import { TELEGRAM_NOTIFICATION_CHANNEL } from '../interfaces/telegram-notification-channel.interface';
 import type { ITelegramNotificationChannel } from '../interfaces/telegram-notification-channel.interface';
+import type { NotificationDeliveryResult } from './notification-delivery-result';
 
 @Injectable()
 export class TelegramChannel implements NotificationChannel {
@@ -20,19 +21,16 @@ export class TelegramChannel implements NotificationChannel {
     recipient: string,
     content: string,
     title?: string,
-  ): Promise<boolean> {
+  ): Promise<NotificationDeliveryResult> {
     try {
       if (!recipient) {
         this.logger.warn('Recipient chat ID is missing');
-        return false;
+        return { outcome: 'failed', errorType: 'RecipientUnavailable' };
       }
       return await this.telegramService.send(recipient, content, title);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send Telegram message to ${recipient}`,
-        error,
-      );
-      return false;
+    } catch {
+      this.logger.error('Telegram channel returned an unhandled error');
+      return { outcome: 'uncertain', errorType: 'ChannelUnhandledError' };
     }
   }
 }

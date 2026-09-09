@@ -38,14 +38,18 @@ side effects exactly once by itself.
 | Consumer                        | Redelivery safety                                          | Required action                                         |
 | ------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
 | Availability cache invalidation | Naturally repeatable                                       | None                                                    |
-| New-order notification          | Durable per-event/per-role recipient state                 | Reconcile `uncertain`; never auto-resend                |
+| New-order notification          | Durable per-event/per-role state and provider message ID   | Reconcile `failed` or `uncertain`; never auto-resend    |
 | Agency commission calculation   | Receipt and commission rows share one database transaction | Duplicate receipt suppresses the complete recalculation |
 
 The dispatcher can be explicitly enabled in isolated preproduction after
 migrations `1788750000000` and `1788760000000` are verified. Its default must
-remain false. Any notification delivery in `uncertain` keeps the outbox event
-retrying but cannot trigger another external send; release operators must
-reconcile that delivery row and the provider audit trail manually.
+remain false. A successful delivery is committed only with Telegram's provider
+message ID. A definitive rejection is recorded as `failed`; a timeout,
+disconnect, invalid receipt, crash-abandoned claim or unclassified transport
+error is recorded as `uncertain`. Either state keeps the outbox event retrying
+but cannot trigger another external send; release operators must reconcile the
+delivery row and provider audit trail manually. Error detail, bot token, chat ID
+and message body are never persisted in this receipt.
 
 The preproduction compose file exposes this as an explicit, default-off pair:
 `BOOKING_PREPROD_WORKERS_ENABLED=true` and

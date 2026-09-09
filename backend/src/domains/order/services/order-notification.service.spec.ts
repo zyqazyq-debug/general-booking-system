@@ -46,7 +46,13 @@ describe('OrderNotificationService durable order-created delivery', () => {
       display_price_snapshot: 120,
     };
     const sendDirectMessage = jest.fn(async (userId: string) => {
-      if (userId === 'provider-1') throw new Error('network outcome unknown');
+      if (userId === 'provider-1') {
+        return {
+          outcome: 'uncertain' as const,
+          errorType: 'TransportInterrupted',
+        };
+      }
+      return { outcome: 'sent' as const, providerMessageId: '421' };
     });
     const deliveryService = new OrderNotificationDeliveryService(
       dataSource.getRepository(OrderNotificationDelivery),

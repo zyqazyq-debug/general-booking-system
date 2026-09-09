@@ -3,12 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import {
+  ORDER_NOTIFICATION_FAILED,
   ORDER_NOTIFICATION_PENDING,
   ORDER_NOTIFICATION_SENDING,
   ORDER_NOTIFICATION_SENT,
   ORDER_NOTIFICATION_UNCERTAIN,
   OrderNotificationDelivery,
 } from './order-notification-delivery.entity';
+import type { OrderNotificationDeliveryResult } from '../ports/order-notification.port';
 
 const SEND_LEASE_MS = 120_000;
 
@@ -16,6 +18,13 @@ export class OrderNotificationDeliveryUncertainError extends Error {
   constructor() {
     super('Order notification delivery outcome requires reconciliation');
     this.name = OrderNotificationDeliveryUncertainError.name;
+  }
+}
+
+export class OrderNotificationDeliveryFailedError extends Error {
+  constructor() {
+    super('Order notification delivery failed definitively');
+    this.name = OrderNotificationDeliveryFailedError.name;
   }
 }
 
@@ -29,7 +38,7 @@ export class OrderNotificationDeliveryService {
   async sendOnce(
     eventId: string,
     recipientId: string,
-    send: () => Promise<void>,
+    send: () => Promise<OrderNotificationDeliveryResult>,
   ): Promise<void> {
     await this.deliveries
       .createQueryBuilder()
@@ -43,6 +52,7 @@ export class OrderNotificationDeliveryService {
         claim_token: null,
         lease_expires_at: null,
         sent_at: null,
+        provider_message_id: null,
         last_error_type: null,
       })
       .orIgnore()
@@ -68,10 +78,53 @@ export class OrderNotificationDeliveryService {
       return;
     }
 
+    let result: OrderNotificationDeliveryResult;
     try {
-      await send();
+      result = await send();
     } catch (error) {
       await this.markUncertain(eventId, recipientId, token, error);
+      throw new OrderNotificationDeliveryUncertainError();
+    }
+
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      !['sent', 'failed', 'uncertain'].includes(result.outcome)
+    ) {
+      await this.markOutcome(
+        eventId,
+        recipientId,
+        token,
+        ORDER_NOTIFICATION_UNCERTAIN,
+        'InvalidDeliveryOutcome',
+      );
+      throw new OrderNotificationDeliveryUncertainError();
+    }
+    if (result.outcome !== 'sent') {
+      const status =
+        result.outcome === 'failed'
+          ? ORDER_NOTIFICATION_FAILED
+          : ORDER_NOTIFICATION_UNCERTAIN;
+      await this.markOutcome(
+        eventId,
+        recipientId,
+        token,
+        status,
+        this.sanitizeErrorType(result.errorType),
+      );
+      if (status === ORDER_NOTIFICATION_FAILED) {
+        throw new OrderNotificationDeliveryFailedError();
+      }
+      throw new OrderNotificationDeliveryUncertainError();
+    }
+    if (!/^[1-9][0-9]{0,19}$/.test(result.providerMessageId)) {
+      await this.markOutcome(
+        eventId,
+        recipientId,
+        token,
+        ORDER_NOTIFICATION_UNCERTAIN,
+        'InvalidProviderReceipt',
+      );
       throw new OrderNotificationDeliveryUncertainError();
     }
 
@@ -81,6 +134,7 @@ export class OrderNotificationDeliveryService {
       .set({
         status: ORDER_NOTIFICATION_SENT,
         sent_at: new Date(),
+        provider_message_id: result.providerMessageId,
         claim_token: null,
         lease_expires_at: null,
         last_error_type: null,
@@ -107,6 +161,9 @@ export class OrderNotificationDeliveryService {
       throw new ConflictException('Notification delivery claim was lost');
     }
     if (existing.status === ORDER_NOTIFICATION_SENT) return;
+    if (existing.status === ORDER_NOTIFICATION_FAILED) {
+      throw new OrderNotificationDeliveryFailedError();
+    }
     if (
       existing.status === ORDER_NOTIFICATION_SENDING &&
       existing.lease_expires_at &&
@@ -135,19 +192,47 @@ export class OrderNotificationDeliveryService {
     token: string,
     error: unknown,
   ): Promise<void> {
+    await this.markOutcome(
+      eventId,
+      recipientId,
+      token,
+      ORDER_NOTIFICATION_UNCERTAIN,
+      this.sanitizeErrorType(
+        error instanceof Error ? error.name : 'UnknownError',
+      ),
+    );
+  }
+
+  private async markOutcome(
+    eventId: string,
+    recipientId: string,
+    token: string,
+    status:
+      | typeof ORDER_NOTIFICATION_FAILED
+      | typeof ORDER_NOTIFICATION_UNCERTAIN,
+    errorType: string,
+  ): Promise<void> {
     await this.deliveries
       .createQueryBuilder()
       .update(OrderNotificationDelivery)
       .set({
-        status: ORDER_NOTIFICATION_UNCERTAIN,
+        status,
         claim_token: null,
         lease_expires_at: null,
-        last_error_type: error instanceof Error ? error.name : 'UnknownError',
+        provider_message_id: null,
+        last_error_type: errorType,
       })
       .where('event_id = :eventId', { eventId })
       .andWhere('recipient_id = :recipientId', { recipientId })
       .andWhere('status = :status', { status: ORDER_NOTIFICATION_SENDING })
       .andWhere('claim_token = :token', { token })
       .execute();
+  }
+
+  private sanitizeErrorType(value: unknown): string {
+    return typeof value === 'string' &&
+      /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(value)
+      ? value
+      : 'InvalidErrorType';
   }
 }

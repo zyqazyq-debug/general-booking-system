@@ -10,6 +10,7 @@ import {
 export const ORDER_NOTIFICATION_PENDING = 'pending';
 export const ORDER_NOTIFICATION_SENDING = 'sending';
 export const ORDER_NOTIFICATION_SENT = 'sent';
+export const ORDER_NOTIFICATION_FAILED = 'failed';
 export const ORDER_NOTIFICATION_UNCERTAIN = 'uncertain';
 
 @Entity('order_notification_deliveries')
@@ -44,6 +45,9 @@ export class OrderNotificationDelivery {
     nullable: true,
   })
   sent_at: Date | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  provider_message_id: string | null;
 
   @Column({ type: 'varchar', length: 128, nullable: true })
   last_error_type: string | null;

@@ -1,6 +1,9 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { TelegramChannel } from '../channels/telegram.channel';
-import type { OrderNotificationPort } from '../../order';
+import type {
+  OrderNotificationDeliveryResult,
+  OrderNotificationPort,
+} from '../../order';
 import type { NotificationUsersPort } from '../ports/notification-users.port';
 import { NOTIFICATION_USERS_PORT } from '../ports/tokens';
 
@@ -12,9 +15,14 @@ export class OrderNotificationAdapter implements OrderNotificationPort {
     private readonly usersPort: NotificationUsersPort,
   ) {}
 
-  async sendDirectMessage(userId: string, message: string): Promise<void> {
+  async sendDirectMessage(
+    userId: string,
+    message: string,
+  ): Promise<OrderNotificationDeliveryResult> {
     const user = await this.usersPort.findContactById(userId);
-    if (!user?.telegram_chat_id) return;
-    await this.telegramChannel.send(user.telegram_chat_id, message);
+    if (!user?.telegram_chat_id) {
+      return { outcome: 'failed', errorType: 'RecipientUnavailable' };
+    }
+    return this.telegramChannel.send(user.telegram_chat_id, message);
   }
 }
