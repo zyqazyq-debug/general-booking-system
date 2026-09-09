@@ -16,6 +16,7 @@ const gitSha = 'b'.repeat(40);
 const image = 'registry.acme.test/booking-preprod/backend';
 const imageDigest = digest('a');
 const releaseId = 'booking-20260910T010203Z-abcdef123456';
+const cosignV3SignatureType = 'https://sigstore.dev/cosign/sign/v1';
 
 function sbom(nativeDigest, repository = image) {
   return {
@@ -84,8 +85,9 @@ async function fixture({ repository = image, registryTransport } = {}) {
 }
 
 function signaturePayload(annotations, override = {}) {
-  return { critical: { identity: { 'docker-reference': override.image || image }, image: { 'docker-manifest-digest': override.imageDigest || imageDigest },
-    type: 'cosign container image signature' }, optional: { ...annotations, ...(override.annotations || {}) } };
+  return { critical: { identity: { 'docker-reference': override.repository || override.image || image },
+    image: { 'docker-manifest-digest': override.imageDigest || imageDigest },
+    type: override.type || 'cosign container image signature' }, optional: { ...annotations, ...(override.annotations || {}) } };
 }
 
 function envelope(predicateType, predicate, override = {}) {
@@ -121,7 +123,8 @@ function mockCosign({ tamperKind = null, signatureOverride = null } = {}) {
         const [key, ...rest] = args[index + 1].split('='); annotations[key] = rest.join('=');
       }
       return { exitCode: 0, stdout: JSON.stringify([signaturePayload(annotations,
-        { image: repository, imageDigest: manifestDigest, ...(signatureOverride || {}) })]), stderr: '' };
+        { type: cosignV3SignatureType, repository: `${repository}@${manifestDigest}`, imageDigest: manifestDigest,
+          ...(signatureOverride || {}) })]), stderr: '' };
     }
     if (args[0] === 'verify-attestation') {
       const type = args[args.indexOf('--type') + 1];
@@ -244,6 +247,28 @@ test('pure validators reject wrong subjects, malformed base64, predicate type co
     assert.throws(() => validateRegistryAttestationReceipt({ ...invalidReceipt, registryTransport: 'loopback-http',
       verifiedAt: '2026-09-10T02:03:04.000Z' }), /approved registry/);
   } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('image signature verifier accepts only the paired legacy and Cosign v3 identity contracts', () => {
+  const annotations = { 'booking.release-id': releaseId, 'booking.git-sha': gitSha };
+  const expected = { image, imageDigest, annotations };
+
+  assert.equal(verifyImageSignatureOutput(JSON.stringify([signaturePayload(annotations)]), expected).length, 1);
+  assert.equal(verifyImageSignatureOutput(JSON.stringify([signaturePayload(annotations, {
+    type: cosignV3SignatureType,
+    repository: `${image}@${imageDigest}`,
+  })]), expected).length, 1);
+
+  for (const payload of [
+    signaturePayload(annotations, { type: cosignV3SignatureType, repository: image }),
+    signaturePayload(annotations, { repository: `${image}@${imageDigest}` }),
+    signaturePayload(annotations, { type: cosignV3SignatureType, repository: `registry.acme.test/other@${imageDigest}` }),
+    signaturePayload(annotations, { type: cosignV3SignatureType, repository: `${image}@${digest('0')}` }),
+    signaturePayload(annotations, { type: cosignV3SignatureType, repository: `${image}@${imageDigest}`, imageDigest: digest('0') }),
+    signaturePayload(annotations, { type: 'https://sigstore.dev/cosign/sign/v2', repository: `${image}@${imageDigest}` }),
+  ]) {
+    assert.throws(() => verifyImageSignatureOutput(JSON.stringify([payload]), expected), /immutable image digest/);
+  }
 });
 
 test('CLI rejects unknown or duplicate inputs before it can select a signing target', () => {

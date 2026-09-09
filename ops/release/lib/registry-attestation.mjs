@@ -17,6 +17,8 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const RELEASE = /^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$/;
 const STATEMENT_TYPES = new Set(['https://in-toto.io/Statement/v0.1', 'https://in-toto.io/Statement/v1']);
+const LEGACY_IMAGE_SIGNATURE_TYPE = 'cosign container image signature';
+const COSIGN_V3_IMAGE_SIGNATURE_TYPE = 'https://sigstore.dev/cosign/sign/v1';
 
 function exactObject(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -132,7 +134,10 @@ export function verifyImageSignatureOutput(stdout, { image, imageDigest, annotat
     const observedType = caseInsensitiveValue(payload?.critical, 'type');
     const observedRepository = caseInsensitiveValue(payload?.critical?.identity, 'docker-reference');
     const observedDigest = caseInsensitiveValue(payload?.critical?.image, 'docker-manifest-digest');
-    if (observedType !== 'cosign container image signature' || observedRepository !== image ||
+    const approvedIdentity =
+      (observedType === LEGACY_IMAGE_SIGNATURE_TYPE && observedRepository === image) ||
+      (observedType === COSIGN_V3_IMAGE_SIGNATURE_TYPE && observedRepository === `${image}@${imageDigest}`);
+    if (!approvedIdentity ||
         (observedDigest !== imageDigest && observedDigest !== imageDigest.slice('sha256:'.length))) {
       throw new ContractError('verified image signature does not bind the immutable image digest');
     }
