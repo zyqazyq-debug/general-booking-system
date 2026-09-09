@@ -1285,16 +1285,17 @@ test('candidate stage rejects a writable frontend parent directory before mutati
   const { root } = await fixture();
   const releaseRoot = await concreteReleaseRoot('/root');
   const frontendDirectory = join(releaseRoot, CANDIDATE.releaseId, 'frontend');
+  const stageRunner = concreteStageRunner(releaseRoot);
   let mutated = false;
   try {
     await chmod(frontendDirectory, 0o777);
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-writable-frontend-parent' }), {
       deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST, backupArtifactVerifier,
-      dockerExecutable: '/trusted/docker', env: MIGRATION_ENV, portAvailabilityChecker: async () => true,
-      now: at('2026-09-09T15:05:00.000Z'), commandRunner: async (_executable, argv) => {
-        if (argv.includes('up')) mutated = true;
-        return successRunner();
-      },
+       dockerExecutable: '/trusted/docker', env: MIGRATION_ENV, portAvailabilityChecker: async () => true,
+       now: at('2026-09-09T15:05:00.000Z'), commandRunner: async (_executable, argv) => {
+         if (argv.includes('up')) mutated = true;
+         return stageRunner(_executable, argv);
+       },
     }), /release frontend directory must be a canonical root-owned non-writable directory/);
     assert.equal(mutated, false);
   } finally { await chmod(frontendDirectory, 0o755).catch(() => {}); await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
