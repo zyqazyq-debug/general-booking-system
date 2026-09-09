@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "releaseId", "source", "artifacts", "contracts", "runtime", "probes"],
   "properties": {
-    "schema": { "const": "booking.release/v1" },
+    "schema": { "const": "booking.release/v2" },
     "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
     "source": {
       "type": "object",
@@ -20,10 +20,16 @@
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["backend", "gateway"],
+      "required": ["backend", "gateway", "deployment"],
       "properties": {
         "backend": { "$ref": "#/$defs/backendArtifact" },
-        "gateway": { "$ref": "#/$defs/gatewayArtifact" }
+        "gateway": { "$ref": "#/$defs/gatewayArtifact" },
+        "deployment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["composeDigest"],
+          "properties": { "composeDigest": { "$ref": "#/$defs/digest" } }
+        }
       }
     },
     "contracts": {
@@ -89,14 +95,16 @@
     "gatewayArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["image", "digest", "sbomDigest", "provenanceDigest", "frontendAssetDigest", "routeContractDigest"],
+      "required": ["image", "digest", "sbomDigest", "provenanceDigest", "frontendAssetDigest", "routeContractDigest", "telegramBotUsername", "telegramBotDisplayName"],
       "properties": {
         "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
         "digest": { "$ref": "#/$defs/digest" },
         "sbomDigest": { "$ref": "#/$defs/digest" },
         "provenanceDigest": { "$ref": "#/$defs/digest" },
         "frontendAssetDigest": { "$ref": "#/$defs/digest" },
-        "routeContractDigest": { "$ref": "#/$defs/digest" }
+        "routeContractDigest": { "$ref": "#/$defs/digest" },
+        "telegramBotUsername": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{4,31}$" },
+        "telegramBotDisplayName": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\r\\n]+$" }
       }
     }
   }

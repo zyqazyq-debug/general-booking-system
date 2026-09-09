@@ -10,6 +10,17 @@ import {
 } from './run-migrations';
 
 const digest = `sha256:${'a'.repeat(64)}`;
+const deploymentBinding = {
+  environment: 'preprod',
+  project: 'booking-preprod',
+  operationId: 'op-1',
+  approvalId: 'approval-1',
+  generation: 3,
+  fencingEpoch: 1,
+  leaseId: 'lease-1',
+  holderId: 'owner-1',
+  currentManifestDigest: digest,
+};
 const valid = () => ({
   BOOKING_SCHEMA_MIGRATE: 'true',
   BOOKING_MIGRATION_ENVIRONMENT: 'preproduction',
@@ -85,6 +96,7 @@ describe('migration runtime guard', () => {
       schema: 'booking.database-backup-receipt/v1',
       ...expected,
       databaseUser: 'booking_preprod',
+      deploymentBinding,
       backupDigest: digest,
       verifiedAt: '2026-09-09T01:00:00.000Z',
       verification: { pgRestoreList: true },
@@ -92,6 +104,15 @@ describe('migration runtime guard', () => {
     expect(validateBackupReceipt(receipt, expected)).toEqual(receipt);
     expect(() =>
       validateBackupReceipt({ ...receipt, database: 'booking_prod' }, expected),
+    ).toThrow('binding is invalid');
+    expect(() =>
+      validateBackupReceipt(
+        {
+          ...receipt,
+          deploymentBinding: { ...deploymentBinding, generation: 0 },
+        },
+        expected,
+      ),
     ).toThrow('binding is invalid');
   });
 
@@ -139,6 +160,13 @@ describe('migration runtime guard', () => {
         catalog,
         ['OldDestructive1788700000000', 'AddSafe1788740000000'],
         ['AddSafe1788740000000'],
+      ),
+    ).toEqual([]);
+    expect(
+      verifyMigrationPlan(
+        catalog,
+        ['OldDestructive1788700000000', 'AddSafe1788740000000'],
+        [],
       ),
     ).toEqual([]);
     expect(() =>

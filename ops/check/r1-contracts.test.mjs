@@ -104,7 +104,9 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
   assert.match(compose, /gateway-blue:/);
   assert.match(compose, /BOOKING_BACKEND_UPSTREAM:\s*backend-blue:3001/);
   assert.match(compose, /BOOKING_SLOT:\s*blue/);
-  assert.match(compose, /BOOKING_BLUE_PORT:-18082/);
+  assert.match(compose, /BOOKING_GREEN_PORT:-18082/);
+  assert.match(compose, /BOOKING_BLUE_PORT:-18083/);
+  assert.doesNotMatch(compose, /BOOKING_(?:GREEN|BLUE)_PORT:-18081/);
   for (const slot of ['blue', 'green']) {
     const api = new RegExp(`backend-${slot}:[\\s\\S]*?(?=\\n  [a-z][a-z0-9-]+:|$)`).exec(compose)?.[0] || '';
     const worker = new RegExp(`order-worker-${slot}:[\\s\\S]*?(?=\\n  [a-z][a-z0-9-]+:|$)`).exec(compose)?.[0] || '';

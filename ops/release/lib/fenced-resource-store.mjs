@@ -60,6 +60,17 @@ function validateResourceState(value, expected) {
     if (!value.pendingAction || !IDENTIFIER.test(value.pendingAction.actionId || '') || !DIGEST.test(value.pendingAction.requestDigest || '')) {
       throw new ContractError('resource has invalid pending action state', EXIT.SWITCH);
     }
+    const recoveryFields = ['action', 'approvalId', 'leaseId', 'holderId', 'generation', 'fencingEpoch', 'commandDigest'];
+    if (recoveryFields.some((key) => Object.hasOwn(value.pendingAction, key))) {
+      if (recoveryFields.some((key) => !Object.hasOwn(value.pendingAction, key)) ||
+          !/^preprod-[a-z-]+$/.test(value.pendingAction.action || '') ||
+          ['approvalId', 'leaseId', 'holderId'].some((key) => !IDENTIFIER.test(value.pendingAction[key] || '')) ||
+          !Number.isInteger(value.pendingAction.generation) || value.pendingAction.generation < 1 ||
+          !Number.isInteger(value.pendingAction.fencingEpoch) || value.pendingAction.fencingEpoch < 1 ||
+          !DIGEST.test(value.pendingAction.commandDigest || '')) {
+        throw new ContractError('resource pending action recovery identity is invalid', EXIT.SWITCH);
+      }
+    }
   }
   return value;
 }
@@ -124,7 +135,12 @@ export async function acceptResourceEpoch(lock, binding) {
   }
   const next = {
     ...current, highestAcceptedFencingEpoch: binding.fencingEpoch, operationId: binding.operationId,
-    manifestDigest: binding.manifestDigest, pendingAction: { actionId: binding.actionId, requestDigest: binding.requestDigest }, updatedAt: binding.now,
+    manifestDigest: binding.manifestDigest, pendingAction: {
+      actionId: binding.actionId, requestDigest: binding.requestDigest,
+      ...(binding.action ? { action: binding.action, approvalId: binding.approvalId, leaseId: binding.leaseId,
+        holderId: binding.holderId, generation: binding.generation, fencingEpoch: binding.fencingEpoch,
+        commandDigest: binding.commandDigest } : {}),
+    }, updatedAt: binding.now,
   };
   await atomicWrite(path, next);
   return next;
@@ -158,6 +174,37 @@ export async function recoverResourceAction(lock, binding, acceptedPriorReceiptD
     throw new ContractError(`resource ${binding.resourceId} cannot recover the recorded action`, EXIT.SINGLETON);
   }
   await atomicWrite(path, { ...current, pendingAction: null, receiptChainHead: recoveryReceiptDigest, updatedAt: binding.now });
+}
+
+export async function adoptPriorEpochPendingAction(lock, prior, binding, receiptDigest) {
+  const path = join(lock.directory, 'resource-state.json');
+  const current = await inspectLockedResourceState(lock, binding);
+  if (current.highestAcceptedFencingEpoch !== prior.fencingEpoch || current.highestAcceptedFencingEpoch >= binding.fencingEpoch ||
+      current.operationId !== binding.operationId || current.manifestDigest !== binding.manifestDigest ||
+      current.pendingAction?.actionId !== prior.actionId || current.pendingAction?.requestDigest !== prior.requestDigest ||
+      current.receiptChainHead !== prior.receiptChainHead) {
+    throw new ContractError(`resource ${binding.resourceId} prior-epoch pending action changed before adoption`, EXIT.SINGLETON);
+  }
+  await atomicWrite(path, { ...current, highestAcceptedFencingEpoch: binding.fencingEpoch,
+    operationId: binding.operationId, manifestDigest: binding.manifestDigest, pendingAction: null,
+    receiptChainHead: receiptDigest, updatedAt: binding.now });
+}
+
+export async function supersedePriorEpochPendingAction(lock, prior, binding) {
+  const path = join(lock.directory, 'resource-state.json');
+  const current = await inspectLockedResourceState(lock, binding);
+  if (current.highestAcceptedFencingEpoch !== prior.fencingEpoch || current.highestAcceptedFencingEpoch >= binding.fencingEpoch ||
+      current.operationId !== binding.operationId || current.manifestDigest !== binding.manifestDigest ||
+      current.pendingAction?.actionId !== prior.actionId || current.pendingAction?.requestDigest !== prior.requestDigest ||
+      current.receiptChainHead !== prior.receiptChainHead) {
+    throw new ContractError(`resource ${binding.resourceId} prior-epoch pending action changed before supersession`, EXIT.SINGLETON);
+  }
+  await atomicWrite(path, { ...current, highestAcceptedFencingEpoch: binding.fencingEpoch,
+    operationId: binding.operationId, manifestDigest: binding.manifestDigest,
+    pendingAction: { actionId: binding.actionId, requestDigest: binding.requestDigest, action: binding.action,
+      approvalId: binding.approvalId, leaseId: binding.leaseId, holderId: binding.holderId,
+      generation: binding.generation, fencingEpoch: binding.fencingEpoch, commandDigest: binding.commandDigest },
+    updatedAt: binding.now });
 }
 
 export async function writeExecutorReceipt(statePath, receipt) {
@@ -236,7 +283,7 @@ async function scanImmutableReceiptDirectory(directory, receiptDigest, label) {
   return match;
 }
 
-export async function readCompletedExecutorReceiptByDigest(statePath, receiptDigest) {
+export async function readCanonicalExecutorReceiptByDigest(statePath, receiptDigest) {
   if (!DIGEST.test(receiptDigest || '')) throw new ContractError('executor receipt digest is invalid', EXIT.IDENTITY);
   const executorRoot = join(dirname(statePath), 'executor');
   const direct = await scanImmutableReceiptDirectory(join(executorRoot, 'receipts'), receiptDigest, 'executor');
@@ -249,7 +296,12 @@ export async function readCompletedExecutorReceiptByDigest(statePath, receiptDig
       recovery.manifestDigest !== receipt.manifestDigest || canonicalJson(recovery.releaseIdentity) !== canonicalJson(receipt.releaseIdentity)))) {
     throw new ContractError('executor recovery receipt is not bound to its original action receipt', EXIT.IDENTITY);
   }
-  const acceptedDigest = recovery?.receiptDigest || receipt.receiptDigest;
+  return { receipt, acceptedReceipt: recovery || receipt };
+}
+
+export async function readCompletedExecutorReceiptByDigest(statePath, receiptDigest) {
+  const { receipt, acceptedReceipt } = await readCanonicalExecutorReceiptByDigest(statePath, receiptDigest);
+  const acceptedDigest = acceptedReceipt.receiptDigest;
   for (const resourceId of receipt.resourceIds || []) {
     let resource;
     try { resource = JSON.parse(await readFile(join(resourceDirectory(statePath, resourceId), 'resource-state.json'), 'utf8')); }
@@ -261,5 +313,5 @@ export async function readCompletedExecutorReceiptByDigest(statePath, receiptDig
       throw new ContractError(`resource ${resourceId} does not prove completed executor receipt`, EXIT.IDENTITY);
     }
   }
-  return { receipt, acceptedReceipt: recovery || receipt };
+  return { receipt, acceptedReceipt };
 }

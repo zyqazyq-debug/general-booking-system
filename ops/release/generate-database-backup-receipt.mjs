@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson, ContractError, EXIT, parseArgs, readJsonFile, sha256, validateReleaseManifest } from './lib/contracts.mjs';
 import { digestFile } from './lib/artifacts.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
+import { EVIDENCE_BINDING_FIELDS, publishWithCurrentEvidenceBinding, readEvidenceDeployBinding } from './lib/evidence-deploy-binding.mjs';
 
 export const PREPROD_POSTGRES_CONTAINER = 'booking-preprod-postgres-1';
 export const PREPROD_DATABASE = 'booking_preprod';
@@ -19,7 +20,7 @@ export const PREPROD_RECEIPT_ROOT = '/volume1/homes/realzyq/booking-preprod/.g4/
 export const PREPROD_RELEASE_ROOT = '/volume1/homes/realzyq/booking-preprod/releases';
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
-const ALLOWED = new Set(['action', 'execute', 'identity', 'manifest', 'backup-path', 'receipt-path', 'expected-backup-digest']);
+const ALLOWED = new Set(['action', 'execute', 'identity', 'manifest', 'backup-path', 'receipt-path', 'expected-backup-digest', ...EVIDENCE_BINDING_FIELDS]);
 
 async function findDocker() {
   for (const candidate of ['/var/packages/ContainerManager/target/usr/bin/docker', '/usr/bin/docker']) {
@@ -129,6 +130,7 @@ export async function generateDatabaseBackupReceipt(args, runtime = {}) {
     throw new ContractError('--action (create|bind-existing) and --identity (old|candidate) are required', EXIT.DATABASE);
   }
   for (const key of ['manifest', 'backup-path', 'receipt-path']) if (!args[key]) throw new ContractError(`--${key} is required`, EXIT.DATABASE);
+  const deploymentBinding = runtime.deploymentBinding || await readEvidenceDeployBinding(args, runtime);
 
   const backupRoot = await trustedDirectory(runtime.backupRoot || PREPROD_BACKUP_ROOT, runtime);
   const receiptRoot = await trustedDirectory(runtime.receiptRoot || PREPROD_RECEIPT_ROOT, runtime);
@@ -138,12 +140,16 @@ export async function generateDatabaseBackupReceipt(args, runtime = {}) {
   const backupPath = containedPath(backupRoot, args['backup-path'], 'backup path');
   const receiptPath = containedPath(receiptRoot, args['receipt-path'], 'receipt path');
   const manifestPath = containedPath(releaseRoot, await realpath(args.manifest).catch(() => ''), 'manifest path');
-  const manifest = validateReleaseManifest(await readJsonFile(manifestPath));
   const legacy = runtime.legacyBinding || LEGACY_OLD_BINDING;
+  const manifestDocument = await readJsonFile(manifestPath);
+  const manifestFileDigest = await digestFile(manifestPath);
+  const manifest = validateReleaseManifest(manifestDocument, args.identity === 'old' ? {
+    expectedLegacyBinding: legacy, legacyRawDigest: manifestFileDigest,
+  } : {});
   let manifestDigest;
   let manifestDigestMode;
   if (args.identity === 'old') {
-    const rawDigest = await digestFile(manifestPath);
+    const rawDigest = manifestFileDigest;
     if (manifest.releaseId !== legacy.releaseId || manifest.source.gitSha !== legacy.gitSha || rawDigest !== legacy.manifestRawDigest ||
         manifest.contracts.migration.catalogDigest !== legacy.migrationCatalogDigest || manifest.contracts.migration.expandFloor !== legacy.migrationFloor ||
         manifest.artifacts.backend.image !== legacy.manifestRepository || manifest.artifacts.backend.digest !== legacy.imageId) {
@@ -165,38 +171,33 @@ export async function generateDatabaseBackupReceipt(args, runtime = {}) {
     throw new ContractError('database identity does not match fixed booking-preprod target', EXIT.DATABASE);
   }
 
+  let temporaryBackup = null;
+  try {
   if (args.action === 'create') {
-    const temporary = `${backupPath}.partial-${randomUUID()}`;
+    temporaryBackup = `${backupPath}.partial-${randomUUID()}`;
     try { await stat(backupPath); throw new ContractError('backup path already exists', EXIT.DATABASE); }
     catch (error) { if (error instanceof ContractError) throw error; if (error?.code !== 'ENOENT') throw error; }
-    try {
-      const dump = await runner(docker, ['exec', PREPROD_POSTGRES_CONTAINER, 'pg_dump', '--no-password', '--format=custom', '--no-owner', '--username',
-        PREPROD_DATABASE_USER, '--dbname', PREPROD_DATABASE], { outputPath: temporary, timeoutMs });
-      assertSuccess(dump, 'pg_dump');
-      const metadata = await stat(temporary);
-      if (!metadata.isFile() || metadata.size < 1) throw new ContractError('pg_dump produced an empty backup', EXIT.DATABASE);
-      await link(temporary, backupPath).catch((error) => {
-        if (error?.code === 'EEXIST') throw new ContractError('backup path already exists', EXIT.DATABASE);
-        throw error;
-      });
-    } finally {
-      await unlink(temporary).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
-    }
+    const dump = await runner(docker, ['exec', PREPROD_POSTGRES_CONTAINER, 'pg_dump', '--no-password', '--format=custom', '--no-owner', '--username',
+      PREPROD_DATABASE_USER, '--dbname', PREPROD_DATABASE], { outputPath: temporaryBackup, timeoutMs });
+    assertSuccess(dump, 'pg_dump');
+    const metadata = await stat(temporaryBackup);
+    if (!metadata.isFile() || metadata.size < 1) throw new ContractError('pg_dump produced an empty backup', EXIT.DATABASE);
   } else {
     if (!DIGEST.test(args['expected-backup-digest'] || '')) throw new ContractError('--expected-backup-digest is required for bind-existing', EXIT.DATABASE);
     const canonicalBackup = await realpath(backupPath).catch(() => { throw new ContractError('existing backup is unavailable', EXIT.DATABASE); });
     if (canonicalBackup !== backupPath) throw new ContractError('existing backup must not be a symlink', EXIT.DATABASE);
   }
 
-  const backupMetadata = await stat(backupPath);
+  const verifiedBackupPath = temporaryBackup || backupPath;
+  const backupMetadata = await stat(verifiedBackupPath);
   if (!backupMetadata.isFile() || backupMetadata.size < 1 || (!runtime.allowNonRoot && ((process.platform !== 'win32' && backupMetadata.uid !== 0) || (backupMetadata.mode & 0o077) !== 0))) {
     throw new ContractError('backup object is not a root-only regular file', EXIT.DATABASE);
   }
-  const backupDigest = await digestFile(backupPath);
+  const backupDigest = await digestFile(verifiedBackupPath);
   if (args.action === 'bind-existing' && backupDigest !== args['expected-backup-digest']) {
     throw new ContractError('existing backup digest does not match the explicit binding', EXIT.DATABASE);
   }
-  const list = await runner(docker, ['exec', '-i', PREPROD_POSTGRES_CONTAINER, 'pg_restore', '--list'], { inputPath: backupPath, timeoutMs });
+  const list = await runner(docker, ['exec', '-i', PREPROD_POSTGRES_CONTAINER, 'pg_restore', '--list'], { inputPath: verifiedBackupPath, timeoutMs });
   assertSuccess(list, 'pg_restore --list');
   if (!list.stdout.trim()) throw new ContractError('pg_restore --list produced no catalog', EXIT.DATABASE);
   const receipt = {
@@ -204,11 +205,29 @@ export async function generateDatabaseBackupReceipt(args, runtime = {}) {
     databaseUser: PREPROD_DATABASE_USER,
     releaseId: manifest.releaseId, gitSha: manifest.source.gitSha, manifestDigest,
     manifestDigestMode,
-    migrationCatalogDigest: manifest.contracts.migration.catalogDigest, backupDigest,
+    migrationCatalogDigest: manifest.contracts.migration.catalogDigest, backupDigest, deploymentBinding,
     verifiedAt: (runtime.now || (() => new Date()))().toISOString(), verification: { pgRestoreList: true },
   };
-  await writeImmutableReceipt(receiptPath, receipt);
+  await publishWithCurrentEvidenceBinding(args, deploymentBinding, runtime, async () => {
+    let publishedBackup = false;
+    try {
+      if (temporaryBackup) {
+        await link(temporaryBackup, backupPath).catch((error) => {
+          if (error?.code === 'EEXIST') throw new ContractError('backup path already exists', EXIT.DATABASE);
+          throw error;
+        });
+        publishedBackup = true;
+      }
+      await writeImmutableReceipt(receiptPath, receipt);
+    } catch (error) {
+      if (publishedBackup) await unlink(backupPath).catch((unlinkError) => { if (unlinkError?.code !== 'ENOENT') throw unlinkError; });
+      throw error;
+    }
+  });
   return { receipt, receiptDigest: await digestFile(receiptPath), backupPath, receiptPath };
+  } finally {
+    if (temporaryBackup) await unlink(temporaryBackup).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -1,18 +1,10 @@
 /**
- * Telegram Bot Configuration
+ * Telegram bot identity is a build-time contract shared by login, referral,
+ * and share flows. The release image requires both Vite values, while local
+ * development keeps the explicit fallbacks owned by the environment adapter.
  */
-// Try multiple ways to detect production mode in the browser
-const isProd =
-  import.meta.env.MODE === 'production' ||
-  (typeof window !== 'undefined' && (
-    window.location.hostname === 'app.happybooking.uk' ||
-    window.location.hostname === '192.168.3.5'
-  ));
+import { getBotDisplayName, getBotName } from '@/utils/env';
 
-export const TELEGRAM_BOT_NAME = isProd 
-  ? 'happybookingbot' 
-  : 'happybookingdevbot';
+export const TELEGRAM_BOT_NAME = getBotName();
 
-export const TELEGRAM_BOT_DISPLAY_NAME = isProd
-  ? 'BookingBot'
-  : 'happybookingdevbot';
+export const TELEGRAM_BOT_DISPLAY_NAME = getBotDisplayName();

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   setTelegramWebhook,
   validateTelegramWebhookArguments,
@@ -150,8 +151,8 @@ describe('one-shot Telegram webhook operation', () => {
     await expect(
       setTelegramWebhook(argv, { ...env, NODE_ENV: 'production' }),
     ).rejects.toThrow('RUNTIME_ENVIRONMENT_MISMATCH');
-    expect(mockedAxios.get).not.toHaveBeenCalled();
-    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(mockedAxios.get.mock.calls).toHaveLength(0);
+    expect(mockedAxios.post.mock.calls).toHaveLength(0);
   });
 
   it('sets and reads back the exact webhook, returning a non-secret receipt', async () => {
@@ -186,12 +187,12 @@ describe('one-shot Telegram webhook operation', () => {
     expect(mockedAxios.get).toHaveBeenNthCalledWith(
       1,
       'https://booking-preprod.happybooking.uk/readyz',
-      { timeout: 15_000 },
+      { proxy: false, timeout: 15_000 },
     );
     expect(mockedAxios.get).toHaveBeenNthCalledWith(
       2,
       expect.stringMatching(/\/getMe$/),
-      { timeout: 15_000 },
+      { proxy: false, timeout: 15_000 },
     );
     expect(mockedAxios.post).toHaveBeenCalledWith(
       expect.stringMatching(/\/setWebhook$/),
@@ -200,12 +201,12 @@ describe('one-shot Telegram webhook operation', () => {
         secret_token: 'webhook_secret_value',
         drop_pending_updates: false,
       },
-      { timeout: 15_000 },
+      { proxy: false, timeout: 15_000 },
     );
     expect(mockedAxios.get).toHaveBeenNthCalledWith(
       3,
       expect.stringMatching(/\/getWebhookInfo$/),
-      { timeout: 15_000 },
+      { proxy: false, timeout: 15_000 },
     );
     expect(receipt).toEqual({
       schemaVersion: 1,
@@ -312,5 +313,57 @@ describe('one-shot Telegram webhook operation', () => {
     );
     expect(failure.message).toBe('TELEGRAM_API_OPERATION_FAILED');
     expect(failure.message).not.toContain('secret-token-material');
+  });
+
+  it('uses one shared HTTP proxy agent for all Telegram calls but not readiness', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: {
+            url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
+            pending_update_count: 0,
+          },
+        },
+      });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+
+    await setTelegramWebhook(argv, {
+      ...env,
+      TELEGRAM_PROXY_URL: 'http://proxy-user:proxy-password@proxy.example:3128',
+    });
+
+    expect(mockedAxios.get.mock.calls[0][1]).toEqual({
+      proxy: false,
+      timeout: 15_000,
+    });
+    const getMeAgent = mockedAxios.get.mock.calls[1][1]?.httpsAgent;
+    const setWebhookAgent = mockedAxios.post.mock.calls[0][2]?.httpsAgent;
+    const getInfoAgent = mockedAxios.get.mock.calls[2][1]?.httpsAgent;
+    expect(getMeAgent).toBeInstanceOf(HttpsProxyAgent);
+    expect(setWebhookAgent).toBe(getMeAgent);
+    expect(getInfoAgent).toBe(getMeAgent);
+    expect(mockedAxios.get.mock.calls[1][1]?.proxy).toBe(false);
+  });
+
+  it('rejects invalid proxy configuration without disclosing credentials or calling HTTP', async () => {
+    const credential = 'proxy-password-material';
+    const failure = await setTelegramWebhook(argv, {
+      ...env,
+      TELEGRAM_PROXY_URL: `ftp://proxy-user:${credential}@proxy.example:21`,
+    }).catch((error: Error) => error);
+    expect(failure.message).toBe('TELEGRAM_PROXY_CONFIG_INVALID');
+    expect(failure.message).not.toContain(credential);
+    expect(mockedAxios.get.mock.calls).toHaveLength(0);
+    expect(mockedAxios.post.mock.calls).toHaveLength(0);
   });
 });

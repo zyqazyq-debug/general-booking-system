@@ -1,6 +1,10 @@
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
 import { resolveFileSecrets } from '../config/file-secrets';
+import {
+  createTelegramHttpConfig,
+  type TelegramHttpConfig,
+} from '../platforms/telegram/telegram-http-config';
 
 type EnvMap = Record<string, unknown>;
 
@@ -260,12 +264,24 @@ export async function setTelegramWebhook(
   if (args.action === 'set' && (!secret || !SECRET_PATTERN.test(secret))) {
     throw new TelegramWebhookOperationError('WEBHOOK_SECRET_REQUIRED');
   }
+  const directHttp = createTelegramHttpConfig(undefined);
+  let telegramHttp: TelegramHttpConfig;
+  try {
+    telegramHttp = createTelegramHttpConfig(
+      config.get<string>('TELEGRAM_PROXY_URL'),
+    );
+  } catch {
+    throw new TelegramWebhookOperationError('TELEGRAM_PROXY_CONFIG_INVALID');
+  }
 
   // Telegram requires the token in the Bot API path. Errors are deliberately
   // collapsed below so neither the URL nor an Axios diagnostic can disclose it.
   const apiBase = `https://api.telegram.org/bot${token}`;
   try {
-    const readyResponse = await axios.get(args.readyUrl, { timeout: 15_000 });
+    const readyResponse = await axios.get(args.readyUrl, {
+      ...directHttp.axios,
+      timeout: 15_000,
+    });
     const ready = readyResponse.data as CandidateReadiness;
     if (
       !ready ||
@@ -285,6 +301,7 @@ export async function setTelegramWebhook(
       );
     }
     const identityResponse = await axios.get(`${apiBase}/getMe`, {
+      ...telegramHttp.axios,
       timeout: 15_000,
     });
     const identity = verifiedResult<TelegramBotIdentity>(
@@ -315,7 +332,7 @@ export async function setTelegramWebhook(
           secret_token: secret,
           drop_pending_updates: false,
         },
-        { timeout: 15_000 },
+        { ...telegramHttp.axios, timeout: 15_000 },
       );
       if (
         verifiedResult<boolean>(setResponse.data, 'SET_WEBHOOK_REJECTED') !==
@@ -326,6 +343,7 @@ export async function setTelegramWebhook(
     }
 
     const infoResponse = await axios.get(`${apiBase}/getWebhookInfo`, {
+      ...telegramHttp.axios,
       timeout: 15_000,
     });
     const info = verifiedResult<TelegramWebhookInfo>(

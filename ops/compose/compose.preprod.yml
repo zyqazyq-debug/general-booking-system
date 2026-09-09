@@ -302,6 +302,27 @@ services:
     security_opt: ["no-new-privileges:true"]
     networks: [preprod-edge]
 
+  telegram-bot-identity:
+    profiles: [telegram-bot-identity]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+    command:
+      - node
+      - dist/src/scripts/verify-telegram-bot-identity.js
+      - --expected-bot-username=${BOOKING_TELEGRAM_EXPECTED_BOT_USERNAME:?set manifest-bound bot username}
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-edge]
+
   backend-green:
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
     build:
@@ -444,7 +465,7 @@ services:
         VITE_TELEGRAM_BOT_DISPLAY_NAME: ${BOOKING_TELEGRAM_BOT_DISPLAY_NAME:?set isolated preprod bot display name}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${BOOKING_GREEN_PORT:-18081}:8080"
+      - "127.0.0.1:${BOOKING_GREEN_PORT:-18082}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-green:3001
       # The NAS Docker runtime discards tmpfs mode options. Avoid rendering a
@@ -617,7 +638,7 @@ services:
         VITE_TELEGRAM_BOT_DISPLAY_NAME: ${BOOKING_TELEGRAM_BOT_DISPLAY_NAME:?set isolated preprod bot display name}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${BOOKING_BLUE_PORT:-18082}:8080"
+      - "127.0.0.1:${BOOKING_BLUE_PORT:-18083}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-blue:3001
       NGINX_ENVSUBST_TEMPLATE_DIR: /tmp/empty-nginx-templates

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { open, lstat, readFile, realpath, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, lstat, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ export const PREPROD_PROJECT = 'booking-preprod';
 export const PREPROD_HOSTNAME = 'booking-preprod.happybooking.uk';
 export const TOKEN_FILE = '/etc/happybooking/secrets/cloudflare-preprod-api-token';
 export const PROOF_FILE = '/var/lib/happybooking/ingress/booking-preprod-proof.json';
+export const PROOF_ARCHIVE_DIRECTORY = '/var/lib/happybooking/ingress/booking-preprod-proofs';
 export const LOCK_FILE = '/var/lib/happybooking/ingress/booking-preprod.lock';
 
 const API_URL = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${CLOUDFLARE_TUNNEL_ID}/configurations`;
@@ -42,9 +43,13 @@ const RELEASE_ID = /^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$/;
 const UPSTREAM = /^gateway-(green|blue):8080$/;
 const TOKEN = /^[A-Za-z0-9_-]{20,256}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_PROOF_BYTES = 64 * 1024;
+const ACTION_KIND = new Set(['preprod-switch-ingress', 'preprod-rollback-ingress']);
 const PROOF_KEYS = [
   'schema', 'accountId', 'tunnelId', 'project', 'hostname', 'upstream', 'remoteService',
-  'releaseId', 'manifestDigest', 'operationId', 'fencingEpoch', 'remoteVersion',
+  'releaseId', 'manifestDigest', 'operationId', 'approvalId', 'leaseId', 'holderId',
+  'actionKind', 'actionId', 'sequence', 'fencingEpoch', 'rollbackUpstream',
+  'rollbackReleaseId', 'rollbackManifestDigest', 'remoteVersion',
   'remoteConfigDigest', 'guard', 'writtenAt', 'previousProofDigest', 'proofDigest',
 ];
 
@@ -77,8 +82,16 @@ function validateScope(args) {
   const readback = args.readback === true;
   const allowed = readback
     ? ['readback', 'project', 'hostname']
-    : ['project', 'hostname', 'upstream', 'release', 'manifest-digest', 'operation-id', 'fencing-epoch'];
+    : ['execute', 'environment', 'project', 'hostname', 'upstream', 'release', 'manifest-digest', 'operation-id', 'approval-id', 'lease-id', 'holder-id',
+      'action-kind', 'action-id', 'sequence', 'fencing-epoch', 'rollback-upstream', 'rollback-release', 'rollback-manifest-digest',
+      ...(Object.hasOwn(args, 'recover-pending') ? ['recover-pending'] : [])];
   exactKeys(args, allowed, 'ingress helper arguments');
+  if (!readback && (args.execute !== 'true' || args.environment !== 'preprod')) {
+    throw new ContractError('ingress helper execution is pinned to explicit preproduction mutation mode', EXIT.INGRESS);
+  }
+  if (!readback && args['recover-pending'] !== undefined && args['recover-pending'] !== 'true') {
+    throw new ContractError('ingress pending recovery flag is invalid', EXIT.INGRESS);
+  }
   if (args.project !== PREPROD_PROJECT || args.hostname !== PREPROD_HOSTNAME) {
     throw new ContractError('ingress helper is pinned to the booking-preprod hostname', EXIT.INGRESS);
   }
@@ -86,10 +99,21 @@ function validateScope(args) {
   if (!UPSTREAM.test(args.upstream || '')) throw new ContractError('ingress upstream is outside the preproduction slot allowlist', EXIT.INGRESS);
   if (!RELEASE_ID.test(args.release || '')) throw new ContractError('ingress release identity is invalid', EXIT.INGRESS);
   if (!DIGEST.test(args['manifest-digest'] || '')) throw new ContractError('ingress manifest digest is invalid', EXIT.INGRESS);
-  if (!IDENTIFIER.test(args['operation-id'] || '')) throw new ContractError('ingress operation identity is invalid', EXIT.INGRESS);
+  if (!UPSTREAM.test(args['rollback-upstream'] || '')) throw new ContractError('ingress rollback upstream is outside the preproduction slot allowlist', EXIT.INGRESS);
+  if (!RELEASE_ID.test(args['rollback-release'] || '')) throw new ContractError('ingress rollback release identity is invalid', EXIT.INGRESS);
+  if (!DIGEST.test(args['rollback-manifest-digest'] || '')) throw new ContractError('ingress rollback manifest digest is invalid', EXIT.INGRESS);
+  for (const key of ['operation-id', 'approval-id', 'lease-id', 'holder-id', 'action-id']) {
+    if (!IDENTIFIER.test(args[key] || '')) throw new ContractError(`ingress ${key} is invalid`, EXIT.INGRESS);
+  }
+  if (!ACTION_KIND.has(args['action-kind'])) throw new ContractError('ingress action kind is invalid', EXIT.INGRESS);
+  const sequence = Number(args.sequence);
+  const expectedAction = sequence === 2 ? 'preprod-rollback-ingress' : 'preprod-switch-ingress';
+  if (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > 3 || args['action-kind'] !== expectedAction) {
+    throw new ContractError('ingress action kind and sequence are inconsistent', EXIT.INGRESS);
+  }
   const fencingEpoch = Number(args['fencing-epoch']);
   if (!Number.isSafeInteger(fencingEpoch) || fencingEpoch < 1) throw new ContractError('ingress fencing epoch is invalid', EXIT.INGRESS);
-  return { readback: false, fencingEpoch };
+  return { readback: false, fencingEpoch, sequence, recoverPending: args['recover-pending'] === 'true' };
 }
 
 async function assertTrustedPath(path, kind, runtime) {
@@ -99,7 +123,7 @@ async function assertTrustedPath(path, kind, runtime) {
   if (kind.endsWith('directory') ? !metadata.isDirectory() : !metadata.isFile()) throw new ContractError(`${kind} has the wrong file type`, EXIT.INGRESS);
   if (!runtime.allowInsecureTestPaths && process.platform !== 'win32') {
     if (metadata.uid !== 0) throw new ContractError(`${kind} must be root-owned`, EXIT.INGRESS);
-    const forbidden = ['token file', 'ingress proof file', 'ingress state directory'].includes(kind) ? 0o077 : 0o022;
+    const forbidden = ['token file', 'ingress proof file', 'archived ingress proof file', 'ingress state directory', 'ingress proof archive directory'].includes(kind) ? 0o077 : 0o022;
     if ((metadata.mode & forbidden) !== 0) throw new ContractError(`${kind} permissions are too broad`, EXIT.INGRESS);
   }
   return metadata;
@@ -143,9 +167,21 @@ function validateSnapshotEnvelope(envelope) {
     if (rule.hostname === 'app.happybooking.uk') throw new ContractError('production hostname is forbidden in the preproduction tunnel', EXIT.INGRESS);
     if (rule.hostname === PREPROD_HOSTNAME) targetIndexes.push(index);
   }
+  if (result.config.ingress.length !== 2) {
+    throw new ContractError('pinned preproduction tunnel must contain exactly the hostname rule and final 404 fallback', EXIT.INGRESS);
+  }
   if (targetIndexes.length !== 1) throw new ContractError('pinned preproduction hostname must have exactly one ingress rule', EXIT.INGRESS);
   const targetIndex = targetIndexes[0];
-  if (!/^http:\/\/gateway-(green|blue):8080$/.test(result.config.ingress[targetIndex].service)) {
+  const targetRule = result.config.ingress[targetIndex];
+  const fallbackIndex = result.config.ingress.length - 1;
+  const fallbackRule = result.config.ingress[fallbackIndex];
+  if (targetIndex !== 0 || Object.hasOwn(targetRule, 'path')) {
+    throw new ContractError('pinned preproduction hostname must be the first pathless catch-all hostname rule', EXIT.INGRESS);
+  }
+  if (fallbackIndex <= targetIndex || Object.hasOwn(fallbackRule, 'hostname') || Object.hasOwn(fallbackRule, 'path') || fallbackRule.service !== 'http_status:404') {
+    throw new ContractError('preproduction tunnel must end with the exact pathless 404 fallback', EXIT.INGRESS);
+  }
+  if (!/^http:\/\/gateway-(green|blue):8080$/.test(targetRule.service)) {
     throw new ContractError('existing preproduction ingress service is outside the slot allowlist', EXIT.INGRESS);
   }
   return {
@@ -213,12 +249,19 @@ function assertOnlyTargetServiceChanged(before, after, targetIndex, expectedServ
 function validateProof(value) {
   exactKeys(value, PROOF_KEYS, 'local ingress proof');
   const { proofDigest, ...body } = value;
-  if (value.schema !== 'booking.cloudflare-ingress-proof/v1' || value.accountId !== CLOUDFLARE_ACCOUNT_ID ||
+  exactKeys(value.guard, ['mode', 'atomicRemoteCas', 'opportunisticIfMatch', 'exclusiveWriteRequired'], 'local ingress proof guard');
+  const expectedAction = value.sequence === 2 ? 'preprod-rollback-ingress' : 'preprod-switch-ingress';
+  if (value.schema !== 'booking.cloudflare-ingress-proof/v2' || value.accountId !== CLOUDFLARE_ACCOUNT_ID ||
       value.tunnelId !== CLOUDFLARE_TUNNEL_ID || value.project !== PREPROD_PROJECT || value.hostname !== PREPROD_HOSTNAME ||
       !UPSTREAM.test(value.upstream) || value.remoteService !== `http://${value.upstream}` || !RELEASE_ID.test(value.releaseId) ||
-      !DIGEST.test(value.manifestDigest) || !IDENTIFIER.test(value.operationId) || !Number.isSafeInteger(value.fencingEpoch) || value.fencingEpoch < 1 ||
+      !DIGEST.test(value.manifestDigest) || !IDENTIFIER.test(value.operationId) ||
+      ['approvalId', 'leaseId', 'holderId', 'actionId'].some((key) => !IDENTIFIER.test(value[key] || '')) ||
+      !ACTION_KIND.has(value.actionKind) || value.actionKind !== expectedAction || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || value.sequence > 3 ||
+      !Number.isSafeInteger(value.fencingEpoch) || value.fencingEpoch < 1 ||
+      !UPSTREAM.test(value.rollbackUpstream) || !RELEASE_ID.test(value.rollbackReleaseId) || !DIGEST.test(value.rollbackManifestDigest) ||
       !Number.isSafeInteger(value.remoteVersion) || value.remoteVersion < 0 || !DIGEST.test(value.remoteConfigDigest) ||
-      !value.guard || value.guard.mode !== 'double-read-version-and-digest' || value.guard.atomicRemoteCas !== false ||
+      value.guard.mode !== 'double-read-version-and-digest' || value.guard.atomicRemoteCas !== false ||
+      typeof value.guard.opportunisticIfMatch !== 'boolean' || value.guard.exclusiveWriteRequired !== true ||
       !Number.isFinite(Date.parse(value.writtenAt)) || (value.previousProofDigest !== null && !DIGEST.test(value.previousProofDigest)) ||
       !DIGEST.test(proofDigest) || sha256(body) !== proofDigest) {
     throw new ContractError('local ingress proof failed validation', EXIT.INGRESS);
@@ -226,24 +269,174 @@ function validateProof(value) {
   return value;
 }
 
-async function loadProof(runtime, optional = false) {
+function sameReleaseTarget(left, right) {
+  return left.releaseId === right.releaseId && left.manifestDigest === right.manifestDigest && left.upstream === right.upstream;
+}
+
+function sameRollbackBinding(left, right) {
+  return left.rollbackReleaseId === right.rollbackReleaseId && left.rollbackManifestDigest === right.rollbackManifestDigest &&
+    left.rollbackUpstream === right.rollbackUpstream;
+}
+
+function findFirstPromotion(proofs, value) {
+  return [...proofs.values()].find((item) => item.sequence === 1 && item.operationId === value.operationId &&
+    sameRollbackBinding(item, value) && item.releaseId === value.releaseId && item.manifestDigest === value.manifestDigest &&
+    item.upstream === value.upstream) || null;
+}
+
+function assertProofTransition(previous, current, proofs) {
+  if (current.previousProofDigest !== previous.proofDigest || current.fencingEpoch < previous.fencingEpoch) {
+    throw new ContractError('archived ingress proof chain is not monotonic', EXIT.INGRESS);
+  }
+  if (current.fencingEpoch > previous.fencingEpoch) {
+    const sameOperation = current.operationId === previous.operationId;
+    if (sameOperation) {
+      const adopted = current.sequence === previous.sequence && sameReleaseTarget(current, previous);
+      const continued = current.sequence === previous.sequence + 1;
+      if (!sameRollbackBinding(current, previous) || current.approvalId === previous.approvalId || current.leaseId === previous.leaseId ||
+          current.holderId === previous.holderId || current.actionId === previous.actionId || (!adopted && !continued) ||
+          (adopted && (current.actionKind !== previous.actionKind || current.remoteVersion !== previous.remoteVersion ||
+            current.remoteConfigDigest !== previous.remoteConfigDigest)) ||
+          (continued && (current.remoteVersion <= previous.remoteVersion || current.remoteConfigDigest === previous.remoteConfigDigest))) {
+        throw new ContractError('takeover ingress proof does not preserve the canonical operation sequence', EXIT.INGRESS);
+      }
+      if (current.sequence === 2 && (current.releaseId !== current.rollbackReleaseId || current.manifestDigest !== current.rollbackManifestDigest ||
+          current.upstream !== current.rollbackUpstream)) throw new ContractError('takeover rollback target is invalid', EXIT.INGRESS);
+      if (current.sequence === 3 && !findFirstPromotion(proofs, current)) {
+        throw new ContractError('takeover re-promotion does not restore the first candidate', EXIT.INGRESS);
+      }
+      return;
+    }
+    if (current.remoteVersion <= previous.remoteVersion || current.remoteConfigDigest === previous.remoteConfigDigest ||
+        previous.sequence !== 3 || current.sequence !== 1 || current.actionKind !== 'preprod-switch-ingress' ||
+        current.rollbackReleaseId !== previous.releaseId || current.rollbackManifestDigest !== previous.manifestDigest || current.rollbackUpstream !== previous.upstream) {
+      throw new ContractError('a new fencing epoch must follow a completed cycle and begin from the previously proven active release', EXIT.INGRESS);
+    }
+    return;
+  }
+  if (current.remoteVersion <= previous.remoteVersion || current.remoteConfigDigest === previous.remoteConfigDigest) {
+    throw new ContractError('archived ingress proof chain is not monotonic', EXIT.INGRESS);
+  }
+  if (current.operationId !== previous.operationId || current.approvalId !== previous.approvalId || current.leaseId !== previous.leaseId ||
+      current.holderId !== previous.holderId || current.actionId === previous.actionId || !sameRollbackBinding(current, previous) ||
+      current.sequence !== previous.sequence + 1) {
+    throw new ContractError('same-epoch ingress proof sequence binding is invalid', EXIT.INGRESS);
+  }
+  if (current.sequence === 2) {
+    if (previous.sequence !== 1 || current.actionKind !== 'preprod-rollback-ingress' ||
+        current.releaseId !== current.rollbackReleaseId || current.manifestDigest !== current.rollbackManifestDigest ||
+        current.upstream !== current.rollbackUpstream || sameReleaseTarget(current, previous)) {
+      throw new ContractError('rollback must follow and reverse a distinct first promotion', EXIT.INGRESS);
+    }
+    return;
+  }
+  if (current.sequence === 3) {
+    const firstPromotion = findFirstPromotion(proofs, current);
+    if (!firstPromotion || previous.sequence !== 2 ||
+        current.actionKind !== 'preprod-switch-ingress' || current.actionId === firstPromotion.actionId ||
+        !sameReleaseTarget(current, firstPromotion)) {
+      throw new ContractError('re-promotion must exactly restore the first promotion target', EXIT.INGRESS);
+    }
+    return;
+  }
+  throw new ContractError('same-epoch ingress proof sequence cannot restart', EXIT.INGRESS);
+}
+
+async function readProofDocument(path, kind, runtime) {
+  const before = await assertTrustedPath(path, kind, runtime);
+  let handle;
+  try {
+    handle = await open(path, 'r');
+    const after = await handle.stat();
+    if (before.dev !== after.dev || before.ino !== after.ino || !after.isFile() || after.size > MAX_PROOF_BYTES) {
+      throw new ContractError(`${kind} identity or size is invalid`, EXIT.INGRESS);
+    }
+    return validateProof(JSON.parse(await handle.readFile('utf8')));
+  } catch (error) {
+    if (error instanceof ContractError) throw error;
+    throw new ContractError(`${kind} cannot be read`, EXIT.INGRESS);
+  } finally { await handle?.close().catch(() => {}); }
+}
+
+async function loadProofChain(runtime, optional = false) {
   const proofFile = runtime.proofFile || PROOF_FILE;
-  try { await assertTrustedPath(proofFile, 'ingress proof file', runtime); }
+  let head;
+  try { head = await readProofDocument(proofFile, 'ingress proof file', runtime); }
   catch (error) {
-    if (optional && error instanceof ContractError && error.message === 'ingress proof file is unavailable') return null;
+    if (optional && error instanceof ContractError && error.message === 'ingress proof file is unavailable') head = null;
+    else throw error;
+  }
+  const archiveDirectory = runtime.proofArchiveDirectory || PROOF_ARCHIVE_DIRECTORY;
+  let names;
+  try {
+    await assertTrustedPath(archiveDirectory, 'ingress proof archive directory', runtime);
+    names = await readdir(archiveDirectory);
+  } catch (error) {
+    if (optional && head === null && error instanceof ContractError && error.message === 'ingress proof archive directory is unavailable') {
+      return { head: null, proofs: new Map() };
+    }
     throw error;
   }
-  let value;
-  try { value = JSON.parse(await readFile(proofFile, 'utf8')); }
-  catch { throw new ContractError('local ingress proof cannot be read', EXIT.INGRESS); }
-  return validateProof(value);
+  const proofs = new Map();
+  for (const name of names) {
+    if (!/^[0-9]{12}-[1-3]-[0-9a-f]{12}\.json$/.test(name)) throw new ContractError('ingress proof archive contains an unexpected entry', EXIT.INGRESS);
+    const proof = await readProofDocument(resolve(archiveDirectory, name), 'archived ingress proof file', runtime);
+    const expectedName = `${String(proof.fencingEpoch).padStart(12, '0')}-${proof.sequence}-${proof.proofDigest.slice(7, 19)}.json`;
+    if (name !== expectedName || proofs.has(proof.proofDigest)) throw new ContractError('ingress proof archive identity is ambiguous', EXIT.INGRESS);
+    proofs.set(proof.proofDigest, proof);
+  }
+  if (head === null) {
+    if (proofs.size !== 0) throw new ContractError('ingress proof head is missing while archive evidence remains', EXIT.INGRESS);
+    return { head: null, proofs };
+  }
+  const archivedHead = proofs.get(head.proofDigest);
+  if (!archivedHead || canonicalJson(archivedHead) !== canonicalJson(head)) throw new ContractError('ingress proof head is not present in its immutable archive', EXIT.INGRESS);
+  const visited = new Set();
+  let current = head;
+  while (current) {
+    if (visited.has(current.proofDigest)) throw new ContractError('ingress proof archive contains a cycle', EXIT.INGRESS);
+    visited.add(current.proofDigest);
+    if (current.previousProofDigest === null) {
+      if (current.sequence !== 1 || current.actionKind !== 'preprod-switch-ingress') {
+        throw new ContractError('ingress proof archive root must be a first promotion', EXIT.INGRESS);
+      }
+      break;
+    }
+    const previous = proofs.get(current.previousProofDigest);
+    if (!previous) throw new ContractError('ingress proof archive predecessor is missing', EXIT.INGRESS);
+    assertProofTransition(previous, current, proofs);
+    current = previous;
+  }
+  if (visited.size !== proofs.size) throw new ContractError('ingress proof archive contains evidence outside the canonical chain', EXIT.INGRESS);
+  return { head, proofs };
 }
 
 async function writeProof(runtime, body) {
   const proofFile = runtime.proofFile || PROOF_FILE;
   const directory = dirname(proofFile);
   await assertTrustedPath(directory, 'ingress state directory', runtime);
-  const proof = { ...body, proofDigest: sha256(body) };
+  const proof = validateProof({ ...body, proofDigest: sha256(body) });
+  const archiveDirectory = runtime.proofArchiveDirectory || PROOF_ARCHIVE_DIRECTORY;
+  await mkdir(archiveDirectory, { mode: 0o700 }).catch((error) => { if (error?.code !== 'EEXIST') throw error; });
+  await assertTrustedPath(archiveDirectory, 'ingress proof archive directory', runtime);
+  const archivePath = resolve(archiveDirectory, `${String(proof.fencingEpoch).padStart(12, '0')}-${proof.sequence}-${proof.proofDigest.slice(7, 19)}.json`);
+  let archiveHandle;
+  try {
+    archiveHandle = await open(archivePath, 'wx', 0o600);
+    await archiveHandle.writeFile(`${JSON.stringify(proof)}\n`, 'utf8');
+    await archiveHandle.sync();
+    await archiveHandle.close();
+    archiveHandle = null;
+    if (process.platform !== 'win32') {
+      const archiveDirectoryHandle = await open(archiveDirectory, 'r');
+      try { await archiveDirectoryHandle.sync(); } finally { await archiveDirectoryHandle.close(); }
+    }
+  } catch (error) {
+    await archiveHandle?.close().catch(() => {});
+    if (error?.code !== 'EEXIST') throw new ContractError('immutable ingress proof archive cannot be stored', EXIT.INGRESS);
+    const existing = await readProofDocument(archivePath, 'archived ingress proof file', runtime);
+    if (canonicalJson(existing) !== canonicalJson(proof)) throw new ContractError('immutable ingress proof archive collision', EXIT.INGRESS);
+  }
   const temporary = `${proofFile}.new-${process.pid}`;
   let handle;
   try {
@@ -286,14 +479,27 @@ async function withLocalLock(runtime, callback) {
 
 function readbackObject(proof, observedAt) {
   return {
-    schema: 'booking.ingress-readback/v1',
+    schema: 'booking.ingress-readback/v2',
     project: proof.project,
     hostname: proof.hostname,
     upstream: proof.upstream,
     releaseId: proof.releaseId,
     manifestDigest: proof.manifestDigest,
     operationId: proof.operationId,
+    approvalId: proof.approvalId,
+    leaseId: proof.leaseId,
+    holderId: proof.holderId,
+    actionKind: proof.actionKind,
+    actionId: proof.actionId,
+    sequence: proof.sequence,
     fencingEpoch: proof.fencingEpoch,
+    rollbackUpstream: proof.rollbackUpstream,
+    rollbackReleaseId: proof.rollbackReleaseId,
+    rollbackManifestDigest: proof.rollbackManifestDigest,
+    proofDigest: proof.proofDigest,
+    remoteVersion: proof.remoteVersion,
+    remoteConfigDigest: proof.remoteConfigDigest,
+    guard: structuredClone(proof.guard),
     observedAt,
   };
 }
@@ -315,27 +521,132 @@ async function verifyRemoteAgainstProof(proof, token, runtime) {
 
 async function executeReadback(runtime) {
   return withLocalLock(runtime, async () => {
-    const proof = await loadProof(runtime);
+    const { head: proof } = await loadProofChain(runtime);
     const token = await loadToken(runtime);
     return verifyRemoteAgainstProof(proof, token, runtime);
   });
 }
 
-async function executeMutation(args, fencingEpoch, runtime) {
-  return withLocalLock(runtime, async () => {
-    const priorProof = await loadProof(runtime, true);
-    if (priorProof && priorProof.fencingEpoch > fencingEpoch) throw new ContractError('ingress fencing epoch is stale', EXIT.INGRESS);
-    const sameIdentity = priorProof && priorProof.fencingEpoch === fencingEpoch && priorProof.releaseId === args.release &&
-      priorProof.manifestDigest === args['manifest-digest'] && priorProof.operationId === args['operation-id'] && priorProof.upstream === args.upstream;
-    if (priorProof && priorProof.fencingEpoch === fencingEpoch && !sameIdentity) throw new ContractError('ingress fencing epoch is already bound to another operation', EXIT.INGRESS);
+function proofMatchesRequest(proof, args, fencingEpoch, sequence) {
+  return proof.fencingEpoch === fencingEpoch && proof.sequence === sequence && proof.operationId === args['operation-id'] &&
+    proof.approvalId === args['approval-id'] && proof.leaseId === args['lease-id'] && proof.holderId === args['holder-id'] &&
+    proof.actionKind === args['action-kind'] && proof.actionId === args['action-id'] &&
+    proof.releaseId === args.release && proof.manifestDigest === args['manifest-digest'] && proof.upstream === args.upstream &&
+    proof.rollbackReleaseId === args['rollback-release'] && proof.rollbackManifestDigest === args['rollback-manifest-digest'] &&
+    proof.rollbackUpstream === args['rollback-upstream'];
+}
 
+function assertRequestedCycleTarget(args, sequence) {
+  const targetIsRollback = args.release === args['rollback-release'] && args['manifest-digest'] === args['rollback-manifest-digest'] &&
+    args.upstream === args['rollback-upstream'];
+  if ((sequence === 2) !== targetIsRollback) {
+    throw new ContractError(sequence === 2 ? 'rollback target does not match the cycle baseline' : 'candidate target must differ from the cycle baseline', EXIT.INGRESS);
+  }
+}
+
+function assertNextRequest(chain, args, fencingEpoch, sequence) {
+  const prior = chain.head;
+  assertRequestedCycleTarget(args, sequence);
+  if (!prior) {
+    if (sequence !== 1) throw new ContractError('the first ingress proof must begin at sequence one', EXIT.INGRESS);
+    return args['rollback-upstream'];
+  }
+  if (prior.fencingEpoch > fencingEpoch) throw new ContractError('ingress fencing epoch is stale', EXIT.INGRESS);
+  if (prior.fencingEpoch < fencingEpoch) {
+    if (prior.operationId === args['operation-id']) {
+      const adopted = sequence === prior.sequence && prior.releaseId === args.release && prior.manifestDigest === args['manifest-digest'] && prior.upstream === args.upstream &&
+        prior.actionKind === args['action-kind'];
+      const continued = sequence === prior.sequence + 1;
+      if (prior.approvalId === args['approval-id'] || prior.leaseId === args['lease-id'] || prior.holderId === args['holder-id'] ||
+          prior.actionId === args['action-id'] || prior.rollbackReleaseId !== args['rollback-release'] ||
+          prior.rollbackManifestDigest !== args['rollback-manifest-digest'] || prior.rollbackUpstream !== args['rollback-upstream'] || (!adopted && !continued)) {
+        throw new ContractError('takeover ingress action is outside the canonical operation sequence', EXIT.INGRESS);
+      }
+      if (sequence === 3) {
+        const firstPromotion = findFirstPromotion(chain.proofs, { operationId: args['operation-id'], rollbackReleaseId: args['rollback-release'],
+          rollbackManifestDigest: args['rollback-manifest-digest'], rollbackUpstream: args['rollback-upstream'], releaseId: args.release,
+          manifestDigest: args['manifest-digest'], upstream: args.upstream });
+        if (!firstPromotion) throw new ContractError('takeover second promotion does not restore the first candidate', EXIT.INGRESS);
+      }
+      return prior.upstream;
+    }
+    if (prior.sequence !== 3 || sequence !== 1 || prior.releaseId !== args['rollback-release'] || prior.manifestDigest !== args['rollback-manifest-digest'] || prior.upstream !== args['rollback-upstream']) {
+      throw new ContractError('a new ingress fencing epoch must follow a completed cycle and start from the previously proven active release', EXIT.INGRESS);
+    }
+    return prior.upstream;
+  }
+  if (sequence !== prior.sequence + 1 || prior.operationId !== args['operation-id'] || prior.approvalId !== args['approval-id'] ||
+      prior.leaseId !== args['lease-id'] || prior.holderId !== args['holder-id'] || prior.actionId === args['action-id'] ||
+      prior.rollbackReleaseId !== args['rollback-release'] || prior.rollbackManifestDigest !== args['rollback-manifest-digest'] ||
+      prior.rollbackUpstream !== args['rollback-upstream']) {
+    throw new ContractError('same-epoch ingress action is outside the canonical operation sequence', EXIT.INGRESS);
+  }
+  if (sequence === 3) {
+    const firstPromotion = findFirstPromotion(chain.proofs, { operationId: args['operation-id'], rollbackReleaseId: args['rollback-release'],
+      rollbackManifestDigest: args['rollback-manifest-digest'], rollbackUpstream: args['rollback-upstream'], releaseId: args.release,
+      manifestDigest: args['manifest-digest'], upstream: args.upstream });
+    if (!firstPromotion || firstPromotion.sequence !== 1 || firstPromotion.releaseId !== args.release ||
+        firstPromotion.manifestDigest !== args['manifest-digest'] || firstPromotion.upstream !== args.upstream ||
+        firstPromotion.actionId === args['action-id']) {
+      throw new ContractError('second promotion does not exactly restore the first candidate', EXIT.INGRESS);
+    }
+  }
+  return prior.upstream;
+}
+
+async function executeMutation(args, fencingEpoch, sequence, runtime, recoverPending = false) {
+  return withLocalLock(runtime, async () => {
+    const chain = await loadProofChain(runtime, true);
+    const priorProof = chain.head;
+    if (priorProof?.fencingEpoch > fencingEpoch) throw new ContractError('ingress fencing epoch is stale', EXIT.INGRESS);
+    if (priorProof && proofMatchesRequest(priorProof, args, fencingEpoch, sequence)) {
+      const token = await loadToken(runtime);
+      return verifyRemoteAgainstProof(priorProof, token, runtime);
+    }
+    const expectedCurrentUpstream = assertNextRequest(chain, args, fencingEpoch, sequence);
     const token = await loadToken(runtime);
-    if (sameIdentity) return verifyRemoteAgainstProof(priorProof, token, runtime);
 
     const first = await cloudflareRequest('GET', token, runtime);
     const second = await cloudflareRequest('GET', token, runtime);
     assertSameSnapshot(first, second);
+    const currentService = second.snapshot.config.ingress[second.snapshot.targetIndex].service;
     const desired = desiredConfiguration(second.snapshot, args.upstream);
+    if (recoverPending && currentService === `http://${args.upstream}` && second.snapshot.configDigest === sha256(desired)) {
+      if (priorProof && (second.snapshot.version <= priorProof.remoteVersion || second.snapshot.configDigest === priorProof.remoteConfigDigest)) {
+        throw new ContractError('recovered Cloudflare state is not newer than the proven predecessor', EXIT.INGRESS);
+      }
+      const writtenAt = trustedNow(runtime);
+      const body = {
+        schema: 'booking.cloudflare-ingress-proof/v2', accountId: CLOUDFLARE_ACCOUNT_ID, tunnelId: CLOUDFLARE_TUNNEL_ID,
+        project: PREPROD_PROJECT, hostname: PREPROD_HOSTNAME, upstream: args.upstream, remoteService: `http://${args.upstream}`,
+        releaseId: args.release, manifestDigest: args['manifest-digest'], operationId: args['operation-id'], approvalId: args['approval-id'],
+        leaseId: args['lease-id'], holderId: args['holder-id'], actionKind: args['action-kind'], actionId: args['action-id'], sequence, fencingEpoch,
+        rollbackUpstream: args['rollback-upstream'], rollbackReleaseId: args['rollback-release'],
+        rollbackManifestDigest: args['rollback-manifest-digest'], remoteVersion: second.snapshot.version,
+        remoteConfigDigest: second.snapshot.configDigest,
+        guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false, opportunisticIfMatch: Boolean(second.etag), exclusiveWriteRequired: true },
+        writtenAt: writtenAt.toISOString(), previousProofDigest: priorProof?.proofDigest || null,
+      };
+      const prospectiveProof = validateProof({ ...body, proofDigest: sha256(body) });
+      if (priorProof) assertProofTransition(priorProof, prospectiveProof, chain.proofs);
+      const proof = await writeProof(runtime, body);
+      return readbackObject(proof, writtenAt.toISOString());
+    }
+    if (recoverPending && currentService === `http://${expectedCurrentUpstream}`) {
+      return {
+        schema: 'booking.ingress-pending-recovery/v1', outcome: 'not-applied', project: PREPROD_PROJECT,
+        hostname: PREPROD_HOSTNAME, operationId: args['operation-id'], actionKind: args['action-kind'],
+        actionId: args['action-id'], sequence, fencingEpoch, expectedPreviousUpstream: expectedCurrentUpstream,
+        remoteVersion: second.snapshot.version, remoteConfigDigest: second.snapshot.configDigest,
+        previousProofDigest: priorProof?.proofDigest || null,
+        guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false,
+          opportunisticIfMatch: Boolean(second.etag), exclusiveWriteRequired: true },
+        observedAt: trustedNow(runtime).toISOString(),
+      };
+    }
+    if (currentService !== `http://${expectedCurrentUpstream}`) {
+      throw new ContractError('remote Cloudflare ingress does not match the proven previous cycle target', EXIT.INGRESS);
+    }
     assertOnlyTargetServiceChanged(second.snapshot.config, desired, second.snapshot.targetIndex, `http://${args.upstream}`);
 
     let post = second;
@@ -351,14 +662,20 @@ async function executeMutation(args, fencingEpoch, runtime) {
     assertOnlyTargetServiceChanged(second.snapshot.config, post.snapshot.config, second.snapshot.targetIndex, `http://${args.upstream}`);
 
     const writtenAt = trustedNow(runtime);
-    const proof = await writeProof(runtime, {
-      schema: 'booking.cloudflare-ingress-proof/v1', accountId: CLOUDFLARE_ACCOUNT_ID, tunnelId: CLOUDFLARE_TUNNEL_ID,
+    const body = {
+      schema: 'booking.cloudflare-ingress-proof/v2', accountId: CLOUDFLARE_ACCOUNT_ID, tunnelId: CLOUDFLARE_TUNNEL_ID,
       project: PREPROD_PROJECT, hostname: PREPROD_HOSTNAME, upstream: args.upstream, remoteService: `http://${args.upstream}`,
-      releaseId: args.release, manifestDigest: args['manifest-digest'], operationId: args['operation-id'], fencingEpoch,
+      releaseId: args.release, manifestDigest: args['manifest-digest'], operationId: args['operation-id'], approvalId: args['approval-id'],
+      leaseId: args['lease-id'], holderId: args['holder-id'], actionKind: args['action-kind'], actionId: args['action-id'], sequence, fencingEpoch,
+      rollbackUpstream: args['rollback-upstream'], rollbackReleaseId: args['rollback-release'],
+      rollbackManifestDigest: args['rollback-manifest-digest'],
       remoteVersion: post.snapshot.version, remoteConfigDigest: post.snapshot.configDigest,
-      guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false, opportunisticIfMatch: Boolean(second.etag) },
+      guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false, opportunisticIfMatch: Boolean(second.etag), exclusiveWriteRequired: true },
       writtenAt: writtenAt.toISOString(), previousProofDigest: priorProof?.proofDigest || null,
-    });
+    };
+    const prospectiveProof = validateProof({ ...body, proofDigest: sha256(body) });
+    if (priorProof) assertProofTransition(priorProof, prospectiveProof, chain.proofs);
+    const proof = await writeProof(runtime, body);
     return readbackObject(proof, writtenAt.toISOString());
   });
 }
@@ -366,7 +683,7 @@ async function executeMutation(args, fencingEpoch, runtime) {
 export async function runIngressHelper(argv, runtime = {}) {
   const args = parseCliArgs(argv);
   const scope = validateScope(args);
-  return scope.readback ? executeReadback(runtime) : executeMutation(args, scope.fencingEpoch, runtime);
+  return scope.readback ? executeReadback(runtime) : executeMutation(args, scope.fencingEpoch, scope.sequence, runtime, scope.recoverPending);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

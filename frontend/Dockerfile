@@ -25,9 +25,13 @@ RUN test -s dist/build/h5/index.html
 FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
 ARG BOOKING_GIT_SHA
 ARG BOOKING_RELEASE_ID
+ARG VITE_TELEGRAM_BOT_NAME
+ARG VITE_TELEGRAM_BOT_DISPLAY_NAME
 LABEL org.opencontainers.image.revision=$BOOKING_GIT_SHA \
       uk.happybooking.release-id=$BOOKING_RELEASE_ID \
-      uk.happybooking.component=gateway
+      uk.happybooking.component=gateway \
+      uk.happybooking.telegram-bot-username=$VITE_TELEGRAM_BOT_NAME \
+      uk.happybooking.telegram-bot-display-name=$VITE_TELEGRAM_BOT_DISPLAY_NAME
 COPY --from=build /workspace/frontend/dist/build/h5 /usr/share/nginx/html
 COPY frontend/nginx.release.conf.template /etc/nginx/templates/default.conf.template
 EXPOSE 8080

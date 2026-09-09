@@ -100,6 +100,16 @@ the executor as the same dedicated deployment identity. Do not grant the web
 application write access to the state, resource epoch, receipt, release, or
 Docker socket paths.
 
+Candidate manifests use `booking.release/v2` and must bind the raw Compose file
+bytes at `artifacts.deployment.composeDigest`. Before a Compose-backed action,
+the executor resolves the fixed release path, rejects a release-local `.env`,
+requires the release directory, manifest and Compose file to be root-owned and
+non-group/non-other-writable, and recomputes that digest. It mounts and supplies the fixed
+root-only `/etc/happybooking/secrets/booking-preprod-control-plane.env` through explicit
+`docker compose --env-file`; implicit project environment is never trusted.
+Only the exact historical old-green v1 raw manifest may use the fixed,
+digest-bound `legacy-preprod-rollback.compose.yml` exception.
+
 ## Mandatory binding
 
 Every call repeats these values from the current canonical state:
@@ -124,7 +134,11 @@ never removed automatically, even if it appears stale.
 |---|---|---|---|
 | `preprod-baseline-ledger` | `STAGED` | `database:booking-preprod` | One-time only: verifies old release evidence, zero schema diff and a recent backup, atomically creates the ledger, then uses a separate read-only container to prove the exact committed ledger. |
 | `preprod-expand-migrate` | `STAGED` | `database:booking-preprod` | Verifies the apply receipt and then independently reopens PostgreSQL to prove the complete ordered migration ledger and its exact release/catalog binding. |
-| `preprod-stage` | `STAGED` or `EXPAND_MIGRATED` | `booking-preprod-edge` | Starts only `backend-<candidate slot>` and `gateway-<candidate slot>`; then proves both are running and healthy. |
+| `preprod-stage` | `EXPAND_MIGRATED` or controlled `ROLLED_BACK` re-promotion | `booking-preprod-edge` | Starts only `backend-<candidate slot>` and `gateway-<candidate slot>`; then proves both are running and healthy. |
+| `preprod-probe-candidate` | `CANDIDATE_STARTED` | `probe:booking-preprod:candidate` | Proves the isolated candidate release identity. |
+| `preprod-probe-active` | `CANDIDATE_READY` | `probe:booking-preprod:active` | Freshly proves the old active identity before singleton transfer. |
+| `preprod-probe-observation` | `OBSERVING` | `probe:booking-preprod:observation` | Fresh post-switch probe required before commit. |
+| `preprod-probe-rollback` | `ROLLBACK_PENDING` | `probe:booking-preprod:rollback` | Fresh post-rollback probe required before `ROLLED_BACK`. |
 | `preprod-transfer-singletons` | `CANDIDATE_READY` | `booking-preprod-edge` | Locks edge, data, database, and Telegram identities; stops and proves the old order worker absent before starting exactly one candidate worker, then verifies image, flags, health, and zero host ports. |
 | `preprod-switch-ingress` | `SINGLETON_TRANSFERRED` | `ingress:booking-preprod` | Calls the separately installed root-owned ingress helper; then verifies release and manifest identity. |
 | `preprod-set-webhook` | `SWITCHED` or `OBSERVING` | `telegram:booking-preprod` | First proves the exact migration ledger, then runs the setter with Compose dependencies disabled and finally performs an independent Telegram `getMe`/`getWebhookInfo` readback. |
@@ -178,6 +192,12 @@ image to have no RepoDigest, exactly one `uniqueTag`, and absent OCI labels;
 ordinary candidates and every non-exact legacy identity still require the full
 OCI label contract. Ingress rollback does not run a Docker image preflight.
 
+Every external milestone is selected from the canonical executor receipt store:
+expand requires baseline (for the exact legacy bootstrap) plus migration;
+candidate start requires stage; candidate ready requires candidate probe;
+singleton transfer requires old-active probe plus singleton; switched requires
+ingress; observing requires webhook; committed requires the observation probe;
+rolled back requires rollback ingress, rollback singleton and rollback probe.
 The state transition `CANDIDATE_READY -> SINGLETON_TRANSFERRED` requires both
 the rollback identity probe digest and the fenced singleton-transfer receipt
 digest. `ROLLED_BACK` symmetrically requires the ingress rollback receipt, the
@@ -202,10 +222,22 @@ reachable after this release's expand-only migration. A separately proven real
 contract migration must set `contractMigrationApplied=true`, and the state
 machine continues to reject `ROLLBACK_PENDING` in that case.
 
+The G4 rollback rehearsal stays within the same unexpired lease. After the
+three rollback receipts produce `ROLLED_BACK`, a fresh stage receipt is the only
+way to take the controlled `ROLLED_BACK -> CANDIDATE_STARTED` edge. That edge
+retains baseline/expand evidence and immutable `rollback=old,candidate=new`, but
+clears prior stage, probe, singleton, switch, webhook, observation and rollback
+cycle evidence. Candidate probe, old-active probe, singleton, ingress, webhook
+and observation receipts must then all be generated again. The one-time
+baseline and already-applied expand migrations are not rerun; the rehearsal is
+complete only with the new candidate active in `COMMITTED`.
+
 The current live preproduction slot is green. Therefore the acquired state must
 declare blue as the candidate. `preprod-stage` derives `backend-blue` and
 `gateway-blue` from that state and binds the latter only to
-`127.0.0.1:${BOOKING_BLUE_PORT:-18082}`. It does not recreate green and does
+`127.0.0.1:18083`. The trusted environment must bind green to 18082 and blue to
+18083; both must differ and the candidate port must be available before first
+staging. Port 18081 belongs to an unrelated service and is never touched. It does not recreate green and does
 not alter the Cloudflare Tunnel. The inverse applies on a later blue-to-green
 release. A missing slot service fails in the read-only Compose preflight before
 any epoch is accepted or container is changed.
@@ -243,12 +275,14 @@ legacy rollback manifest may retain its historical raw-file SHA-256 only when
 that exact file, release ID, Git SHA, and image identity match; new candidate
 manifests remain canonical-JSON digest only.
 
-Readback must emit one JSON object with exactly `schema`, `project`, `hostname`,
-`upstream`, `releaseId`, `manifestDigest`, `operationId`, `fencingEpoch`, and
-`observedAt`. `schema` is `booking.ingress-readback/v1`; every identity must
-match the mutation command and `observedAt` must be a valid timestamp. The
+Readback uses `booking.ingress-readback/v2` and binds the project/hostname,
+release and manifest, operation/approval/lease/holder/action identities,
+sequence/fencing epoch, immutable rollback target, proof digest, remote
+version/configuration digest, guard mode, and observation time. Every field
+must match the mutation command and canonical three-step cycle. The
 helper must use a root-readable token file, pin the one preproduction account
-and tunnel ID internally, preserve unrelated ingress rules byte-for-byte,
+and tunnel ID internally, require this dedicated tunnel to contain exactly the
+single pathless booking-preprod rule followed by `http_status:404`,
 perform the strongest documented version/digest-guarded update, and read the remote tunnel
 configuration back. It must reject a production hostname, tunnel, project,
 container, database, or route.
@@ -277,8 +311,8 @@ The helper is compiled to account `a29dfe7707f6e6cec070a6fafd7c90d3`, tunnel
 or duplicate target rule, an existing target outside those services, or a
 production hostname inside this dedicated tunnel. The PUT body is the complete
 GET configuration with only the target rule's `service` value changed; the
-global `originRequest`, target metadata, unrelated ingress rules, rule order,
-and other configuration fields must remain JSON-value identical.
+global `originRequest`, target metadata, rule order, and other configuration
+fields must remain JSON-value identical.
 
 Cloudflare's documented configuration endpoint exposes a response `version`,
 but its PUT contract documents neither a version request field nor `If-Match`
@@ -351,6 +385,13 @@ with `manifest.artifacts.gateway.frontendAssetDigest`. Temporary evidence is
 removed after hashing. `/readyz` and `/__ops/version` remain useful runtime
 checks but cannot replace Docker and static-asset identity.
 
+The same live-container inspection is repeated before and after candidate
+probe, singleton transfer, ingress switch, and post-switch observation. It
+requires the expected non-root image user, `Privileged=false`, empty PID/IPC
+modes and device list, read-only root filesystem, exact capabilities,
+security options, networks, mounts, critical environment and loopback port.
+Stage-time evidence alone is never accepted after a later container rebuild.
+
 The database and Telegram one-shot services use deterministic container names.
 After both the mutation receipt and independent readback are valid, the executor
 inspects each retained container and requires its `.Image` to equal the same
@@ -399,9 +440,17 @@ lock file also remains. Both conditions are intentional. Stop and collect:
 4. Docker, database, ingress, or Telegram readback performed independently;
 5. process identity and audit logs.
 
-Only a human forensic recovery procedure may clear an exact lock or pending
-marker after deciding whether the external action happened. Never reset or
-decrease `highestAcceptedFencingEpoch`, including during rollback.
+An existing lock file still requires human forensic recovery. A pending action
+is never blindly cleared and `highestAcceptedFencingEpoch` is never reset or
+decreased, including during rollback. Same-fence receipt recovery performs a
+fresh action-specific readback. After lease takeover, completed stage,
+baseline, migration and singleton actions may be adopted only from an immutable
+prior receipt plus independent current-state readback. Ingress pending recovery
+uses the root-owned helper's proof chain and two matching remote GETs: an
+already-applied PUT is attested without repeating it; a configuration proven
+still at the prior target is superseded by the new fenced action and retried.
+Any identity mismatch, third state, missing recoverable pending metadata, or
+ambiguous remote result remains frozen for human forensics.
 
 If a process crashes after the pass receipt is durable but before every
 resource pending marker is cleared, replaying the same action ID does not trust

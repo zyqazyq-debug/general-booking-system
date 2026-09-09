@@ -4,7 +4,7 @@
   "title": "HappyBooking preproduction zero schema-diff receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "environment", "database", "databaseUser", "releaseId", "gitSha", "slot", "manifestDigest", "legacyManifestDigestMode", "migrationCatalogDigest", "migrationFloor", "backendImage", "backendImageDigest", "backendImageId", "legacyImageBinding", "schemaLogDigest", "schemaDiff", "observedAt", "verification"],
+  "required": ["schema", "environment", "database", "databaseUser", "releaseId", "gitSha", "slot", "manifestDigest", "legacyManifestDigestMode", "migrationCatalogDigest", "migrationFloor", "backendImage", "backendImageDigest", "backendImageId", "legacyImageBinding", "schemaLogDigest", "schemaDiff", "deploymentBinding", "observedAt", "verification"],
   "properties": {
     "schema": { "const": "booking.schema-diff-receipt/v1" },
     "environment": { "const": "preproduction" },
@@ -43,6 +43,7 @@
         "downCount": { "const": 0 }
       }
     },
+    "deploymentBinding": { "$ref": "#/$defs/deploymentBinding" },
     "observedAt": { "type": "string", "format": "date-time" },
     "verification": {
       "type": "object",
@@ -56,6 +57,19 @@
     }
   },
   "$defs": {
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "deploymentBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["environment", "project", "operationId", "approvalId", "generation", "fencingEpoch", "leaseId", "holderId", "currentManifestDigest", "phase", "runtimeEnvDigest"],
+      "properties": {
+        "environment": { "const": "preprod" }, "project": { "const": "booking-preprod" },
+        "operationId": { "type": "string", "minLength": 1 }, "approvalId": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "runtimeEnvDigest": { "$ref": "#/$defs/digest" },
+        "fencingEpoch": { "type": "integer", "minimum": 1 }, "leaseId": { "type": "string", "minLength": 1 },
+        "holderId": { "type": "string", "minLength": 1 }, "currentManifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
   }
 }

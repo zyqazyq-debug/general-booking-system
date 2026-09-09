@@ -15,6 +15,7 @@
     "manifestDigestMode",
     "migrationCatalogDigest",
     "backupDigest",
+    "deploymentBinding",
     "verifiedAt",
     "verification"
   ],
@@ -29,6 +30,7 @@
     "manifestDigestMode": { "enum": ["canonical-json", "raw-bytes"] },
     "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
     "backupDigest": { "$ref": "#/$defs/digest" },
+    "deploymentBinding": { "$ref": "#/$defs/deploymentBinding" },
     "verifiedAt": { "type": "string", "format": "date-time" },
     "verification": {
       "type": "object",
@@ -38,6 +40,19 @@
     }
   },
   "$defs": {
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "deploymentBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["environment", "project", "operationId", "approvalId", "generation", "fencingEpoch", "leaseId", "holderId", "currentManifestDigest", "phase", "runtimeEnvDigest"],
+      "properties": {
+        "environment": { "const": "preprod" }, "project": { "const": "booking-preprod" },
+        "operationId": { "type": "string", "minLength": 1 }, "approvalId": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "runtimeEnvDigest": { "$ref": "#/$defs/digest" },
+        "fencingEpoch": { "type": "integer", "minimum": 1 }, "leaseId": { "type": "string", "minLength": 1 },
+        "holderId": { "type": "string", "minLength": 1 }, "currentManifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
   }
 }

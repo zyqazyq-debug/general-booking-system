@@ -43,7 +43,7 @@ shift
 case "$entrypoint" in
   manage-deploy-state)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/manage-deploy-state.mjs'
-    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest active-slot active-release active-git-sha active-manifest-digest candidate-slot candidate-release candidate-git-sha candidate-manifest-digest edge-network data-network database-ref ingress-ref operation-id lease-id holder-id lease-duration-ms to candidate-probe-digest rollback-pre-switch-probe-digest singleton-transfer-receipt-digest switch-receipt-digest observation-receipt-digest rollback-receipt-digest rollback-singleton-transfer-receipt-digest rolled-back-probe-digest '
+    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest active-slot active-release active-git-sha active-manifest-digest candidate-slot candidate-release candidate-git-sha candidate-manifest-digest edge-network data-network database-ref ingress-ref operation-id lease-id holder-id lease-duration-ms to baseline-receipt-digest expand-migration-receipt-digest stage-receipt-digest candidate-probe-digest rollback-pre-switch-probe-digest singleton-transfer-receipt-digest switch-receipt-digest webhook-receipt-digest observation-receipt-digest rollback-receipt-digest rollback-singleton-transfer-receipt-digest rolled-back-probe-digest '
     ;;
   execute-fenced-action)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/execute-fenced-action.mjs'
@@ -51,11 +51,11 @@ case "$entrypoint" in
     ;;
   generate-database-backup-receipt)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/generate-database-backup-receipt.mjs'
-    allowed=' action execute environment project identity release-id operation-id expected-backup-digest '
+    allowed=' action execute environment project identity release-id operation-id approval-id expected-generation expected-fencing-epoch manifest-digest lease-id holder-id expected-backup-digest '
     ;;
   generate-schema-diff-receipt)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/generate-schema-diff-receipt.mjs'
-    allowed=' action execute environment project operation-id '
+    allowed=' action execute environment project operation-id approval-id expected-generation expected-fencing-epoch manifest-digest lease-id holder-id '
     ;;
   *) fail ;;
 esac
@@ -69,6 +69,12 @@ identity=''
 release_id=''
 operation_id=''
 expected_backup_digest=''
+approval_id=''
+expected_generation=''
+expected_fencing_epoch=''
+manifest_digest=''
+lease_id=''
+holder_id=''
 forwarded=''
 while [ "$#" -gt 0 ]; do
   option=$1
@@ -91,6 +97,12 @@ while [ "$#" -gt 0 ]; do
     release-id) release_id=$value ;;
     operation-id) operation_id=$value ;;
     expected-backup-digest) expected_backup_digest=$value ;;
+    approval-id) approval_id=$value ;;
+    expected-generation) expected_generation=$value ;;
+    expected-fencing-epoch) expected_fencing_epoch=$value ;;
+    manifest-digest) manifest_digest=$value ;;
+    lease-id) lease_id=$value ;;
+    holder-id) holder_id=$value ;;
   esac
   # Values have already been restricted to a shell-inert alphabet. This string
   # only preserves validated pairs until the final positional vector is rebuilt.
@@ -102,12 +114,13 @@ done
 [ "$execute" = 'true' ] || fail
 case "$entrypoint:$action" in
   manage-deploy-state:init|manage-deploy-state:acquire|manage-deploy-state:takeover|manage-deploy-state:renew|manage-deploy-state:transition) ;;
-  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
+  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-probe-candidate|execute-fenced-action:preprod-probe-active|execute-fenced-action:preprod-probe-observation|execute-fenced-action:preprod-probe-rollback|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
   generate-database-backup-receipt:create)
     [ "$identity" = 'old' ] || fail
     [ "$release_id" = "$LEGACY_RELEASE" ] || fail
     [ -n "$operation_id" ] && [ -z "$expected_backup_digest" ] || fail
-    forwarded=" --action create --execute true --identity old --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-backup.json"
+    [ -n "$approval_id" ] && [ -n "$expected_generation" ] && [ -n "$expected_fencing_epoch" ] && [ -n "$manifest_digest" ] && [ -n "$lease_id" ] && [ -n "$holder_id" ] || fail
+    forwarded=" --action create --execute true --identity old --environment preprod --project booking-preprod --operation-id $operation_id --approval-id $approval_id --expected-generation $expected_generation --expected-fencing-epoch $expected_fencing_epoch --manifest-digest $manifest_digest --lease-id $lease_id --holder-id $holder_id --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-backup.json"
     ;;
   generate-database-backup-receipt:bind-existing)
     [ "$identity" = 'candidate' ] || fail
@@ -116,11 +129,12 @@ case "$entrypoint:$action" in
     digest_hex=${expected_backup_digest#sha256:}
     [ "${#digest_hex}" -eq 64 ] || fail
     case "$digest_hex" in *[!0-9a-f]*) fail ;; esac
-    forwarded=" --action bind-existing --execute true --identity candidate --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --expected-backup-digest $expected_backup_digest --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-candidate-backup.json"
+    [ -n "$approval_id" ] && [ -n "$expected_generation" ] && [ -n "$expected_fencing_epoch" ] && [ -n "$manifest_digest" ] && [ -n "$lease_id" ] && [ -n "$holder_id" ] || fail
+    forwarded=" --action bind-existing --execute true --identity candidate --environment preprod --project booking-preprod --operation-id $operation_id --approval-id $approval_id --expected-generation $expected_generation --expected-fencing-epoch $expected_fencing_epoch --manifest-digest $manifest_digest --lease-id $lease_id --holder-id $holder_id --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --expected-backup-digest $expected_backup_digest --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-candidate-backup.json"
     ;;
   generate-schema-diff-receipt:generate)
-    [ -n "$operation_id" ] || fail
-    forwarded=" --execute true --identity old --slot green --manifest $PREPROD_ROOT/releases/$LEGACY_RELEASE/release-manifest.json --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-zero-diff.json"
+    [ -n "$operation_id" ] && [ -n "$approval_id" ] && [ -n "$expected_generation" ] && [ -n "$expected_fencing_epoch" ] && [ -n "$manifest_digest" ] && [ -n "$lease_id" ] && [ -n "$holder_id" ] || fail
+    forwarded=" --execute true --identity old --slot green --environment preprod --project booking-preprod --operation-id $operation_id --approval-id $approval_id --expected-generation $expected_generation --expected-fencing-epoch $expected_fencing_epoch --manifest-digest $manifest_digest --lease-id $lease_id --holder-id $holder_id --manifest $PREPROD_ROOT/releases/$LEGACY_RELEASE/release-manifest.json --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-zero-diff.json"
     ;;
   *) fail ;;
 esac
@@ -161,6 +175,7 @@ set -- \
   --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly \
   --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly \
   --mount type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly \
+  --mount type=bind,src=/etc/happybooking/secrets/booking-preprod-control-plane.env,dst=/etc/happybooking/secrets/booking-preprod-control-plane.env,readonly \
   $ingress_mounts \
   $evidence_mounts \
   --workdir "$CONTROL_ROOT" --entrypoint /usr/local/bin/node \

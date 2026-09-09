@@ -67,10 +67,15 @@ function rejectSecretFields(value, path = 'manifest') {
   }
 }
 
-function validateImageArtifact(value, path, gateway = false) {
+function validateImageArtifact(value, path, gateway = false, legacy = false) {
   const required = ['image', 'digest', 'sbomDigest', 'provenanceDigest'];
-  if (gateway) required.push('frontendAssetDigest', 'routeContractDigest');
-  exactKeys(value, required, required, path);
+  const allowed = [...required];
+  if (gateway) {
+    required.push('frontendAssetDigest', 'routeContractDigest');
+    allowed.push('frontendAssetDigest', 'routeContractDigest', 'telegramBotUsername', 'telegramBotDisplayName');
+    if (!legacy) required.push('telegramBotUsername', 'telegramBotDisplayName');
+  }
+  exactKeys(value, required, allowed, path);
   const image = requireString(value.image, `${path}.image`);
   const finalSegment = image.slice(image.lastIndexOf('/') + 1);
   if (image === 'latest' || image.endsWith(':latest') || image.includes('@') || image.includes('registry.example.invalid') || finalSegment.includes(':')) {
@@ -82,23 +87,41 @@ function validateImageArtifact(value, path, gateway = false) {
   if (gateway) {
     requireDigest(value.frontendAssetDigest, `${path}.frontendAssetDigest`);
     requireDigest(value.routeContractDigest, `${path}.routeContractDigest`);
+    if (!legacy || value.telegramBotUsername !== undefined || value.telegramBotDisplayName !== undefined) {
+      requireString(value.telegramBotUsername, `${path}.telegramBotUsername`, /^[A-Za-z][A-Za-z0-9_]{4,31}$/);
+      requireString(value.telegramBotDisplayName, `${path}.telegramBotDisplayName`, /^(?=.{1,64}$)[^\r\n]+$/);
+      if (value.telegramBotDisplayName !== value.telegramBotDisplayName.trim()) {
+        throw new ContractError(`${path}.telegramBotDisplayName is invalid`);
+      }
+    }
   }
 }
 
-export function validateReleaseManifest(value) {
+export function validateReleaseManifest(value, { expectedLegacyBinding = null, legacyRawDigest = null } = {}) {
   rejectSecretFields(value);
   const rootKeys = ['schema', 'releaseId', 'source', 'artifacts', 'contracts', 'runtime', 'probes'];
   exactKeys(value, rootKeys, rootKeys, 'manifest');
-  if (value.schema !== 'booking.release/v1') throw new ContractError('manifest.schema is unsupported');
+  const legacyV1 = value.schema === 'booking.release/v1' && expectedLegacyBinding !== null &&
+    legacyRawDigest === expectedLegacyBinding.manifestRawDigest && value.releaseId === expectedLegacyBinding.releaseId &&
+    value.source?.gitSha === expectedLegacyBinding.gitSha && value.artifacts?.backend?.image === expectedLegacyBinding.manifestRepository &&
+    value.artifacts?.backend?.digest === expectedLegacyBinding.imageId &&
+    value.contracts?.migration?.catalogDigest === expectedLegacyBinding.migrationCatalogDigest &&
+    value.contracts?.migration?.expandFloor === expectedLegacyBinding.migrationFloor;
+  if (value.schema !== 'booking.release/v2' && !legacyV1) throw new ContractError('manifest.schema is unsupported');
   requireString(value.releaseId, 'manifest.releaseId', RELEASE_ID);
 
   exactKeys(value.source, ['gitSha', 'treeState'], ['gitSha', 'treeState'], 'manifest.source');
   requireString(value.source.gitSha, 'manifest.source.gitSha', GIT_SHA);
   if (value.source.treeState !== 'clean') throw new ContractError('manifest source tree must be clean', EXIT.IDENTITY);
 
-  exactKeys(value.artifacts, ['backend', 'gateway'], ['backend', 'gateway'], 'manifest.artifacts');
+  const artifactKeys = legacyV1 ? ['backend', 'gateway'] : ['backend', 'gateway', 'deployment'];
+  exactKeys(value.artifacts, artifactKeys, ['backend', 'gateway', 'deployment'], 'manifest.artifacts');
   validateImageArtifact(value.artifacts.backend, 'manifest.artifacts.backend');
-  validateImageArtifact(value.artifacts.gateway, 'manifest.artifacts.gateway', true);
+  validateImageArtifact(value.artifacts.gateway, 'manifest.artifacts.gateway', true, legacyV1);
+  if (value.artifacts.deployment) {
+    exactKeys(value.artifacts.deployment, ['composeDigest'], ['composeDigest'], 'manifest.artifacts.deployment');
+    requireDigest(value.artifacts.deployment.composeDigest, 'manifest.artifacts.deployment.composeDigest');
+  }
 
   const contractKeys = ['configSchema', 'apiVersion', 'frontendCompatibleApi', 'migration', 'rollbackCompatibleRelease'];
   exactKeys(value.contracts, contractKeys, contractKeys, 'manifest.contracts');

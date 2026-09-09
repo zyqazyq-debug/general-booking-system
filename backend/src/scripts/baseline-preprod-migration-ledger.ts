@@ -157,7 +157,10 @@ export function validateHistoricalPlan(
   return expected;
 }
 
-export function validateSchemaDiffReceipt(value: unknown, guard: BaselineGuard) {
+export function validateSchemaDiffReceipt(
+  value: unknown,
+  guard: BaselineGuard,
+) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('schema diff receipt is invalid');
   }
@@ -168,6 +171,7 @@ export function validateSchemaDiffReceipt(value: unknown, guard: BaselineGuard) 
     'backendImageId',
     'database',
     'databaseUser',
+    'deploymentBinding',
     'environment',
     'gitSha',
     'legacyImageBinding',
@@ -187,10 +191,33 @@ export function validateSchemaDiffReceipt(value: unknown, guard: BaselineGuard) 
     throw new Error('schema diff receipt fields are invalid');
   }
   const diff = receipt.schemaDiff as Record<string, unknown> | undefined;
-  const verification = receipt.verification as Record<string, unknown> | undefined;
-  const legacy = receipt.legacyImageBinding as Record<string, unknown> | undefined;
+  const verification = receipt.verification as
+    | Record<string, unknown>
+    | undefined;
+  const legacy = receipt.legacyImageBinding as
+    | Record<string, unknown>
+    | undefined;
+  const deployment = receipt.deploymentBinding as
+    | Record<string, unknown>
+    | undefined;
   if (
     receipt.schema !== 'booking.schema-diff-receipt/v1' ||
+    !deployment ||
+    Object.keys(deployment).sort().join(',') !==
+      'approvalId,currentManifestDigest,environment,fencingEpoch,generation,holderId,leaseId,operationId,project' ||
+    deployment.environment !== 'preprod' ||
+    deployment.project !== 'booking-preprod' ||
+    !Number.isInteger(deployment.generation) ||
+    Number(deployment.generation) < 1 ||
+    !Number.isInteger(deployment.fencingEpoch) ||
+    Number(deployment.fencingEpoch) < 1 ||
+    !DIGEST.test(String(deployment.currentManifestDigest || '')) ||
+    ['operationId', 'approvalId', 'leaseId', 'holderId'].some(
+      (key) =>
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(
+          String(deployment[key] || ''),
+        ),
+    ) ||
     receipt.environment !== 'preproduction' ||
     receipt.database !== 'booking_preprod' ||
     receipt.databaseUser !== 'booking_preprod' ||
@@ -240,7 +267,7 @@ export function validateSchemaDiffReceipt(value: unknown, guard: BaselineGuard) 
   ) {
     throw new Error('schema diff receipt binding is invalid');
   }
-  const age = Date.now() - Date.parse(receipt.observedAt as string);
+  const age = Date.now() - Date.parse(receipt.observedAt);
   if (age < 0 || age > 60 * 60 * 1000) {
     throw new Error('schema diff receipt is stale or future-dated');
   }
@@ -288,9 +315,9 @@ export async function applyBaselineLedger(
   } finally {
     await queryRunner.release();
   }
-  const readback = (await dataSource.query(
+  const readback = await dataSource.query(
     'SELECT "timestamp"::text AS "timestamp", "name" FROM "migrations" ORDER BY "timestamp" ASC, "id" ASC',
-  )) as Array<{ timestamp: string; name: string }>;
+  );
   if (JSON.stringify(readback) !== JSON.stringify(history)) {
     throw new Error('migration baseline committed readback mismatch');
   }
@@ -301,9 +328,9 @@ export async function verifyBaselineLedgerReadback(
   dataSource: DataSource,
   history: Array<{ timestamp: string; name: string }>,
 ) {
-  const readback = (await dataSource.query(
+  const readback = await dataSource.query(
     'SELECT "timestamp"::text AS "timestamp", "name" FROM "migrations" ORDER BY "timestamp" ASC, "id" ASC',
-  )) as Array<{ timestamp: string; name: string }>;
+  );
   if (JSON.stringify(readback) !== JSON.stringify(history)) {
     throw new Error('migration baseline ledger readback is not exact');
   }

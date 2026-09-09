@@ -91,9 +91,25 @@ fencing. See
 
 ## Local immutable-artifact gate
 
-`generate-sbom.mjs`, `generate-provenance.mjs`, and `generate-manifest.mjs` are local-only: they do not build or push images, and all refuse a dirty Git worktree. Generate artifact files outside the repository (otherwise their untracked files intentionally make the gate fail). The manifest binds the checked-out Git SHA, immutable backend/gateway image digests, both SBOM and SLSA-style provenance document digests, an H5 directory digest, `pages.json` route-contract digest, migration catalog digest, and the fixed probe paths.
+The historical `generate-sbom.mjs` entry point is disabled because it does **not** inspect an image. Use `generate-build-input-inventory.mjs` to emit `booking.build-input-inventory/v1`, an exact, non-empty digest inventory of the Dockerfile, package manifest/lockfile, and gateway configuration inputs listed in `ops/contracts/build-input-inventory.schema.json`. That inventory is reproducible source evidence, not an SBOM, and it is not accepted as a manifest `sbomDigest` input.
 
-Use an immutable image repository (no tag, digest supplied separately); placeholder registries and mutable tags are rejected. `validate-artifacts.mjs` recomputes every local binding from the same inputs and rejects drift. A passing local gate is evidence of reproducible inputs only; it is not an image push, registry attestation, deployment, or live probe.
+The release gate accepts only a normalized `booking.image-sbom/v1` document matching `ops/contracts/image-sbom.schema.json`. It must bind the exact component, clean Git SHA, immutable image repository and digest, and contain non-empty package and absolute-path file inventories with file digests. Producing that document requires inventory from the built image; this repository does not currently provide an image scanner or normalizer. Therefore the real-image SBOM/registry-attestation G4 remains unmet until those external outputs exist.
+
+Closing G4 requires this executable chain, all pinned to the same immutable `repository@sha256` identity:
+
+1. Build the backend and gateway images, resolve their immutable digests, and make the exact images available to the scanner without replacing or retagging them during the run.
+2. Run a version-pinned image scanner against each image digest, not the source directory or lockfile. Preserve its native CycloneDX or SPDX output and require non-empty package/PURL and absolute-path file/SHA-256 inventories.
+3. Add a fail-closed normalizer that reads that native scanner output plus the observed image identity and emits `booking.image-sbom/v1`. It must reject missing PURLs, empty inventories, duplicate/non-absolute file paths, missing file digests, or any component/image/digest mismatch; a caller-supplied identity without scanner evidence is insufficient.
+4. Generate and validate the local provenance binding, then attach the native SBOM and provenance to the same OCI image digest with a pinned signing/attestation tool.
+5. Pull both attestations back from the registry, verify signatures against the approved identity, and compare the retrieved subject, SBOM digest, provenance materials, image digest, and manifest bindings before recording G4 as passed.
+
+Steps 2, 3, 4's registry attachment, and 5 are not implemented here. Until they are implemented and observed, the normalized schema is only an admission contract and G4 remains unmet.
+
+`generate-provenance.mjs` validates that image SBOM before emitting the exact `ops/contracts/local-provenance.schema.json` statement. Its predicate and build type are deliberately local Booking URNs, and its two materials bind the SBOM document digest and the same image repository/digest as its sole subject. This is local provenance evidence only: it is not SLSA provenance, a registry attestation, or proof of a hosted builder.
+
+These scripts and `generate-manifest.mjs` are local-only: they do not build, scan, sign, attest, or push images, and they refuse a dirty Git worktree. Generate evidence files outside the repository (otherwise their untracked files intentionally make the gate fail). The `booking.release/v2` manifest preserves its existing `sbomDigest` and `provenanceDigest` fields and additionally binds the H5 directory, route contract, migration catalog, fixed probe paths, and exact Compose file.
+
+Use an immutable image repository (no tag, digest supplied separately); placeholder registries and mutable tags are rejected. `validate-artifacts.mjs` recomputes local document bindings and rejects schema, source, image, SBOM-material, or supplied-document drift. It does not independently rescan image contents. Passing it does not satisfy G4 by itself and is not an image push, registry attestation, deployment, or live probe.
 
 ## Database migration and Telegram cutover order
 

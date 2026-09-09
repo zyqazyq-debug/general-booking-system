@@ -39,7 +39,7 @@ const sha256 = (value: string | Buffer): string =>
 const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
-    return `{${Object.keys(value as object)
+    return `{${Object.keys(value)
       .sort()
       .map(
         (key) =>
@@ -142,6 +142,7 @@ type BackupReceipt = {
   manifestDigestMode: 'canonical-json' | 'raw-bytes';
   migrationCatalogDigest: string;
   backupDigest: string;
+  deploymentBinding: Record<string, unknown>;
   verifiedAt: string;
   verification: { pgRestoreList: boolean };
 };
@@ -167,6 +168,7 @@ export function validateBackupReceipt(
     'backupDigest',
     'database',
     'databaseUser',
+    'deploymentBinding',
     'environment',
     'gitSha',
     'manifestDigest',
@@ -191,6 +193,36 @@ export function validateBackupReceipt(
     receipt.manifestDigestMode !== expected.manifestDigestMode ||
     receipt.migrationCatalogDigest !== expected.migrationCatalogDigest ||
     !DIGEST.test(receipt.backupDigest) ||
+    !receipt.deploymentBinding ||
+    canonicalJson(Object.keys(receipt.deploymentBinding).sort()) !==
+      canonicalJson(
+        [
+          'approvalId',
+          'currentManifestDigest',
+          'environment',
+          'fencingEpoch',
+          'generation',
+          'holderId',
+          'leaseId',
+          'operationId',
+          'project',
+        ].sort(),
+      ) ||
+    receipt.deploymentBinding.environment !== 'preprod' ||
+    receipt.deploymentBinding.project !== 'booking-preprod' ||
+    !Number.isInteger(receipt.deploymentBinding.generation) ||
+    Number(receipt.deploymentBinding.generation) < 1 ||
+    !Number.isInteger(receipt.deploymentBinding.fencingEpoch) ||
+    Number(receipt.deploymentBinding.fencingEpoch) < 1 ||
+    !DIGEST.test(
+      String(receipt.deploymentBinding.currentManifestDigest || ''),
+    ) ||
+    ['operationId', 'approvalId', 'leaseId', 'holderId'].some(
+      (key) =>
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(
+          String(receipt.deploymentBinding[key] || ''),
+        ),
+    ) ||
     !Number.isFinite(Date.parse(receipt.verifiedAt)) ||
     !receipt.verification ||
     Object.keys(receipt.verification).length !== 1 ||
@@ -358,9 +390,9 @@ async function readAppliedMigrations(
   dataSource: DataSource,
 ): Promise<string[]> {
   try {
-    const rows = (await dataSource.query(
+    const rows = await dataSource.query(
       'SELECT "name" FROM "migrations" ORDER BY "timestamp" ASC, "id" ASC',
-    )) as Array<{ name: string }>;
+    );
     if (rows.some((row) => typeof row.name !== 'string')) throw new Error();
     return rows.map((row) => row.name);
   } catch {
@@ -529,9 +561,7 @@ async function shapeObjectExists(dataSource: DataSource, object: ShapeObject) {
       "SELECT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = 'public' AND t.relname = $1 AND c.conname = $2) AS exists";
     values = [object.table, object.name];
   }
-  const rows = (await dataSource.query(sql, values)) as Array<{
-    exists: boolean;
-  }>;
+  const rows = await dataSource.query(sql, values);
   if (typeof rows[0]?.exists !== 'boolean') {
     throw new Error('migration shape preflight returned an invalid result');
   }

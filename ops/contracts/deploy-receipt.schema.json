@@ -13,7 +13,7 @@
     "fencingEpoch": { "type": "integer", "minimum": 1 },
     "operationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "approvalId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "terminalPhase": { "enum": ["COMMITTED", "ABORT_CANDIDATE", "ROLLED_BACK"] },
+    "terminalPhase": { "enum": ["COMMITTED", "ROLLED_BACK"] },
     "previousReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
     "terminalStateDigest": { "$ref": "#/$defs/digest" },
     "activeIdentity": { "$ref": "deploy-state.schema.json#/$defs/releaseIdentity" },

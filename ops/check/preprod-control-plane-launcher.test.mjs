@@ -29,6 +29,7 @@ const BASE_MOUNTS = [
   'type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly',
   'type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly',
   'type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly',
+  'type=bind,src=/etc/happybooking/secrets/booking-preprod-control-plane.env,dst=/etc/happybooking/secrets/booking-preprod-control-plane.env,readonly',
 ];
 
 const INGRESS_MOUNTS = [
@@ -114,7 +115,8 @@ test('init, baseline, migration, staging, and webhook plans have no Cloudflare t
 });
 
 test('backup symbolic entrypoint constructs only canonical release/evidence paths and exact nested RW mounts', () => {
-  const base = ['--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod', '--operation-id', 'g4-op-1'];
+  const base = ['--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod', '--operation-id', 'g4-op-1',
+    '--approval-id', 'approval-1', '--expected-generation', '3', '--expected-fencing-epoch', '1', '--manifest-digest', `sha256:${'9'.repeat(64)}`, '--lease-id', 'lease-1', '--holder-id', 'owner-1'];
   const created = dryRun(['generate-database-backup-receipt', '--action', 'create', '--identity', 'old',
     '--release-id', 'booking-20260908T202714Z-317be4dec675', ...base]);
   assert.equal(created.status, 0, created.stderr);
@@ -123,6 +125,7 @@ test('backup symbolic entrypoint constructs only canonical release/evidence path
   assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/release-manifest.json'));
   assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/.g4/backups/g4-op-1.dump'));
   assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/.g4/receipts/g4-op-1-old-backup.json'));
+  assert.equal(createArgv[createArgv.indexOf('--expected-generation') + 1], '3');
   assert.deepEqual(mounts(createArgv), [...BASE_MOUNTS, ...BACKUP_RW_MOUNTS]);
 
   const candidate = 'booking-20260909T010203Z-acde123';
@@ -140,7 +143,9 @@ test('backup symbolic entrypoint constructs only canonical release/evidence path
 
 test('schema-diff symbolic entrypoint fixes the legacy manifest/slot and grants only receipt RW', () => {
   const result = dryRun(['generate-schema-diff-receipt', '--action', 'generate', '--execute', 'true', '--environment', 'preprod',
-    '--project', 'booking-preprod', '--operation-id', 'g4-op-2']);
+    '--project', 'booking-preprod', '--operation-id', 'g4-op-2', '--approval-id', 'approval-1', '--expected-fencing-epoch', '1',
+    '--expected-generation', '3',
+    '--manifest-digest', `sha256:${'9'.repeat(64)}`, '--lease-id', 'lease-1', '--holder-id', 'owner-1']);
   assert.equal(result.status, 0, result.stderr);
   const argv = result.stdout.trim().split(/\r?\n/);
   assert.ok(argv.includes('/usr/local/libexec/happybooking/control-plane/ops/release/generate-schema-diff-receipt.mjs'));
@@ -152,7 +157,8 @@ test('schema-diff symbolic entrypoint fixes the legacy manifest/slot and grants 
 });
 
 test('evidence symbolic entrypoints reject caller paths, wrong identities, and malformed release/digest values', () => {
-  const commonEvidence = ['--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod', '--operation-id', 'g4-op-3'];
+  const commonEvidence = ['--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod', '--operation-id', 'g4-op-3',
+    '--approval-id', 'approval-1', '--expected-generation', '3', '--expected-fencing-epoch', '1', '--manifest-digest', `sha256:${'9'.repeat(64)}`, '--lease-id', 'lease-1', '--holder-id', 'owner-1'];
   const cases = [
     ['generate-database-backup-receipt', '--action', 'create', '--identity', 'old', '--release-id', 'booking-20260909T010203Z-acde123', ...commonEvidence],
     ['generate-database-backup-receipt', '--action', 'create', '--identity', 'old', '--release-id', 'booking-20260908T202714Z-317be4dec675', '--manifest', '/tmp/manifest.json', ...commonEvidence],

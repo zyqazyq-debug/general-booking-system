@@ -1,5 +1,5 @@
 {
-  "schema": "booking.release/v1",
+  "schema": "booking.release/v2",
   "releaseId": "booking-20260907T160000Z-0123456",
   "source": {
     "gitSha": "0123456789abcdef0123456789abcdef01234567",
@@ -18,7 +18,12 @@
       "sbomDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
       "provenanceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "frontendAssetDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-      "routeContractDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "routeContractDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "telegramBotUsername": "happybooking_preprod_bot",
+      "telegramBotDisplayName": "HappyBooking Preprod"
+    },
+    "deployment": {
+      "composeDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
     }
   },
   "contracts": {

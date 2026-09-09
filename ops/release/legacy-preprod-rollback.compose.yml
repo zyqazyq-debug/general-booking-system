@@ -1,0 +1,4 @@
+services:
+  backend-green:
+    image: booking-preprod-backend:booking-20260908T202714Z-317be4dec675
+    profiles: [legacy-rollback-contract]

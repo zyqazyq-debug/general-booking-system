@@ -9,14 +9,18 @@ import { canonicalStatePath, initializeStateFile, mutateStateFile } from '../rel
 import { MIN_LEASE_DURATION_MS, runManageDeployState } from '../release/manage-deploy-state.mjs';
 import { acquireLease, initialDeployState, takeoverExpiredLease, transitionDeployState, validateDeployState } from '../release/lib/state-machine.mjs';
 import { runFencedAction } from '../release/execute-fenced-action.mjs';
+import { resourceDirectory } from '../release/lib/fenced-resource-store.mjs';
+import { LEGACY_OLD_BINDING } from '../release/lib/legacy-preprod.mjs';
 
 const ACTIVE = { slot: 'blue', releaseId: 'booking-20260907T150000Z-abcdef0', gitSha: 'a'.repeat(40), manifestDigest: `sha256:${'6'.repeat(64)}` };
 const CANDIDATE = { slot: 'green', releaseId: 'booking-20260907T160000Z-0123456', gitSha: 'b'.repeat(40), manifestDigest: `sha256:${'7'.repeat(64)}` };
+const CHAIN_CANDIDATE = { ...CANDIDATE, slot: 'blue' };
 const D = (digit) => `sha256:${digit.repeat(64)}`;
+const RUNTIME_ENV_CONTENT = 'FIXTURE_ONLY=true\n';
 const DEPLOYMENT = {
   environment: 'preprod', project: 'booking-preprod',
   resources: { edgeNetwork: 'booking-preprod-edge', dataNetwork: 'booking-preprod-data', databaseRef: 'database:booking-preprod', ingressRef: 'ingress:booking-preprod' },
-  active: ACTIVE,
+  active: ACTIVE, runtimeEnvDigest: sha256(RUNTIME_ENV_CONTENT),
 };
 
 function acquired() {
@@ -38,7 +42,8 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   let state = acquired();
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
-  state = step(state, 'CANDIDATE_STARTED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
   assert.throws(() => step(state, 'CANDIDATE_READY'), (error) => error.exitCode === EXIT.READINESS);
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   assert.throws(() => step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9') }), (error) => error.exitCode === EXIT.SINGLETON);
@@ -47,15 +52,17 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   state = step(state, 'SWITCHED', { switchReceiptDigest: D('1') });
   assert.deepEqual(state.active, CANDIDATE);
   assert.deepEqual(state.rollback, ACTIVE);
-  state = step(state, 'OBSERVING');
+  state = step(state, 'OBSERVING', { webhookReceiptDigest: D('6') });
   state = step(state, 'ROLLBACK_PENDING');
   assert.throws(() => step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rolledBackProbeDigest: D('3') }), (error) => error.exitCode === EXIT.ROLLBACK);
   state = step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
   assert.deepEqual(state.active, ACTIVE);
+  assert.equal(state.rollbackRehearsalCompleted, true);
   state = step(state, 'IDLE');
   assert.equal(state.lease, null);
   assert.equal(state.rollback, null);
-  assert.equal(state.generation, 11);
+  assert.equal(state.generation, 12);
+  assert.equal(state.rollbackRehearsalCompleted, false);
 });
 
 test('stale generation, stale fence, wrong lease, and expired lease all fail closed', () => {
@@ -71,7 +78,8 @@ test('rollback before ingress switch restores the old singleton while retaining 
   let state = acquired();
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
-  state = step(state, 'CANDIDATE_STARTED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
   state = step(state, 'ROLLBACK_PENDING');
@@ -98,12 +106,15 @@ test('expand migration remains rollback-compatible while a real contract migrati
   let state = acquired();
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
-  state = step(state, 'EXPAND_MIGRATED');
-  state = step(state, 'CANDIDATE_STARTED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('6') });
+  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   assert.equal(state.contractMigrationApplied, false);
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
   state = step(state, 'SWITCHED', { switchReceiptDigest: D('1') });
+  const observingWithoutRehearsal = step(state, 'OBSERVING', { webhookReceiptDigest: D('a') });
+  assert.throws(() => step(observingWithoutRehearsal, 'COMMITTED', { observationReceiptDigest: D('b') }),
+    /completed rollback rehearsal/);
   const rollbackPending = step(state, 'ROLLBACK_PENDING');
   assert.equal(rollbackPending.phase, 'ROLLBACK_PENDING');
   const afterContract = { ...state, contractMigrationApplied: true };
@@ -166,25 +177,154 @@ test('all existing lock identities are fail-closed', async () => {
 
 test('canonical CLI derives path and time, and rejects caller path/time or unbounded lease', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-canonical-root-'));
+  const runtimeEnvFile = join(root, '.runtime.env');
+  const legacyActive = { slot: 'green', releaseId: LEGACY_OLD_BINDING.releaseId, gitSha: LEGACY_OLD_BINDING.gitSha,
+    manifestDigest: LEGACY_OLD_BINDING.manifestRawDigest };
   const common = {
     action: 'init', execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
-    'expected-generation': '0', 'expected-fencing-epoch': '0', 'manifest-digest': ACTIVE.manifestDigest,
-    'active-slot': ACTIVE.slot, 'active-release': ACTIVE.releaseId, 'active-git-sha': ACTIVE.gitSha, 'active-manifest-digest': ACTIVE.manifestDigest,
+    'expected-generation': '0', 'expected-fencing-epoch': '0', 'manifest-digest': legacyActive.manifestDigest,
+    'active-slot': legacyActive.slot, 'active-release': legacyActive.releaseId, 'active-git-sha': legacyActive.gitSha, 'active-manifest-digest': legacyActive.manifestDigest,
     'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod', 'ingress-ref': 'ingress:booking-preprod',
   };
   try {
-    await runManageDeployState(common, { deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:00:00.000Z') });
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    const runtimeBase = { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true };
+    await runManageDeployState(common, { ...runtimeBase, nowMs: Date.parse('2026-09-07T15:00:00.000Z') });
     const path = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
     assert.equal(JSON.parse(await readFile(path, 'utf8')).updatedAt, '2026-09-07T15:00:00.000Z');
-    await assert.rejects(runManageDeployState({ ...common, state: join(root, 'other.json') }, { deployStateRoot: root }), /--state is forbidden/);
-    await assert.rejects(runManageDeployState({ ...common, now: '2099-01-01T00:00:00.000Z' }, { deployStateRoot: root }), /--now is forbidden/);
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).runtimeEnvDigest, sha256(RUNTIME_ENV_CONTENT));
+    await assert.rejects(runManageDeployState({ ...common, state: join(root, 'other.json') }, runtimeBase), /--state is forbidden/);
+    await assert.rejects(runManageDeployState({ ...common, now: '2099-01-01T00:00:00.000Z' }, runtimeBase), /--now is forbidden/);
     const acquire = {
       action: 'acquire', execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
       'expected-generation': '0', 'expected-fencing-epoch': '0', 'manifest-digest': CANDIDATE.manifestDigest,
       'candidate-slot': CANDIDATE.slot, 'candidate-release': CANDIDATE.releaseId, 'candidate-git-sha': CANDIDATE.gitSha, 'candidate-manifest-digest': CANDIDATE.manifestDigest,
       'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', 'lease-duration-ms': String(MIN_LEASE_DURATION_MS - 1),
     };
-    await assert.rejects(runManageDeployState(acquire, { deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:01:00.000Z') }), /lease-duration-ms must be between/);
+    await assert.rejects(runManageDeployState(acquire, { ...runtimeBase, nowMs: Date.parse('2026-09-07T15:01:00.000Z') }), /lease-duration-ms must be between/);
+    const changedRuntime = 'FIXTURE_ONLY=changed\n';
+    await writeFile(runtimeEnvFile, changedRuntime, { mode: 0o600 });
+    const locked = await runManageDeployState({ ...acquire, 'lease-duration-ms': String(MIN_LEASE_DURATION_MS),
+      'candidate-slot': CHAIN_CANDIDATE.slot, 'candidate-release': CHAIN_CANDIDATE.releaseId,
+      'candidate-git-sha': CHAIN_CANDIDATE.gitSha, 'candidate-manifest-digest': CHAIN_CANDIDATE.manifestDigest,
+      'manifest-digest': CHAIN_CANDIDATE.manifestDigest }, { ...runtimeBase, nowMs: Date.parse('2026-09-07T15:01:00.000Z') });
+    assert.equal(locked.runtimeEnvDigest, sha256(changedRuntime));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('absent-state bootstrap rejects every active identity except the exact fixed legacy binding', async () => {
+  const cases = [
+    { ...LEGACY_OLD_BINDING, slot: 'blue' },
+    { ...LEGACY_OLD_BINDING, releaseId: ACTIVE.releaseId, slot: 'green' },
+    { ...LEGACY_OLD_BINDING, gitSha: ACTIVE.gitSha, slot: 'green' },
+    { ...LEGACY_OLD_BINDING, manifestRawDigest: ACTIVE.manifestDigest, slot: 'green' },
+  ];
+  for (const active of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'booking-bootstrap-reject-'));
+    const runtimeEnvFile = join(root, '.runtime.env');
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    try {
+      await assert.rejects(runManageDeployState({ action: 'init', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+        'approval-id': 'approval-1', 'expected-generation': '0', 'expected-fencing-epoch': '0',
+        'manifest-digest': active.manifestRawDigest, 'active-slot': active.slot, 'active-release': active.releaseId,
+        'active-git-sha': active.gitSha, 'active-manifest-digest': active.manifestRawDigest,
+        'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod',
+        'ingress-ref': 'ingress:booking-preprod' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+        nowMs: Date.parse('2026-09-09T10:00:00.000Z') }), /exact fixed legacy release/);
+      const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
+      await assert.rejects(readFile(statePath), /ENOENT/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('legacy baseline and expand migration form one canonical predecessor chain before EXPAND_MIGRATED', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-baseline-expand-chain-'));
+  const legacyActive = { slot: 'green', releaseId: LEGACY_OLD_BINDING.releaseId, gitSha: LEGACY_OLD_BINDING.gitSha,
+    manifestDigest: LEGACY_OLD_BINDING.manifestRawDigest };
+  const base = { execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1' };
+  const actionBase = { ...base, 'expected-generation': '3', 'expected-fencing-epoch': '1', 'manifest-digest': CHAIN_CANDIDATE.manifestDigest,
+    'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', 'resource-id': 'database:booking-preprod' };
+  const runner = async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' });
+  const planBuilder = (_state, action) => ({ executable: '/trusted/action', argv: [action.action], cwd: '/trusted/release',
+    readback: { executable: '/trusted/action', argv: ['readback', action.action], verify: () => ({ exact: true }) } });
+  try {
+    const runtimeEnvFile = join(root, '.runtime.env');
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    const managerRuntime = (nowMs) => ({ deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs });
+    const init = await runManageDeployState({ ...base, action: 'init', 'expected-generation': '0', 'expected-fencing-epoch': '0',
+      'manifest-digest': legacyActive.manifestDigest, 'active-slot': legacyActive.slot, 'active-release': legacyActive.releaseId,
+      'active-git-sha': legacyActive.gitSha, 'active-manifest-digest': legacyActive.manifestDigest,
+      'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod',
+      'ingress-ref': 'ingress:booking-preprod' }, managerRuntime(Date.parse('2026-09-09T10:00:00.000Z')));
+    assert.equal(init.phase, 'IDLE');
+    const locked = await runManageDeployState({ ...base, action: 'acquire', 'expected-generation': '0', 'expected-fencing-epoch': '0',
+      'manifest-digest': CHAIN_CANDIDATE.manifestDigest, 'candidate-slot': CHAIN_CANDIDATE.slot, 'candidate-release': CHAIN_CANDIDATE.releaseId,
+      'candidate-git-sha': CHAIN_CANDIDATE.gitSha, 'candidate-manifest-digest': CHAIN_CANDIDATE.manifestDigest, 'operation-id': 'op-1',
+      'lease-id': 'lease-1', 'holder-id': 'owner-1', 'lease-duration-ms': '1800000' },
+    managerRuntime(Date.parse('2026-09-09T10:01:00.000Z')));
+    assert.equal(locked.phase, 'LOCKED');
+    const transition = async (generation, to, extra = {}) => runManageDeployState({ ...base, action: 'transition',
+      'expected-generation': String(generation), 'expected-fencing-epoch': '1', 'manifest-digest': CHAIN_CANDIDATE.manifestDigest,
+      'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', to, ...extra },
+    managerRuntime(Date.parse(`2026-09-09T10:0${generation + 1}:00.000Z`)));
+    assert.equal((await transition(1, 'MANIFEST_VERIFIED')).phase, 'MANIFEST_VERIFIED');
+    assert.equal((await transition(2, 'STAGED')).phase, 'STAGED');
+    const execute = (action, actionId) => runFencedAction({ ...actionBase, action, 'action-id': actionId }, { deployStateRoot: root,
+      now: () => new Date('2026-09-09T10:04:00.000Z'), planBuilder, commandRunner: runner });
+    const baseline = await execute('preprod-baseline-ledger', 'baseline-1');
+    const expand = await execute('preprod-expand-migrate', 'expand-1');
+    assert.ok(expand.resources.every((resource) => resource.previousReceiptDigest === baseline.receiptDigest));
+    const taken = await runManageDeployState({ ...base, action: 'takeover', 'approval-id': 'approval-2',
+      'expected-generation': '3', 'expected-fencing-epoch': '1', 'manifest-digest': CHAIN_CANDIDATE.manifestDigest,
+      'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2', 'lease-duration-ms': '1800000' },
+    managerRuntime(Date.parse('2026-09-09T10:32:00.000Z')));
+    const adoptedExpand = await runFencedAction({ ...actionBase, action: 'preprod-expand-migrate',
+      'approval-id': 'approval-2', 'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'expand-adopted' }, { deployStateRoot: root,
+      now: () => new Date('2026-09-09T10:33:00.000Z'), planBuilder, commandRunner: runner });
+    assert.equal(adoptedExpand.verification.adoption.priorReceiptDigest, expand.receiptDigest);
+    assert.ok(adoptedExpand.resources.every((resource) => resource.previousReceiptDigest === expand.receiptDigest));
+    const transitionAfterTakeover = (baselineDigest) => runManageDeployState({ ...base, action: 'transition', 'approval-id': 'approval-2',
+      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'manifest-digest': CHAIN_CANDIDATE.manifestDigest,
+      'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2', to: 'EXPAND_MIGRATED',
+      'baseline-receipt-digest': baselineDigest, 'expand-migration-receipt-digest': adoptedExpand.receiptDigest },
+    managerRuntime(Date.parse('2026-09-09T10:34:00.000Z')));
+    await assert.rejects(transitionAfterTakeover(D('f')), /not present in the canonical store/);
+    const migrated = await transitionAfterTakeover(baseline.receiptDigest);
+    assert.equal(migrated.phase, 'EXPAND_MIGRATED');
+    assert.equal(migrated.evidence.baselineReceiptDigest, baseline.receiptDigest);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('EXPAND_MIGRATED rejects a canonical baseline receipt that is not the expand receipt predecessor', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-wrong-baseline-predecessor-'));
+  const runtimeEnvFile = join(root, '.runtime.env');
+  await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+  let state = initialDeployState({ ...DEPLOYMENT, active: { slot: 'green', releaseId: LEGACY_OLD_BINDING.releaseId,
+    gitSha: LEGACY_OLD_BINDING.gitSha, manifestDigest: LEGACY_OLD_BINDING.manifestRawDigest } }, '2026-09-09T10:00:00.000Z');
+  state = acquireLease(state, { expectedGeneration: 0, expectedFencingEpoch: 0, candidate: CHAIN_CANDIDATE, operationId: 'op-1', approvalId: 'approval-1',
+    leaseId: 'lease-1', holderId: 'owner-1', now: '2026-09-09T10:01:00.000Z', expiresAt: '2026-09-09T11:00:00.000Z' });
+  state = step(state, 'MANIFEST_VERIFIED');
+  state = step(state, 'STAGED');
+  const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
+  const commonAction = { execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
+    'expected-generation': '3', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest, 'operation-id': 'op-1',
+    'lease-id': 'lease-1', 'holder-id': 'owner-1', 'resource-id': 'database:booking-preprod' };
+  const runtime = { deployStateRoot: root, now: () => new Date('2026-09-09T10:04:00.000Z'),
+    planBuilder: (_state, action) => ({ executable: '/trusted/action', argv: [action.action], cwd: '/trusted/release',
+      readback: { executable: '/trusted/action', argv: ['readback'], verify: () => ({ exact: true }) } }),
+    commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) };
+  try {
+    await initializeStateFile(statePath, state);
+    const first = await runFencedAction({ ...commonAction, action: 'preprod-baseline-ledger', 'action-id': 'baseline-first' }, runtime);
+    const current = await runFencedAction({ ...commonAction, action: 'preprod-baseline-ledger', 'action-id': 'baseline-current' }, runtime);
+    const expand = await runFencedAction({ ...commonAction, action: 'preprod-expand-migrate', 'action-id': 'expand-1' }, runtime);
+    assert.ok(expand.resources.every((resource) => resource.previousReceiptDigest === current.receiptDigest));
+    await assert.rejects(runManageDeployState({ action: 'transition', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+      'approval-id': 'approval-1', 'expected-generation': '3', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
+      'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', to: 'EXPAND_MIGRATED',
+      'baseline-receipt-digest': first.receiptDigest, 'expand-migration-receipt-digest': expand.receiptDigest },
+    { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs: Date.parse('2026-09-09T10:05:00.000Z') }), /exact baseline predecessor chain/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -193,8 +333,11 @@ test('terminal transition persists immutable hash-chain receipt before clearing 
   const path = join(directory, 'deploy-state.json');
   try {
     let state = acquired();
-    state.phase = 'ABORT_CANDIDATE';
+    state.phase = 'COMMITTED';
     state.generation = 2;
+    state.active = structuredClone(CANDIDATE);
+    state.candidate = null;
+    state.rollback = structuredClone(ACTIVE);
     state.updatedAt = '2026-09-07T15:20:00.000Z';
     validateDeployState(state);
     await initializeStateFile(path, state);
@@ -212,54 +355,66 @@ test('terminal transition persists immutable hash-chain receipt before clearing 
     const { receiptDigest, ...receiptBody } = receipt;
     assert.equal(receiptDigest, sha256(receiptBody));
     assert.equal(receipt.operationId, 'op-1');
-    assert.equal(receipt.terminalPhase, 'ABORT_CANDIDATE');
+    assert.equal(receipt.terminalPhase, 'COMMITTED');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('managed singleton transition consumes only a completed canonical executor receipt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-state-executor-binding-'));
+  const runtimeEnvFile = join(root, '.runtime.env');
+  await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+  const managerRuntime = (nowMs) => ({ deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs });
   let state = acquired();
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
-  state = step(state, 'CANDIDATE_STARTED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
   const transitionArgs = (overrides = {}) => ({
     action: 'transition', execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
-    'expected-generation': '5', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
-    'lease-id': 'lease-1', 'holder-id': 'owner-1', to: 'SINGLETON_TRANSFERRED',
+    'expected-generation': '6', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
+    'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', to: 'SINGLETON_TRANSFERRED',
     'rollback-pre-switch-probe-digest': D('9'), ...overrides,
   });
   try {
     await initializeStateFile(statePath, state);
     await assert.rejects(runManageDeployState(transitionArgs({ 'singleton-transfer-receipt-digest': D('4') }), {
-      deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:35:00.000Z'),
+      ...managerRuntime(Date.parse('2026-09-07T15:35:00.000Z')),
     }), /not present in the canonical store/);
 
     const actionArgs = {
       action: 'preprod-transfer-singletons', execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
-      'expected-generation': '5', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
+      'expected-generation': '6', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
       'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', 'resource-id': 'booking-preprod-edge', 'action-id': 'singletons-1',
     };
     const receipt = await runFencedAction(actionArgs, { deployStateRoot: root, now: () => new Date('2026-09-07T15:36:00.000Z'),
       planBuilder: () => ({ executable: '/trusted/singletons', argv: ['transfer'], cwd: '/trusted/release',
         readback: { executable: '/trusted/singletons', argv: ['readback'], verify: () => ({ exactlyOne: true }) } }),
       commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) });
+    const activeProbeReceipt = await runFencedAction({ ...actionArgs, action: 'preprod-probe-active', 'manifest-digest': ACTIVE.manifestDigest,
+      'resource-id': 'probe:booking-preprod:active', 'action-id': 'active-probe-1' }, { deployStateRoot: root,
+      now: () => new Date('2026-09-07T15:36:30.000Z'),
+      planBuilder: () => ({ executable: '/trusted/probe', argv: ['active'], cwd: '/trusted/release',
+        readback: { executable: '/trusted/probe', argv: ['active-readback'], verify: () => ({ exactIdentity: true }) } }),
+      commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) });
 
     await assert.rejects(runManageDeployState(transitionArgs({ to: 'SWITCHED', 'switch-receipt-digest': receipt.receiptDigest }), {
-      deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:37:00.000Z'),
+      ...managerRuntime(Date.parse('2026-09-07T15:37:00.000Z')),
     }), /does not match the canonical transition identity/);
 
     const wrongIdentity = { ...state, candidate: { ...CANDIDATE, releaseId: 'booking-20260907T160000Z-deadbee', gitSha: 'd'.repeat(40), manifestDigest: D('d') } };
     validateDeployState(wrongIdentity);
     await writeFile(statePath, `${JSON.stringify(wrongIdentity, null, 2)}\n`);
-    await assert.rejects(runManageDeployState(transitionArgs({ 'manifest-digest': D('d'), 'singleton-transfer-receipt-digest': receipt.receiptDigest }), {
-      deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:38:00.000Z'),
+    await assert.rejects(runManageDeployState(transitionArgs({ 'manifest-digest': D('d'), 'rollback-pre-switch-probe-digest': activeProbeReceipt.receiptDigest,
+      'singleton-transfer-receipt-digest': receipt.receiptDigest }), {
+      ...managerRuntime(Date.parse('2026-09-07T15:38:00.000Z')),
     }), /does not match the canonical transition identity/);
 
     await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
-    const transitioned = await runManageDeployState(transitionArgs({ 'singleton-transfer-receipt-digest': receipt.receiptDigest }), {
-      deployStateRoot: root, nowMs: Date.parse('2026-09-07T15:39:00.000Z'),
+    const transitioned = await runManageDeployState(transitionArgs({ 'rollback-pre-switch-probe-digest': activeProbeReceipt.receiptDigest,
+      'singleton-transfer-receipt-digest': receipt.receiptDigest }), {
+      ...managerRuntime(Date.parse('2026-09-07T15:39:00.000Z')),
     });
     assert.equal(transitioned.phase, 'SINGLETON_TRANSFERRED');
     assert.equal(transitioned.evidence.singletonTransferReceiptDigest, receipt.receiptDigest);
@@ -272,29 +427,86 @@ test('managed singleton transition consumes only a completed canonical executor 
       commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) });
     const manage = (to, generation, at, overrides = {}) => runManageDeployState(transitionArgs({
       to, 'expected-generation': String(generation), ...overrides,
-    }), { deployStateRoot: root, nowMs: Date.parse(at) });
+    }), managerRuntime(Date.parse(at)));
 
-    const switchReceipt = await execute('preprod-switch-ingress', 'ingress:booking-preprod', 'switch-1', 6,
+    const switchReceipt = await execute('preprod-switch-ingress', 'ingress:booking-preprod', 'switch-1', 7,
       CANDIDATE.manifestDigest, '2026-09-07T15:40:00.000Z');
-    const switched = await manage('SWITCHED', 6, '2026-09-07T15:41:00.000Z', { 'switch-receipt-digest': switchReceipt.receiptDigest });
+    const switched = await manage('SWITCHED', 7, '2026-09-07T15:41:00.000Z', { 'switch-receipt-digest': switchReceipt.receiptDigest });
     assert.equal(switched.evidence.switchReceiptDigest, switchReceipt.receiptDigest);
-    await assert.rejects(execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-too-early', 7,
+    await assert.rejects(execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-too-early', 8,
       ACTIVE.manifestDigest, '2026-09-07T15:41:30.000Z'), /not allowed from phase SWITCHED/);
-    await manage('OBSERVING', 7, '2026-09-07T15:42:00.000Z');
-    await manage('ROLLBACK_PENDING', 8, '2026-09-07T15:43:00.000Z');
-    await assert.rejects(execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-wrong-target', 9,
+    const webhookReceipt = await execute('preprod-set-webhook', 'telegram:booking-preprod', 'webhook-1', 8,
+      CANDIDATE.manifestDigest, '2026-09-07T15:41:45.000Z');
+    await manage('OBSERVING', 8, '2026-09-07T15:42:00.000Z', { 'webhook-receipt-digest': webhookReceipt.receiptDigest });
+    await manage('ROLLBACK_PENDING', 9, '2026-09-07T15:43:00.000Z');
+    await assert.rejects(execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-wrong-target', 10,
       CANDIDATE.manifestDigest, '2026-09-07T15:43:30.000Z'), /release manifest identity mismatch/);
-    const rollbackIngress = await execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-ingress-1', 9,
+    const rollbackIngress = await execute('preprod-rollback-ingress', 'ingress:booking-preprod', 'rollback-ingress-1', 10,
       ACTIVE.manifestDigest, '2026-09-07T15:44:00.000Z');
-    const rollbackSingletons = await execute('preprod-rollback-singletons', 'booking-preprod-edge', 'rollback-singletons-1', 9,
+    const rollbackSingletons = await execute('preprod-rollback-singletons', 'booking-preprod-edge', 'rollback-singletons-1', 10,
       ACTIVE.manifestDigest, '2026-09-07T15:45:00.000Z');
-    const rolledBack = await manage('ROLLED_BACK', 9, '2026-09-07T15:46:00.000Z', {
+    const rollbackProbe = await execute('preprod-probe-rollback', 'probe:booking-preprod:rollback', 'rollback-probe-1', 10,
+      ACTIVE.manifestDigest, '2026-09-07T15:45:30.000Z');
+    const rolledBack = await manage('ROLLED_BACK', 10, '2026-09-07T15:46:00.000Z', {
       'rollback-receipt-digest': rollbackIngress.receiptDigest,
       'rollback-singleton-transfer-receipt-digest': rollbackSingletons.receiptDigest,
-      'rolled-back-probe-digest': D('3'),
+      'rolled-back-probe-digest': rollbackProbe.receiptDigest,
     });
     assert.deepEqual(rolledBack.active, ACTIVE);
+    assert.equal(rolledBack.rollbackRehearsalCompleted, true);
     assert.equal(rolledBack.evidence.rollbackReceiptDigest, rollbackIngress.receiptDigest);
     assert.equal(rolledBack.evidence.rollbackSingletonTransferReceiptDigest, rollbackSingletons.receiptDigest);
+
+    const restage = await execute('preprod-stage', 'booking-preprod-edge', 'restage-1', 11,
+      CANDIDATE.manifestDigest, '2026-09-07T15:47:00.000Z');
+    const restarted = await manage('CANDIDATE_STARTED', 11, '2026-09-07T15:48:00.000Z', { 'stage-receipt-digest': restage.receiptDigest });
+    assert.equal(restarted.evidence.expandMigrationReceiptDigest, D('e'), 'expand migration evidence survives the rehearsal rollback');
+    assert.equal(restarted.evidence.rollbackReceiptDigest, rollbackIngress.receiptDigest,
+      'first-pass rollback evidence remains rooted until terminal resource closure');
+    assert.equal(restarted.rollbackRehearsalCompleted, true, 'durable rehearsal marker survives re-staging and proves the second switch cycle');
+    const candidateProbe2 = await execute('preprod-probe-candidate', 'probe:booking-preprod:candidate', 'candidate-probe-2', 12,
+      CANDIDATE.manifestDigest, '2026-09-07T15:49:00.000Z');
+    await manage('CANDIDATE_READY', 12, '2026-09-07T15:50:00.000Z', { 'candidate-probe-digest': candidateProbe2.receiptDigest });
+    const activeProbe2 = await execute('preprod-probe-active', 'probe:booking-preprod:active', 'active-probe-2', 13,
+      ACTIVE.manifestDigest, '2026-09-07T15:51:00.000Z');
+    const singleton2 = await execute('preprod-transfer-singletons', 'booking-preprod-edge', 'singletons-2', 13,
+      CANDIDATE.manifestDigest, '2026-09-07T15:51:30.000Z');
+    await manage('SINGLETON_TRANSFERRED', 13, '2026-09-07T15:52:00.000Z', {
+      'rollback-pre-switch-probe-digest': activeProbe2.receiptDigest, 'singleton-transfer-receipt-digest': singleton2.receiptDigest,
+    });
+    const switch2 = await execute('preprod-switch-ingress', 'ingress:booking-preprod', 'switch-2', 14,
+      CANDIDATE.manifestDigest, '2026-09-07T15:53:00.000Z');
+    await manage('SWITCHED', 14, '2026-09-07T15:54:00.000Z', { 'switch-receipt-digest': switch2.receiptDigest });
+    const webhook2 = await execute('preprod-set-webhook', 'telegram:booking-preprod', 'webhook-2', 15,
+      CANDIDATE.manifestDigest, '2026-09-07T15:55:00.000Z');
+    await manage('OBSERVING', 15, '2026-09-07T15:56:00.000Z', { 'webhook-receipt-digest': webhook2.receiptDigest });
+    const observation = await execute('preprod-probe-observation', 'probe:booking-preprod:observation', 'observation-1', 16,
+      CANDIDATE.manifestDigest, '2026-09-07T15:57:00.000Z');
+    await writeFile(runtimeEnvFile, 'FIXTURE_ONLY=drifted-before-commit\n', { mode: 0o600 });
+    await assert.rejects(manage('COMMITTED', 16, '2026-09-07T15:57:20.000Z', {
+      'observation-receipt-digest': observation.receiptDigest,
+    }), /runtime environment digest drifted/);
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    const telegramResourcePath = join(resourceDirectory(statePath, 'telegram:booking-preprod'), 'resource-state.json');
+    const telegramResource = JSON.parse(await readFile(telegramResourcePath, 'utf8'));
+    await writeFile(telegramResourcePath, `${JSON.stringify({ ...telegramResource,
+      pendingAction: { actionId: 'unconsumed-webhook', requestDigest: D('f') } })}\n`);
+    await assert.rejects(manage('COMMITTED', 16, '2026-09-07T15:57:30.000Z', {
+      'observation-receipt-digest': observation.receiptDigest,
+    }), /requires fenced resource .* explicitly consumed/);
+    await writeFile(telegramResourcePath, `${JSON.stringify({ ...telegramResource, receiptChainHead: D('f') })}\n`);
+    await assert.rejects(manage('COMMITTED', 16, '2026-09-07T15:57:40.000Z', {
+      'observation-receipt-digest': observation.receiptDigest,
+    }), /requires fenced resource .* explicitly consumed/);
+    await writeFile(telegramResourcePath, `${JSON.stringify(telegramResource)}\n`);
+    await rm(telegramResourcePath);
+    await assert.rejects(manage('COMMITTED', 16, '2026-09-07T15:57:50.000Z', {
+      'observation-receipt-digest': observation.receiptDigest,
+    }), /resource telegram:booking-preprod completion state is missing or unreadable/);
+    await writeFile(telegramResourcePath, `${JSON.stringify(telegramResource)}\n`);
+    const committed = await manage('COMMITTED', 16, '2026-09-07T15:58:00.000Z', { 'observation-receipt-digest': observation.receiptDigest });
+    assert.deepEqual(committed.active, CANDIDATE);
+    assert.deepEqual(committed.rollback, ACTIVE);
+    assert.equal(committed.rollbackRehearsalCompleted, false, 'successful commit closes the rehearsal cycle marker');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -7,4 +7,5 @@ export const LEGACY_OLD_BINDING = Object.freeze({
   manifestRepository: 'local/booking-preprod-backend',
   imageId: 'sha256:a1bebe8670c2dc5524c9cd3b0d91a3274d85365a6b252c3cdd9907c6b48695ee',
   uniqueTag: 'booking-preprod-backend:booking-20260908T202714Z-317be4dec675',
+  rollbackComposeDigest: 'sha256:c16c96ad732bb6d270ee7122bbfe86d85221143bc21f5c89fe001fd07d2c2a61',
 });

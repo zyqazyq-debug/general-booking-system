@@ -4,7 +4,7 @@
   "title": "HappyBooking deployment state",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "environment", "project", "resources", "generation", "fencingEpoch", "phase", "operationId", "approvalId", "lease", "active", "candidate", "rollback", "evidence", "receiptChainHead", "contractMigrationApplied", "updatedAt"],
+  "required": ["schema", "environment", "project", "resources", "runtimeEnvDigest", "generation", "fencingEpoch", "phase", "operationId", "approvalId", "lease", "active", "candidate", "rollback", "evidence", "receiptChainHead", "contractMigrationApplied", "rollbackRehearsalCompleted", "updatedAt"],
   "properties": {
     "schema": { "const": "booking.deploy-state/v2" },
     "environment": { "enum": ["preprod", "production"] },
@@ -19,9 +19,10 @@
         "ingressRef": { "type": "string", "pattern": "^ingress:booking-(preprod|prod)$" }
       }
     },
+    "runtimeEnvDigest": { "$ref": "#/$defs/digest" },
     "generation": { "type": "integer", "minimum": 0 },
     "fencingEpoch": { "type": "integer", "minimum": 0 },
-    "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ABORT_CANDIDATE", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
+    "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
     "operationId": { "type": ["string", "null"], "minLength": 1 },
     "approvalId": { "type": ["string", "null"], "minLength": 1 },
     "lease": {
@@ -46,6 +47,7 @@
     "evidence": { "$ref": "#/$defs/evidence" },
     "receiptChainHead": { "$ref": "#/$defs/nullableDigest" },
     "contractMigrationApplied": { "type": "boolean" },
+    "rollbackRehearsalCompleted": { "type": "boolean" },
     "updatedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {
@@ -63,12 +65,16 @@
     "nullableDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
     "evidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
+      "required": ["baselineReceiptDigest", "expandMigrationReceiptDigest", "stageReceiptDigest", "candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "webhookReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
       "properties": {
+        "baselineReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "expandMigrationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "stageReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "candidateProbeDigest": { "$ref": "#/$defs/nullableDigest" },
         "rollbackPreSwitchProbeDigest": { "$ref": "#/$defs/nullableDigest" },
         "singletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "switchReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "webhookReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "observationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "rollbackReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "rollbackSingletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },

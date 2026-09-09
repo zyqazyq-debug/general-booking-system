@@ -8,6 +8,7 @@
     "databaseRef": "database:booking-preprod",
     "ingressRef": "ingress:booking-preprod"
   },
+  "runtimeEnvDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "generation": 18,
   "fencingEpoch": 42,
   "phase": "CANDIDATE_READY",
@@ -24,10 +25,14 @@
   "candidate": { "slot": "green", "releaseId": "booking-20260907T160000Z-0123456", "gitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "manifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" },
   "rollback": { "slot": "blue", "releaseId": "booking-20260907T150000Z-abcdef0", "gitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "manifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666" },
   "evidence": {
+    "baselineReceiptDigest": null,
+    "expandMigrationReceiptDigest": null,
+    "stageReceiptDigest": null,
     "candidateProbeDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
     "rollbackPreSwitchProbeDigest": null,
     "singletonTransferReceiptDigest": null,
     "switchReceiptDigest": null,
+    "webhookReceiptDigest": null,
     "observationReceiptDigest": null,
     "rollbackReceiptDigest": null,
     "rollbackSingletonTransferReceiptDigest": null,
@@ -35,5 +40,6 @@
   },
   "receiptChainHead": null,
   "contractMigrationApplied": false,
+  "rollbackRehearsalCompleted": false,
   "updatedAt": "2026-09-07T16:00:00.000Z"
 }

@@ -1,9 +1,7 @@
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegrafModule, TelegrafModuleOptions } from 'nestjs-telegraf';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import axios, { AxiosRequestConfig } from 'axios';
+import axios from 'axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TelegramBindingTicket } from './persistence/telegram-binding-ticket.entity';
 
@@ -13,6 +11,10 @@ import { TelegramBindingService } from './bot/services/telegram-binding.service'
 import { TelegramValidatorService } from './bot/services/telegram-validator.service';
 import { telegrafLoggerMiddleware } from './bot/middleware/logger.middleware';
 import { telegrafRateLimitMiddleware } from './bot/middleware/rate-limit.middleware';
+import {
+  createTelegramHttpConfig,
+  type TelegramHttpConfig,
+} from './telegram-http-config';
 
 const TELEGRAM_VALIDATOR = 'ITelegramValidator';
 const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
@@ -58,6 +60,16 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
           middlewares: [telegrafLoggerMiddleware, telegrafRateLimitMiddleware],
         };
 
+        let httpConfig: TelegramHttpConfig;
+        try {
+          httpConfig = createTelegramHttpConfig(proxyUrl);
+        } catch {
+          logger.error(
+            'Telegram HTTP transport configuration is invalid. Bot launch disabled for this process.',
+          );
+          return { token, launchOptions: false } as TelegrafModuleOptions;
+        }
+
         if (enableWebhook && botMode === 'webhook') {
           if (!webhookUrl || !webhookSecret) {
             logger.error(
@@ -83,37 +95,19 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
           options.launchOptions = false;
         }
 
-        if (proxyUrl) {
+        if (httpConfig.agent) {
           logger.log('Using configured Telegram proxy.');
-          try {
-            const isSocks = proxyUrl.startsWith('socks');
-            const agent = isSocks
-              ? new SocksProxyAgent(proxyUrl)
-              : new HttpsProxyAgent(proxyUrl);
-
-            options.options = {
-              telegram: {
-                agent,
-                apiRoot: 'https://api.telegram.org',
-              },
-            };
-          } catch {
-            logger.error('Failed to initialize Telegram proxy agent.');
-          }
+          options.options = {
+            telegram: {
+              agent: httpConfig.agent,
+              apiRoot: 'https://api.telegram.org',
+            },
+          };
         }
 
         try {
-          const axiosConfig: AxiosRequestConfig = {};
-          if (proxyUrl) {
-            const isSocks = proxyUrl.startsWith('socks');
-            const agent = isSocks
-              ? new SocksProxyAgent(proxyUrl)
-              : new HttpsProxyAgent(proxyUrl);
-            axiosConfig.httpsAgent = agent;
-            axiosConfig.proxy = false;
-          }
           await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
-            ...axiosConfig,
+            ...httpConfig.axios,
             timeout: 8000,
           });
         } catch {

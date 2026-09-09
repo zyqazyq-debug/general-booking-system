@@ -4,7 +4,8 @@ import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ContractError, EXIT, parseArgs } from './lib/contracts.mjs';
+import { ContractError, EXIT, parseArgs, sha256 } from './lib/contracts.mjs';
+import { digestFile } from './lib/artifacts.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
 
 const PROJECT = 'booking-preprod';
@@ -234,14 +235,26 @@ function verifyFinal(containers, args, targetSupported, imageId, sourceImageId) 
   return { targetService, workerContainerId: target.id, workerImageId: imageId, workerHealth: 'healthy' };
 }
 
-async function composeServices(docker, runner, options, composeFile) {
-  const result = await runner(docker, ['compose', '--project-name', PROJECT, '--file', composeFile, 'config', '--services'], options);
+async function composeServices(docker, runner, options, composeFile, controlEnvFile) {
+  const result = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT, '--file', composeFile, 'config', '--services'], options);
   assertResult(result, 'cannot read singleton compose services');
   return new Set(result.stdout.trim().split(/\r?\n/).filter(Boolean));
 }
 
 async function canonicalComposePath(path, releaseId, runtime) {
   if (!isAbsolute(path)) throw new ContractError('singleton compose file must be absolute', EXIT.IDENTITY);
+  if (releaseId === LEGACY_OLD_BINDING.releaseId) {
+    const file = await realpath(path).catch(() => { throw new ContractError('fixed legacy rollback compose cannot be resolved', EXIT.IDENTITY); });
+    const expected = await realpath(runtime.legacyComposeFile || fileURLToPath(new URL('./legacy-preprod-rollback.compose.yml', import.meta.url))).catch(() => {
+      throw new ContractError('fixed legacy rollback compose cannot be resolved', EXIT.IDENTITY);
+    });
+    const metadata = await stat(file);
+    if (file !== expected || !metadata.isFile() || (process.platform !== 'win32' && (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0)) ||
+        await digestFile(file) !== LEGACY_OLD_BINDING.rollbackComposeDigest) {
+      throw new ContractError('fixed legacy rollback compose identity is invalid', EXIT.IDENTITY);
+    }
+    return file;
+  }
   const root = await realpath(runtime.releaseRoot || '/volume1/homes/realzyq/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
   const file = await realpath(path).catch(() => { throw new ContractError('singleton compose file cannot be resolved', EXIT.IDENTITY); });
   const expected = await realpath(resolve(root, releaseId, 'ops', 'compose', 'compose.preprod.yml')).catch(() => {
@@ -258,8 +271,17 @@ export async function runSingletonAction(args, runtime = {}) {
   const composeFile = await canonicalComposePath(args['compose-file'], args['release-id'], runtime);
   const docker = runtime.dockerExecutable || await executable(['/var/packages/ContainerManager/target/usr/bin/docker', '/usr/bin/docker']);
   const runner = runtime.commandRunner || defaultRunner;
+  const controlEnvFile = runtime.controlEnvFile || '/etc/happybooking/secrets/booking-preprod-control-plane.env';
+  if (!isAbsolute(controlEnvFile)) throw new ContractError('singleton Compose env file must be absolute', EXIT.IDENTITY);
+  if (process.platform !== 'win32') {
+    const canonicalEnv = await realpath(controlEnvFile).catch(() => { throw new ContractError('singleton Compose env file cannot be resolved', EXIT.IDENTITY); });
+    const envMetadata = await stat(canonicalEnv);
+    if (canonicalEnv !== controlEnvFile || !envMetadata.isFile() || envMetadata.uid !== 0 || (envMetadata.mode & 0o077) !== 0) {
+      throw new ContractError('singleton Compose env file must be a root-only canonical regular file', EXIT.IDENTITY);
+    }
+  }
   const options = { cwd: dirname(composeFile), env: runtime.env || process.env, timeoutMs: runtime.timeoutMs || 120_000 };
-  const services = await composeServices(docker, runner, options, composeFile);
+  const services = await composeServices(docker, runner, options, composeFile, controlEnvFile);
   const targetService = `order-worker-${args['target-slot']}`;
   const sourceService = `order-worker-${args['source-slot']}`;
   const targetSupported = services.has(targetService);
@@ -283,7 +305,7 @@ export async function runSingletonAction(args, runtime = {}) {
     if (residual && isRunning(residual)) throw new ContractError('source singleton worker remains running after stop', EXIT.SINGLETON);
     if (containers.some((item) => item.service?.startsWith('order-worker-') && isRunning(item))) throw new ContractError('a worker remained running before target activation', EXIT.SINGLETON);
     if (targetSupported) {
-      const started = await runner(docker, ['compose', '--project-name', PROJECT, '--file', composeFile, 'up', '--no-build', '--no-deps', '--wait', targetService], options);
+      const started = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT, '--file', composeFile, 'up', '--no-build', '--no-deps', '--wait', targetService], options);
       assertResult(started, 'failed to start target singleton worker');
     }
   }

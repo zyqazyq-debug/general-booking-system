@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalJson, ContractError, EXIT, parseArgs, readJsonFile, sha256, validateReleaseManifest } from './lib/contracts.mjs';
 import { digestFile } from './lib/artifacts.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
+import { EVIDENCE_BINDING_FIELDS, publishWithCurrentEvidenceBinding, readEvidenceDeployBinding } from './lib/evidence-deploy-binding.mjs';
 
 export const PREPROD_DATABASE = 'booking_preprod';
 export const PREPROD_DATABASE_USER = 'booking_preprod';
@@ -17,7 +18,7 @@ export const PREPROD_ENV_FILE = '/volume1/homes/realzyq/booking-preprod/.env';
 export const PREPROD_RECEIPT_ROOT = '/volume1/homes/realzyq/booking-preprod/.g4/receipts';
 export const PREPROD_RELEASE_ROOT = '/volume1/homes/realzyq/booking-preprod/releases';
 
-const ALLOWED = new Set(['execute', 'identity', 'slot', 'manifest', 'receipt-path']);
+const ALLOWED = new Set(['execute', 'identity', 'slot', 'manifest', 'receipt-path', ...EVIDENCE_BINDING_FIELDS]);
 const IMAGE_FORMAT = '{{json .Id}}|{{json .RepoDigests}}|{{json .RepoTags}}|{{json .Config.Labels}}';
 const GREEN_CONTAINER_FORMAT = '{{json .Image}}|{{json .Config.Image}}|{{json .Config.Labels}}|{{json .State.Status}}';
 const SCHEMA_LOG_PROGRAM = String.raw`(async()=>{const m=require('/app/dist/data-source.js');const d=m.default||m;await d.initialize();try{const rows=await d.query('SELECT current_database() AS database, current_user AS user');const q=await d.driver.createSchemaBuilder().log();process.stdout.write(JSON.stringify({schema:'booking.typeorm-schema-log/v1',database:rows[0]?.database,user:rows[0]?.user,upQueries:q.upQueries.map(x=>x.query),downQueries:q.downQueries.map(x=>x.query)})+'\n')}finally{await d.destroy()}})().catch(()=>{process.stderr.write('SCHEMA_LOG_FAILED\n');process.exit(1)})`;
@@ -165,12 +166,14 @@ export async function generateSchemaDiffReceipt(args, runtime = {}) {
     throw new ContractError('schema diff requires --execute true --identity old --slot green', EXIT.DATABASE);
   }
   if (!args.manifest || !args['receipt-path']) throw new ContractError('--manifest and --receipt-path are required', EXIT.DATABASE);
+  const deploymentBinding = runtime.deploymentBinding || await readEvidenceDeployBinding(args, runtime);
 
   const releaseRoot = await realpath(runtime.releaseRoot || PREPROD_RELEASE_ROOT).catch(() => { throw new ContractError('fixed booking-preprod release root is unavailable', EXIT.DATABASE); });
   const manifestPath = containedPath(releaseRoot, await realpath(args.manifest).catch(() => ''), 'manifest path');
-  const manifest = validateReleaseManifest(await readJsonFile(manifestPath));
   const manifestDigest = await digestFile(manifestPath);
   const legacy = runtime.legacyBinding || LEGACY_OLD_BINDING;
+  const manifestDocument = await readJsonFile(manifestPath);
+  const manifest = validateReleaseManifest(manifestDocument, { expectedLegacyBinding: legacy, legacyRawDigest: manifestDigest });
   if (manifest.releaseId !== legacy.releaseId || manifest.source.gitSha !== legacy.gitSha || manifestDigest !== legacy.manifestRawDigest ||
       manifest.contracts.migration.catalogDigest !== legacy.migrationCatalogDigest || manifest.contracts.migration.expandFloor !== legacy.migrationFloor ||
       manifest.artifacts.backend.image !== legacy.manifestRepository || manifest.artifacts.backend.digest !== legacy.imageId) {
@@ -233,10 +236,10 @@ export async function generateSchemaDiffReceipt(args, runtime = {}) {
     legacyImageBinding: { scope: 'preproduction-old-green-only', manifestRepository: legacy.manifestRepository, uniqueTag: legacy.uniqueTag,
       ociLabelsAbsent: true, currentGreenContainerId: greenEvidence.containerId, currentGreenContainerImageBound: true },
     schemaLogDigest: sha256({ upQueries: schemaLog.upQueries, downQueries: schemaLog.downQueries }),
-    schemaDiff: { upCount: 0, downCount: 0 }, observedAt: (runtime.now || (() => new Date()))().toISOString(),
+    schemaDiff: { upCount: 0, downCount: 0 }, deploymentBinding, observedAt: (runtime.now || (() => new Date()))().toISOString(),
     verification: { imageBound: true, containerImageBound: true, exactReadback: true },
   };
-  await writeImmutableReceipt(receiptPath, receipt);
+  await publishWithCurrentEvidenceBinding(args, deploymentBinding, runtime, () => writeImmutableReceipt(receiptPath, receipt));
   return { receipt, receiptDigest: await digestFile(receiptPath), receiptPath };
 }
 

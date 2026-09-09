@@ -1,8 +1,9 @@
 # Compose ownership boundaries
 
 `compose.preprod.yml` defines both blue and green candidate services. Green
-uses loopback port `BOOKING_GREEN_PORT` (default 18081) and blue uses
-`BOOKING_BLUE_PORT` (default 18082). Starting an inactive candidate never
+uses loopback port `BOOKING_GREEN_PORT` (fixed preproduction value 18082) and blue uses
+`BOOKING_BLUE_PORT` (fixed preproduction value 18083). Port 18081 belongs to an
+unrelated service and is never a booking deployment target. Starting an inactive candidate never
 changes the Cloudflare route; ingress switching is a separate fenced action.
 
 - `compose.dev.yml`: source bind mounts and watcher/HMR behavior. Dev-only.

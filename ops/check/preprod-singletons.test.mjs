@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { runSingletonAction } from '../release/manage-preprod-singletons.mjs';
 import { LEGACY_OLD_BINDING } from '../release/lib/legacy-preprod.mjs';
@@ -161,10 +162,7 @@ test('first transfer permits the missing outbox flag only for the exact observed
 
 test('rollback to a legacy release without a worker service stops the failed worker and proves zero workers', async () => {
   const value = await fixture();
-  const legacyDirectory = join(value.releaseRoot, LEGACY_OLD_BINDING.releaseId, 'ops', 'compose');
-  await mkdir(legacyDirectory, { recursive: true });
-  const legacyCompose = join(legacyDirectory, 'compose.preprod.yml');
-  await writeFile(legacyCompose, 'services: {}\n');
+  const legacyCompose = fileURLToPath(new URL('../release/legacy-preprod-rollback.compose.yml', import.meta.url));
   const rollbackArgs = { ...ARGS, action: 'rollback', 'target-slot': 'green', 'source-slot': 'blue',
     'release-id': LEGACY_OLD_BINDING.releaseId, 'git-sha': LEGACY_OLD_BINDING.gitSha, 'manifest-digest': LEGACY_OLD_BINDING.manifestRawDigest,
     'backend-image': LEGACY_OLD_BINDING.manifestRepository, 'backend-digest': LEGACY_OLD_BINDING.imageId,
@@ -175,6 +173,7 @@ test('rollback to a legacy release without a worker service stops the failed wor
   legacyGreen.env = legacyGreen.env.filter((item) => !item.startsWith('ORDER_OUTBOX_DISPATCH_ENABLED='));
   const runtime = mockRuntime(value, [api('blue', ID('1'), rollbackArgs), legacyGreen, worker('blue')],
     { services: ['backend-blue', 'backend-green'], actionArgs: rollbackArgs });
+  runtime.legacyComposeFile = legacyCompose;
   try {
     const result = await runSingletonAction(rollbackArgs, runtime);
     assert.equal(result.targetSupported, false);

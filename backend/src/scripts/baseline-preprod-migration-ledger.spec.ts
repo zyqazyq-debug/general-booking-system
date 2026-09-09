@@ -52,6 +52,17 @@ describe('preproduction migration ledger baseline', () => {
       environment: 'preproduction',
       database: 'booking_preprod',
       databaseUser: 'booking_preprod',
+      deploymentBinding: {
+        environment: 'preprod',
+        project: 'booking-preprod',
+        operationId: 'op-1',
+        approvalId: 'approval-1',
+        generation: 3,
+        fencingEpoch: 1,
+        leaseId: 'lease-1',
+        holderId: 'owner-1',
+        currentManifestDigest: `sha256:${'a'.repeat(64)}`,
+      },
       releaseId: guard.releaseId,
       gitSha: guard.gitSha,
       slot: 'green',
@@ -87,6 +98,15 @@ describe('preproduction migration ledger baseline', () => {
     expect(() =>
       validateSchemaDiffReceipt(
         { ...receipt, legacyManifestDigestMode: 'canonical-json' },
+        guard,
+      ),
+    ).toThrow('binding is invalid');
+    expect(() =>
+      validateSchemaDiffReceipt(
+        {
+          ...receipt,
+          deploymentBinding: { ...receipt.deploymentBinding, generation: 0 },
+        },
         guard,
       ),
     ).toThrow('binding is invalid');
