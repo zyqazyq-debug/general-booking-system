@@ -1223,11 +1223,31 @@ export async function runFencedAction(args, runtime = {}) {
             if (priorEpochResource.operationId !== state.operationId || priorEpochResource.manifestDigest !== releaseIdentity.manifestDigest ||
                 adoption?.priorFencingEpoch !== priorEpochResource.highestAcceptedFencingEpoch ||
                 adoption?.priorRequestDigest !== priorEpochResource.pendingAction.requestDigest ||
-                !['prior-pending-proof-and-remote-readback', 'prior-pending-proven-not-applied-and-retried'].includes(adoption?.mode)) {
+                !['prior-pending-proven-applied-read-only', 'prior-pending-proven-not-applied-and-retried'].includes(adoption?.mode)) {
               throw new ContractError('prior-epoch ingress completion cannot recover the pending resource identity', EXIT.INGRESS);
             }
-            await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-              timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
+            if (adoption.mode === 'prior-pending-proven-applied-read-only') {
+              const priorIdentity = priorPendingIngressPlan(state, args, releaseIdentity, priorEpochResource, plan, resourceIds);
+              const priorReadback = await runner(plan.readback.executable, plan.readback.argv, {
+                cwd: plan.cwd, env: plan.env || runtime.env || process.env,
+                timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500),
+              });
+              assertResult(priorReadback, EXIT.INGRESS);
+              verifyPriorPendingIngress(priorReadback, state, args, releaseIdentity, priorEpochResource, priorIdentity);
+              const replayArtifacts = plan.replayVerifyArtifacts || plan.verifyArtifacts;
+              if (replayArtifacts) {
+                const replayPreflight = plan.replayPreflightArtifacts || plan.preflightArtifacts;
+                const preflightEvidence = replayPreflight ? await replayPreflight({ runner,
+                  env: plan.env || runtime.env || process.env,
+                  timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath }) : null;
+                await replayArtifacts({ runner, env: plan.env || runtime.env || process.env,
+                  timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath,
+                  preflightEvidence });
+              }
+            } else {
+              await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
+                timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
+            }
             if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
             const recoveredAt = now();
             if (!(recoveredAt instanceof Date) || recoveredAt.getTime() >= Date.parse(state.lease.expiresAt)) {
@@ -1235,8 +1255,7 @@ export async function runFencedAction(args, runtime = {}) {
             }
             await adoptPriorEpochPendingAction(locks[0], {
               fencingEpoch: priorEpochResource.highestAcceptedFencingEpoch,
-              actionId: priorEpochResource.pendingAction.actionId,
-              requestDigest: priorEpochResource.pendingAction.requestDigest,
+              pendingAction: structuredClone(priorEpochResource.pendingAction),
               receiptChainHead: priorEpochResource.receiptChainHead,
             }, { environment: state.environment, project: state.project, resourceId: priorEpochResource.resourceId,
               fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
@@ -1294,12 +1313,14 @@ export async function runFencedAction(args, runtime = {}) {
           const timeoutMs = Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500);
           const priorIdentity = priorPendingIngressPlan(state, args, releaseIdentity, priorResource, plan, resourceIds);
           let priorProof = null;
+          let priorProofOutput = null;
           let notApplied = null;
           const priorReadback = await runner(plan.readback.executable, plan.readback.argv, {
             cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs,
           });
           if (priorReadback?.exitCode === 0 && !priorReadback.signal && !priorReadback.overflow) {
             priorProof = verifyPriorPendingIngress(priorReadback, state, args, releaseIdentity, priorResource, priorIdentity);
+            priorProofOutput = priorReadback.stdout;
           } else {
             const recovered = await runner(plan.executable, priorIdentity.recoveryArgv, {
               cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs,
@@ -1310,6 +1331,7 @@ export async function runFencedAction(args, runtime = {}) {
             catch { throw new ContractError('prior pending ingress recovery is not JSON', EXIT.INGRESS); }
             if (recoveryValue?.schema === 'booking.ingress-readback/v2') {
               priorProof = verifyPriorPendingIngress(recovered, state, args, releaseIdentity, priorResource, priorIdentity);
+              priorProofOutput = recovered.stdout;
             } else {
               const pending = priorIdentity.pending;
               const expectedSequence = args.action === 'preprod-rollback-ingress' ? 2 : (state.rollbackRehearsalCompleted ? 3 : 1);
@@ -1344,20 +1366,26 @@ export async function runFencedAction(args, runtime = {}) {
           });
           if (notApplied) {
             await supersedePriorEpochPendingAction(locks[0], {
-              fencingEpoch: priorResource.highestAcceptedFencingEpoch, actionId: priorResource.pendingAction.actionId,
-              requestDigest: priorResource.pendingAction.requestDigest, receiptChainHead: priorResource.receiptChainHead,
+              fencingEpoch: priorResource.highestAcceptedFencingEpoch,
+              pendingAction: structuredClone(priorResource.pendingAction), receiptChainHead: priorResource.receiptChainHead,
             }, { environment: state.environment, project: state.project, resourceId: priorResource.resourceId,
               fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
               action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
               leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
               commandDigest: requestBody.commandDigest, now: firstNow.toISOString() });
           }
-          const execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
-          assertResult(execution, EXIT.INGRESS);
-          const executionVerification = plan.readback.verify(execution.stdout);
-          const readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
-          assertResult(readback, EXIT.INGRESS);
-          const verification = plan.readback.verify(readback.stdout);
+          let execution = null;
+          let executionVerification = null;
+          let readback = null;
+          let verification = priorProof;
+          if (notApplied) {
+            execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
+            assertResult(execution, EXIT.INGRESS);
+            executionVerification = plan.readback.verify(execution.stdout);
+            readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
+            assertResult(readback, EXIT.INGRESS);
+            verification = plan.readback.verify(readback.stdout);
+          }
           const artifactVerifier = plan.verifyArtifacts;
           const artifactVerification = artifactVerifier ? await artifactVerifier({ runner,
             env: plan.env || runtime.env || process.env, timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence }) : null;
@@ -1366,10 +1394,11 @@ export async function runFencedAction(args, runtime = {}) {
           if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before pending ingress recovery completed', EXIT.SINGLETON);
           const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
             startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
-            executionOutputDigest: sha256(execution.stdout), readbackOutputDigest: sha256(readback.stdout),
-            verification: { execution: executionVerification, runtime: verification,
+            executionOutputDigest: sha256(execution?.stdout || ''),
+            readbackOutputDigest: sha256(readback?.stdout || priorProofOutput || ''),
+            verification: { ...(executionVerification ? { execution: executionVerification } : {}), runtime: verification,
               ...(artifactVerification ? { artifacts: artifactVerification } : {}),
-              adoption: { mode: notApplied ? 'prior-pending-proven-not-applied-and-retried' : 'prior-pending-proof-and-remote-readback',
+              adoption: { mode: notApplied ? 'prior-pending-proven-not-applied-and-retried' : 'prior-pending-proven-applied-read-only',
                 priorProofDigest: priorProof?.proofDigest || notApplied.previousProofDigest,
                 priorFencingEpoch: priorResource.highestAcceptedFencingEpoch,
                 priorRequestDigest: priorResource.pendingAction.requestDigest } },
@@ -1383,7 +1412,7 @@ export async function runFencedAction(args, runtime = {}) {
               actionId: args['action-id'], requestDigest, now: completedAt.toISOString() }, receipt.receiptDigest);
           } else {
             await adoptPriorEpochPendingAction(locks[0], { fencingEpoch: priorResource.highestAcceptedFencingEpoch,
-              actionId: priorResource.pendingAction.actionId, requestDigest: priorResource.pendingAction.requestDigest,
+              pendingAction: structuredClone(priorResource.pendingAction),
               receiptChainHead: priorResource.receiptChainHead }, { environment: state.environment, project: state.project,
               resourceId: priorResource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
               manifestDigest: releaseIdentity.manifestDigest, now: completedAt.toISOString() }, receipt.receiptDigest);

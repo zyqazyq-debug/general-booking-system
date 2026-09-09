@@ -181,7 +181,7 @@ export async function adoptPriorEpochPendingAction(lock, prior, binding, receipt
   const current = await inspectLockedResourceState(lock, binding);
   if (current.highestAcceptedFencingEpoch !== prior.fencingEpoch || current.highestAcceptedFencingEpoch >= binding.fencingEpoch ||
       current.operationId !== binding.operationId || current.manifestDigest !== binding.manifestDigest ||
-      current.pendingAction?.actionId !== prior.actionId || current.pendingAction?.requestDigest !== prior.requestDigest ||
+      canonicalJson(current.pendingAction) !== canonicalJson(prior.pendingAction) ||
       current.receiptChainHead !== prior.receiptChainHead) {
     throw new ContractError(`resource ${binding.resourceId} prior-epoch pending action changed before adoption`, EXIT.SINGLETON);
   }
@@ -195,7 +195,7 @@ export async function supersedePriorEpochPendingAction(lock, prior, binding) {
   const current = await inspectLockedResourceState(lock, binding);
   if (current.highestAcceptedFencingEpoch !== prior.fencingEpoch || current.highestAcceptedFencingEpoch >= binding.fencingEpoch ||
       current.operationId !== binding.operationId || current.manifestDigest !== binding.manifestDigest ||
-      current.pendingAction?.actionId !== prior.actionId || current.pendingAction?.requestDigest !== prior.requestDigest ||
+      canonicalJson(current.pendingAction) !== canonicalJson(prior.pendingAction) ||
       current.receiptChainHead !== prior.receiptChainHead) {
     throw new ContractError(`resource ${binding.resourceId} prior-epoch pending action changed before supersession`, EXIT.SINGLETON);
   }

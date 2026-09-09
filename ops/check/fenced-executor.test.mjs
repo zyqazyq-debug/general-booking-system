@@ -621,6 +621,57 @@ test('takeover recovers an ingress PUT completed before executor receipt only th
       assert.equal(mutationAttempted, false);
     }
     await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
+    let ambiguousMutations = 0;
+    await assert.rejects(runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
+      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'switch-ambiguous-after-takeover' }), { deployStateRoot: root, releaseRoot,
+      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
+      candidateRuntimeVerifier: async () => ({ verified: true }),
+      now: at('2026-09-09T16:01:20.000Z'), commandRunner: async (_executable, argv) => {
+        if (!argv.includes('--readback') && !argv.includes('--recover-pending')) ambiguousMutations += 1;
+        return { exitCode: 20, signal: null, overflow: false, stdout: '', stderr: 'ambiguous remote state' };
+      } }), /external action failed/);
+    assert.equal(ambiguousMutations, 0, 'ambiguous recovery evidence must fail closed before mutation');
+    assert.deepEqual(JSON.parse(await readFile(resourcePath, 'utf8')), pendingAfterCrash);
+    let appliedReadbacks = 0;
+    let appliedMutations = 0;
+    const appliedRecoveryActionId = 'switch-applied-after-takeover';
+    const appliedRecovery = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
+      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': appliedRecoveryActionId }), { deployStateRoot: root, releaseRoot,
+      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
+      candidateRuntimeVerifier: async () => ({ verified: true }),
+      now: at('2026-09-09T16:01:30.000Z'), commandRunner: async (_executable, argv) => {
+        if (argv.includes('--readback')) appliedReadbacks += 1;
+        else appliedMutations += 1;
+        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(oldProof), stderr: '' };
+      } });
+    assert.equal(appliedReadbacks, 1);
+    assert.equal(appliedMutations, 0, 'proven-applied prior ingress must be adopted without another mutation');
+    assert.equal(appliedRecovery.executionOutputDigest, sha256(''));
+    assert.equal(appliedRecovery.verification.runtime.actionId, oldActionId);
+    assert.equal(appliedRecovery.verification.adoption.mode, 'prior-pending-proven-applied-read-only');
+    const appliedCompleted = JSON.parse(await readFile(resourcePath, 'utf8'));
+    assert.equal(appliedCompleted.highestAcceptedFencingEpoch, 2);
+    assert.equal(appliedCompleted.pendingAction, null);
+    assert.equal(appliedCompleted.receiptChainHead, appliedRecovery.receiptDigest);
+    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
+    let appliedReplayMutations = 0;
+    const appliedReplay = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
+      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': appliedRecoveryActionId }), { deployStateRoot: root, releaseRoot,
+      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
+      candidateRuntimeVerifier: async () => ({ verified: true }),
+      now: at('2026-09-09T16:01:45.000Z'), commandRunner: async (_executable, argv) => {
+        if (!argv.includes('--readback')) appliedReplayMutations += 1;
+        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(oldProof), stderr: '' };
+      } });
+    assert.equal(appliedReplay.receiptDigest, appliedRecovery.receiptDigest);
+    assert.equal(appliedReplayMutations, 0, 'receipt/resource crash recovery must remain read-only');
+    const appliedReplayCompleted = JSON.parse(await readFile(resourcePath, 'utf8'));
+    assert.equal(appliedReplayCompleted.pendingAction, null);
+    assert.equal(appliedReplayCompleted.receiptChainHead, appliedRecovery.receiptDigest);
+    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
     let readbacks = 0;
     let mutations = 0;
     let recoveryChecks = 0;
