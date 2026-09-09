@@ -27,11 +27,12 @@ domain event.
 - Processed rows remain queryable. Retention must archive by policy; it must not
   delete pending or processing rows.
 
-Delivery is **at least once**. A crash after a listener side effect but before
-the processed compare-and-set can redeliver the same `eventId`. Every durable or
-external consumer must therefore persist its own unique consumption key before
-performing a non-repeatable effect. The outbox does not make Telegram/network
-side effects exactly once by itself.
+Delivery of the domain event to in-process consumers is **at least once**. A
+crash after a listener side effect but before the processed compare-and-set can
+redeliver the same `eventId`. Every durable or external consumer must therefore
+persist its own unique consumption key before performing a non-repeatable
+effect. The outbox does not make Telegram/network side effects exactly once by
+itself.
 
 ## Existing consumer audit
 
@@ -44,12 +45,21 @@ side effects exactly once by itself.
 The dispatcher can be explicitly enabled in isolated preproduction after
 migrations `1788750000000` and `1788760000000` are verified. Its default must
 remain false. A successful delivery is committed only with Telegram's provider
-message ID. A definitive rejection is recorded as `failed`; a timeout,
+message ID. A definitive rejection (including an unbound recipient) is recorded
+as `failed`; a timeout,
 disconnect, invalid receipt, crash-abandoned claim or unclassified transport
-error is recorded as `uncertain`. Either state keeps the outbox event retrying
-but cannot trigger another external send; release operators must reconcile the
-delivery row and provider audit trail manually. Error detail, bot token, chat ID
-and message body are never persisted in this receipt.
+error is recorded as `uncertain`. `sent`, `failed`, and `uncertain` are terminal
+for automatic delivery. They do not fail the domain event and never trigger an
+automatic external resend; each recipient is attempted independently, so one
+recipient's terminal outcome cannot skip another recipient. A database or
+orchestration failure still requeues the domain event, but replay observes every
+existing delivery terminal before attempting any recipient that has no terminal
+receipt. A concurrent live delivery claim also defers the domain event until the
+claim either commits or expires to `uncertain`. This provides at-most-once
+automatic send attempts per event/recipient,
+not exactly-once delivery: an `uncertain` row requires manual reconciliation.
+Error detail, bot token, chat ID and message body are never persisted in this
+receipt.
 
 The preproduction compose file exposes this as an explicit, default-off pair:
 `BOOKING_PREPROD_WORKERS_ENABLED=true` and

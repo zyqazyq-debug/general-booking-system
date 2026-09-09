@@ -12,7 +12,11 @@ import {
 import type { OrderNotificationPort } from '../ports/order-notification.port';
 import type { OrderUsersPort } from '../ports/order-users.port';
 import type { OrderServicesPort } from '../ports/order-services.port';
-import { OrderNotificationDeliveryService } from '../outbox/order-notification-delivery.service';
+import {
+  OrderNotificationDeliveryService,
+  OrderNotificationDeliveryFailedError,
+  OrderNotificationDeliveryUncertainError,
+} from '../outbox/order-notification-delivery.service';
 
 @Injectable()
 export class OrderNotificationService {
@@ -84,20 +88,21 @@ export class OrderNotificationService {
       `订单号: ${order.order_no}`,
     ].join('\n');
 
-    if (consumer) {
-      await this.deliveryService.sendOnce(
-        eventId,
-        `consumer:${consumer.id}`,
-        () =>
-          this.notificationPort.sendDirectMessage(
-            consumer.id,
-            `${summary}\n\n请按时前往。`,
-          ),
-      );
-    }
+    const internalFailures: unknown[] = [];
+
+    await this.attemptRecipientDelivery(
+      eventId,
+      `consumer:${order.consumer_id}`,
+      () =>
+        this.notificationPort.sendDirectMessage(
+          order.consumer_id,
+          `${summary}\n\n请按时前往。`,
+        ),
+      internalFailures,
+    );
 
     if (providerId) {
-      await this.deliveryService.sendOnce(
+      await this.attemptRecipientDelivery(
         eventId,
         `provider:${providerId}`,
         () =>
@@ -105,7 +110,29 @@ export class OrderNotificationService {
             providerId,
             `${summary}\n\n请及时处理。`,
           ),
+        internalFailures,
       );
+    }
+
+    if (internalFailures.length > 0) throw internalFailures[0];
+  }
+
+  private async attemptRecipientDelivery(
+    eventId: string,
+    recipientId: string,
+    send: Parameters<OrderNotificationDeliveryService['sendOnce']>[2],
+    internalFailures: unknown[],
+  ): Promise<void> {
+    try {
+      await this.deliveryService.sendOnce(eventId, recipientId, send);
+    } catch (error) {
+      if (
+        error instanceof OrderNotificationDeliveryFailedError ||
+        error instanceof OrderNotificationDeliveryUncertainError
+      ) {
+        return;
+      }
+      internalFailures.push(error);
     }
   }
 

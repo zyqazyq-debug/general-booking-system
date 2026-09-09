@@ -1,8 +1,9 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
 import { OrderCreatedNotificationListener } from './order-created-notification.listener';
 
 describe('OrderCreatedNotificationListener', () => {
-  it('requires eventId and propagates consumer failure to the outbox', async () => {
-    const notifyNewOrder = jest.fn().mockRejectedValue(new Error('uncertain'));
+  it('requires eventId and propagates internal orchestration failure to the outbox', async () => {
+    const notifyNewOrder = jest.fn().mockRejectedValue(new Error('database'));
     const listener = new OrderCreatedNotificationListener({
       notifyNewOrder,
     } as any);
@@ -17,7 +18,7 @@ describe('OrderCreatedNotificationListener', () => {
         providerId: 'provider-1',
         priceSnapshot: { basePrice: 100, displayPrice: 120 },
       }),
-    ).rejects.toThrow('uncertain');
+    ).rejects.toThrow('database');
     expect(notifyNewOrder).toHaveBeenCalledWith(
       'order-1',
       '2cc4fbed-37f4-4e85-bf4a-10e57224686f',

@@ -28,6 +28,13 @@ export class OrderNotificationDeliveryFailedError extends Error {
   }
 }
 
+export class OrderNotificationDeliveryInProgressError extends Error {
+  constructor() {
+    super('Order notification delivery is already in progress');
+    this.name = OrderNotificationDeliveryInProgressError.name;
+  }
+}
+
 @Injectable()
 export class OrderNotificationDeliveryService {
   constructor(
@@ -145,7 +152,7 @@ export class OrderNotificationDeliveryService {
       .andWhere('claim_token = :token', { token })
       .execute();
     if (completed.affected !== 1) {
-      throw new OrderNotificationDeliveryUncertainError();
+      throw new ConflictException('Notification delivery completion was lost');
     }
   }
 
@@ -164,12 +171,15 @@ export class OrderNotificationDeliveryService {
     if (existing.status === ORDER_NOTIFICATION_FAILED) {
       throw new OrderNotificationDeliveryFailedError();
     }
+    if (existing.status === ORDER_NOTIFICATION_UNCERTAIN) {
+      throw new OrderNotificationDeliveryUncertainError();
+    }
     if (
       existing.status === ORDER_NOTIFICATION_SENDING &&
       existing.lease_expires_at &&
       existing.lease_expires_at <= now
     ) {
-      await this.deliveries
+      const expired = await this.deliveries
         .createQueryBuilder()
         .update(OrderNotificationDelivery)
         .set({
@@ -182,8 +192,12 @@ export class OrderNotificationDeliveryService {
         .andWhere('status = :status', { status: ORDER_NOTIFICATION_SENDING })
         .andWhere('claim_token = :token', { token: existing.claim_token })
         .execute();
+      if (expired.affected !== 1) {
+        throw new ConflictException('Notification delivery claim was lost');
+      }
+      throw new OrderNotificationDeliveryUncertainError();
     }
-    throw new OrderNotificationDeliveryUncertainError();
+    throw new OrderNotificationDeliveryInProgressError();
   }
 
   private async markUncertain(
@@ -212,7 +226,7 @@ export class OrderNotificationDeliveryService {
       | typeof ORDER_NOTIFICATION_UNCERTAIN,
     errorType: string,
   ): Promise<void> {
-    await this.deliveries
+    const completed = await this.deliveries
       .createQueryBuilder()
       .update(OrderNotificationDelivery)
       .set({
@@ -227,6 +241,9 @@ export class OrderNotificationDeliveryService {
       .andWhere('status = :status', { status: ORDER_NOTIFICATION_SENDING })
       .andWhere('claim_token = :token', { token })
       .execute();
+    if (completed.affected !== 1) {
+      throw new ConflictException('Notification delivery outcome was lost');
+    }
   }
 
   private sanitizeErrorType(value: unknown): string {

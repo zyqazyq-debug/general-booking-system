@@ -9,6 +9,7 @@ import {
 import {
   OrderNotificationDeliveryService,
   OrderNotificationDeliveryFailedError,
+  OrderNotificationDeliveryInProgressError,
   OrderNotificationDeliveryUncertainError,
 } from './order-notification-delivery.service';
 
@@ -79,7 +80,7 @@ describe('OrderNotificationDeliveryService', () => {
     await sendStarted;
     await expect(
       subject.sendOnce(eventId, recipient, send),
-    ).rejects.toBeInstanceOf(OrderNotificationDeliveryUncertainError);
+    ).rejects.toBeInstanceOf(OrderNotificationDeliveryInProgressError);
     release({ outcome: 'sent', providerMessageId: '422' });
     await first;
 
