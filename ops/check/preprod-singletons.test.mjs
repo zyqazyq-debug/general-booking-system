@@ -34,7 +34,14 @@ function worker(slot, status = 'running', overrides = {}) {
       BOOKING_SLOT: slot, BOOKING_RUNTIME_ROLE: 'worker', BOOKING_WORKERS_ENABLED: 'true', ORDER_OUTBOX_DISPATCH_ENABLED: 'true',
       TELEGRAM_BOT_MODE: 'polling', TELEGRAM_ENABLE_WEBHOOK: 'false', TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: 'false',
       BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true', TELEGRAM_PROXY_URL: 'socks5h://telegram-egress:1080' }),
-    portBindings: {}, ports: { '3001/tcp': null }, status, health: status === 'running' ? 'healthy' : '', ...overrides };
+    mounts: [
+      { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
+      { Type: 'tmpfs', Source: '', Destination: '/app/logs', RW: true },
+      { Type: 'bind', Source: '/volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret', Destination: '/run/secrets/telegram_data_encryption_secret', RW: false },
+    ],
+    networks: { 'booking-preprod-data': {}, 'booking-preprod-telegram': {} }, readOnly: true, capDrop: ['ALL'], capAdd: null,
+    securityOpt: ['no-new-privileges:true'], portBindings: {}, ports: { '3001/tcp': null }, user: 'node', privileged: false,
+    pidMode: '', ipcMode: '', devices: [], status, health: status === 'running' ? 'healthy' : '', ...overrides };
 }
 
 async function fixture() {
@@ -125,7 +132,7 @@ test('worker image, flags, and host-port drift are rejected by real container re
   const cases = [
     { targetOverrides: { image: `sha256:${'e'.repeat(64)}` }, pattern: /image drifted/ },
     { targetOverrides: { env: env({ BOOKING_RELEASE_ID: ARGS['release-id'], BOOKING_GIT_SHA: ARGS['git-sha'], BOOKING_MANIFEST_DIGEST: ARGS['manifest-digest'], BOOKING_SLOT: 'blue', BOOKING_RUNTIME_ROLE: 'worker', BOOKING_WORKERS_ENABLED: 'false', ORDER_OUTBOX_DISPATCH_ENABLED: 'true', TELEGRAM_BOT_MODE: 'polling', TELEGRAM_ENABLE_WEBHOOK: 'false', TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: 'false' }) }, pattern: /BOOKING_WORKERS_ENABLED drifted/ },
-    { targetOverrides: { portBindings: { '3001/tcp': [{ HostPort: '19001' }] } }, pattern: /must not publish host ports/ },
+    { targetOverrides: { portBindings: { '3001/tcp': [{ HostPort: '19001' }] } }, pattern: /runtime isolation drifted/ },
   ];
   for (const item of cases) {
     const value = await fixture();
@@ -133,6 +140,65 @@ test('worker image, flags, and host-port drift are rejected by real container re
     try { await assert.rejects(runSingletonAction({ ...ARGS, 'compose-file': value.composeFile, 'egress-compose-file': value.egressComposeFile }, runtime), item.pattern); }
     finally { await rm(value.releaseRoot, { recursive: true, force: true }); }
   }
+});
+
+test('every observed worker must retain the exact approved runtime isolation before singleton mutation', async () => {
+  const cases = [
+    { networks: { 'booking-preprod-data': {}, 'booking-preprod-telegram': {}, 'booking-preprod-edge': {} } },
+    { networks: { 'booking-preprod-data': {}, default: {} } },
+    { networks: { host: {} } },
+    { readOnly: false },
+    { user: '0:0' },
+    { capDrop: [] },
+    { capAdd: ['NET_ADMIN'] },
+    { capAdd: 'NET_ADMIN' },
+    { securityOpt: [] },
+    { securityOpt: ['no-new-privileges:true', 'seccomp:unconfined'] },
+    { portBindings: { '3001/tcp': [{ HostIp: '127.0.0.1', HostPort: '19001' }] } },
+    { ports: { '3001/tcp': [{ HostIp: '127.0.0.1', HostPort: '19001' }] } },
+    { ports: 'malformed' },
+    { privileged: true },
+    { pidMode: 'host' },
+    { ipcMode: 'host' },
+    { devices: [{ PathOnHost: '/dev/net/tun' }] },
+    { mounts: [
+      { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
+      { Type: 'tmpfs', Source: '', Destination: '/app/logs', RW: true },
+      { Type: 'bind', Source: '/etc', Destination: '/host-etc', RW: false },
+    ] },
+  ];
+  for (const drift of cases) {
+    const value = await fixture();
+    const runtime = mockRuntime(value, [api('blue'), api('green'), worker('green', 'running', drift)]);
+    try {
+      await assert.rejects(runSingletonAction({ ...ARGS, 'compose-file': value.composeFile, 'egress-compose-file': value.egressComposeFile }, runtime), /runtime isolation drifted/);
+      assert.equal(runtime.calls.some((argv) => argv[0] === 'container' && argv[1] === 'stop'), false);
+      assert.equal(runtime.calls.some((argv) => argv.includes('up')), false);
+    } finally { await rm(value.releaseRoot, { recursive: true, force: true }); }
+  }
+});
+
+test('receipt replay rejects actual worker isolation drift without replaying a mutation', async () => {
+  const value = await fixture();
+  const runtime = mockRuntime(value, [api('blue'), api('green'), worker('blue', 'running', {
+    networks: { 'booking-preprod-data': {}, 'booking-preprod-telegram': {}, 'booking-preprod-warp-uplink': {} },
+  })]);
+  try {
+    await assert.rejects(runSingletonAction({ ...ARGS, 'compose-file': value.composeFile, 'egress-compose-file': value.egressComposeFile, readback: 'true' }, runtime), /runtime isolation drifted/);
+    assert.equal(runtime.calls.some((argv) => argv[0] === 'container' && argv[1] === 'stop'), false);
+    assert.equal(runtime.calls.some((argv) => argv.includes('up')), false);
+  } finally { await rm(value.releaseRoot, { recursive: true, force: true }); }
+});
+
+test('receipt replay rejects an unapproved worker service even when its sandbox matches', async () => {
+  const value = await fixture();
+  const rogue = worker('green', 'running', { id: ID('5'), service: 'order-worker-shadow' });
+  const runtime = mockRuntime(value, [api('blue'), api('green'), worker('blue'), rogue]);
+  try {
+    await assert.rejects(runSingletonAction({ ...ARGS, 'compose-file': value.composeFile, 'egress-compose-file': value.egressComposeFile, readback: 'true' }, runtime), /order-worker-shadow runtime isolation drifted/);
+    assert.equal(runtime.calls.some((argv) => argv[0] === 'container' && argv[1] === 'stop'), false);
+    assert.equal(runtime.calls.some((argv) => argv.includes('up')), false);
+  } finally { await rm(value.releaseRoot, { recursive: true, force: true }); }
 });
 
 test('receipt replay readback never executes stop or compose up', async () => {

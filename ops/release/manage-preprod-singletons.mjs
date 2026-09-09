@@ -12,7 +12,7 @@ const PROJECT = 'booking-preprod';
 const SLOT = new Set(['blue', 'green']);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const IMAGE_INSPECT_FORMAT = '{{json .Id}}|{{json .RepoDigests}}|{{json .RepoTags}}|{{json .Config.Labels}}';
-const CONTAINER_INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"env":{{json .Config.Env}},"portBindings":{{json .HostConfig.PortBindings}},"ports":{{json .NetworkSettings.Ports}},"status":{{json .State.Status}},"health":{{json .State.Health}}}';
+const CONTAINER_INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"env":{{json .Config.Env}},"mounts":{{json .Mounts}},"networks":{{json .NetworkSettings.Networks}},"readOnly":{{json .HostConfig.ReadonlyRootfs}},"capDrop":{{json .HostConfig.CapDrop}},"capAdd":{{json .HostConfig.CapAdd}},"securityOpt":{{json .HostConfig.SecurityOpt}},"portBindings":{{json .HostConfig.PortBindings}},"ports":{{json .NetworkSettings.Ports}},"user":{{json .Config.User}},"privileged":{{json .HostConfig.Privileged}},"pidMode":{{json .HostConfig.PidMode}},"ipcMode":{{json .HostConfig.IpcMode}},"devices":{{json .HostConfig.Devices}},"status":{{json .State.Status}},"health":{{json .State.Health}}}';
 const ALLOWED = new Set(['action', 'readback', 'project', 'compose-file', 'egress-compose-file', 'target-slot', 'source-slot', 'release-id', 'git-sha', 'manifest-digest', 'backend-image', 'backend-digest',
   'source-release-id', 'source-git-sha', 'source-manifest-digest', 'source-backend-image', 'source-backend-digest']);
 
@@ -105,6 +105,42 @@ function isRunning(container) {
 
 function healthStatus(container) {
   return String(typeof container.health === 'string' ? container.health : container.health?.Status || '').toLowerCase();
+}
+
+function verifyWorkerRuntimeIsolation(containers) {
+  const allowedServices = new Set(['order-worker-blue', 'order-worker-green']);
+  const expectedNetworks = ['booking-preprod-data', 'booking-preprod-telegram'];
+  const expectedMounts = [
+    { type: 'tmpfs', source: '', destination: '/app/logs', rw: true },
+    { type: 'tmpfs', source: '', destination: '/tmp', rw: true },
+    { type: 'bind', source: '/volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret',
+      destination: '/run/secrets/telegram_data_encryption_secret', rw: false },
+  ];
+  for (const container of containers.filter((item) => item.service?.startsWith('order-worker-'))) {
+    if (!allowedServices.has(container.service)) throw new ContractError(`${container.service} runtime isolation drifted`, EXIT.IDENTITY);
+    const networkNames = container.networks && typeof container.networks === 'object' && !Array.isArray(container.networks)
+      ? Object.keys(container.networks).sort() : [];
+    const mounts = Array.isArray(container.mounts) ? container.mounts.map((item) => ({
+      type: item.Type, source: item.Source || '', destination: item.Destination, rw: item.RW,
+    })).sort((a, b) => a.destination.localeCompare(b.destination)) : [];
+    const allowedMounts = [...expectedMounts].sort((a, b) => a.destination.localeCompare(b.destination));
+    const noCapabilitiesAdded = container.capAdd === null || (Array.isArray(container.capAdd) && container.capAdd.length === 0);
+    const noPortBindings = container.portBindings === null ||
+      (container.portBindings && typeof container.portBindings === 'object' && !Array.isArray(container.portBindings) && Object.keys(container.portBindings).length === 0);
+    const ports = container.ports === null ||
+      (container.ports && typeof container.ports === 'object' && !Array.isArray(container.ports)) ? container.ports : undefined;
+    if (JSON.stringify(networkNames) !== JSON.stringify(expectedNetworks) || container.readOnly !== true || container.user !== 'node' ||
+        JSON.stringify(container.capDrop) !== JSON.stringify(['ALL']) || !noCapabilitiesAdded ||
+        !Array.isArray(container.securityOpt) || container.securityOpt.length !== 1 || container.securityOpt[0] !== 'no-new-privileges:true' ||
+        !noPortBindings || ports === undefined || container.privileged !== false ||
+        container.pidMode !== '' || container.ipcMode !== '' || !Array.isArray(container.devices) || container.devices.length !== 0 ||
+        JSON.stringify(mounts) !== JSON.stringify(allowedMounts)) {
+      throw new ContractError(`${container.service} runtime isolation drifted`, EXIT.IDENTITY);
+    }
+    for (const bindings of Object.values(ports || {})) {
+      if (Array.isArray(bindings) && bindings.length > 0) throw new ContractError(`${container.service} runtime isolation drifted`, EXIT.IDENTITY);
+    }
+  }
 }
 
 async function inspectProjectContainers(docker, runner, options) {
@@ -214,6 +250,7 @@ async function inspectTargetImage(docker, runner, options, args) {
 }
 
 function verifyFinal(containers, args, targetSupported, imageId, sourceImageId) {
+  verifyWorkerRuntimeIsolation(containers);
   verifyApiWorkersDisabled(containers, args, imageId, sourceImageId);
   const blue = exactlyOne(containers, 'order-worker-blue', false);
   const green = exactlyOne(containers, 'order-worker-green', false);
@@ -314,6 +351,7 @@ export async function runSingletonAction(args, runtime = {}) {
 
   if (args.readback !== 'true') {
     let containers = await inspectProjectContainers(docker, runner, options);
+    verifyWorkerRuntimeIsolation(containers);
     verifyApiWorkersDisabled(containers, args, imageId, sourceImageId);
     const target = exactlyOne(containers, targetService, false);
     const source = exactlyOne(containers, sourceService, false);
@@ -324,6 +362,7 @@ export async function runSingletonAction(args, runtime = {}) {
       assertResult(stopped, 'failed to stop source singleton worker');
     }
     containers = await inspectProjectContainers(docker, runner, options);
+    verifyWorkerRuntimeIsolation(containers);
     const residual = exactlyOne(containers, sourceService, false);
     if (residual && isRunning(residual)) throw new ContractError('source singleton worker remains running after stop', EXIT.SINGLETON);
     if (containers.some((item) => item.service?.startsWith('order-worker-') && isRunning(item))) throw new ContractError('a worker remained running before target activation', EXIT.SINGLETON);
