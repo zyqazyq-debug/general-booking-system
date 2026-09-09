@@ -22,7 +22,10 @@
     "runtimeEnvDigest": { "$ref": "#/$defs/digest" },
     "generation": { "type": "integer", "minimum": 0 },
     "fencingEpoch": { "type": "integer", "minimum": 0 },
-    "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
+    "phase": {
+      "description": "ROLLBACK_PENDING is singleton-only before an ingress switch and a full ingress-plus-singleton rollback after a switch.",
+      "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"]
+    },
     "operationId": { "type": ["string", "null"], "minLength": 1 },
     "approvalId": { "type": ["string", "null"], "minLength": 1 },
     "lease": {

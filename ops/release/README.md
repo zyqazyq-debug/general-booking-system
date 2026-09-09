@@ -89,6 +89,14 @@ receipt without this resource-side enforcement is evidence formatting, not
 fencing. See
 `FENCED_EXECUTOR_RUNBOOK.md` for the phase/action matrix and Synology boundary.
 
+Rollback scope is derived from canonical state, never supplied by an operator.
+A rollback requested from `SINGLETON_TRANSFERRED` restores only the old
+singleton and probes the still-active old ingress: the executor rejects the
+Cloudflare ingress rollback action and this recovery does not count as a
+rollback rehearsal. A rollback requested after `SWITCHED` still requires the
+sequence-2 ingress receipt, singleton restoration, and the post-rollback public
+probe before it records a completed rehearsal.
+
 ## Local immutable-artifact gate
 
 The historical `generate-sbom.mjs` entry point is disabled because it does **not** inspect an image. Use `generate-build-input-inventory.mjs` to emit `booking.build-input-inventory/v1`, an exact, non-empty digest inventory of the Dockerfile, package manifest/lockfile, and gateway configuration inputs listed in `ops/contracts/build-input-inventory.schema.json`. That inventory is reproducible source evidence, not an SBOM, and it is not accepted as a manifest `sbomDigest` input.

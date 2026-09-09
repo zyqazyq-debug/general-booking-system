@@ -490,6 +490,39 @@ test('rollback ingress and singleton actions bind immutable rollback identity in
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('pre-switch rollback rejects ingress before planning or command execution while singleton rollback remains available', async () => {
+  let state = singletonTransferredState();
+  state = transitionDeployState(state, { expectedGeneration: 7, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
+    now: '2026-09-09T15:03:40.000Z', to: 'ROLLBACK_PENDING' });
+  const { root } = await fixtureFromState(state);
+  let planCalls = 0;
+  let commandCalls = 0;
+  const generic = () => {
+    planCalls += 1;
+    return { executable: '/trusted/action', argv: ['mutate'], cwd: '/trusted/release',
+      readback: { executable: '/trusted/action', argv: ['readback'], verify: () => ({ restored: true }) } };
+  };
+  const runner = async () => {
+    commandCalls += 1;
+    return successRunner();
+  };
+  try {
+    await assert.rejects(runFencedAction(args({ action: 'preprod-rollback-ingress', 'expected-generation': '8',
+      'manifest-digest': ACTIVE.manifestDigest, 'resource-id': 'ingress:booking-preprod', 'action-id': 'forbidden-pre-switch-ingress' }),
+    { deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'), planBuilder: generic, commandRunner: runner }),
+    /ingress rollback is forbidden before the candidate ingress promotion/);
+    assert.equal(planCalls, 0);
+    assert.equal(commandCalls, 0);
+
+    const singletonReceipt = await runFencedAction(args({ action: 'preprod-rollback-singletons', 'expected-generation': '8',
+      'manifest-digest': ACTIVE.manifestDigest, 'resource-id': 'booking-preprod-edge', 'action-id': 'pre-switch-singletons' }),
+    { deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'), planBuilder: generic, commandRunner: runner });
+    assert.deepEqual(singletonReceipt.releaseIdentity, ACTIVE);
+    assert.equal(planCalls, 1);
+    assert.equal(commandCalls, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('concrete ingress plan derives first and second promotion sequence plus immutable cycle binding from canonical state', async () => {
   let secondPromotion = rollbackPendingState();
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 10, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',

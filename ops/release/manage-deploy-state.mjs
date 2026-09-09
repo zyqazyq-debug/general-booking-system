@@ -6,7 +6,7 @@ import { canonicalJson, ContractError, EXIT, gateResult, parseArgs, sha256 } fro
 import { canonicalStatePath, initializeStateFile, mutateStateFile } from './lib/deploy-state-store.mjs';
 import { readCanonicalExecutorReceiptByDigest, readCompletedExecutorReceiptByDigest, resourceDirectory } from './lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
-import { acquireLease, initialDeployState, renewLease, takeoverExpiredLease, transitionDeployState } from './lib/state-machine.mjs';
+import { acquireLease, initialDeployState, renewLease, ROLLBACK_MODE, rollbackModeForState, takeoverExpiredLease, transitionDeployState } from './lib/state-machine.mjs';
 
 export const MIN_LEASE_DURATION_MS = 30_000;
 export const MAX_LEASE_DURATION_MS = 30 * 60_000;
@@ -86,7 +86,7 @@ const RECEIPT_TRANSITIONS = Object.freeze({
   OBSERVING: [{ argument: 'webhook-receipt-digest', action: 'preprod-set-webhook', identity: 'active', resources: ['telegram', 'databaseRef', 'dataNetwork'] }],
   COMMITTED: [{ argument: 'observation-receipt-digest', action: 'preprod-probe-observation', identity: 'active', resources: ['observationProbe'] }],
   ROLLED_BACK: [
-    { argument: 'rollback-receipt-digest', action: 'preprod-rollback-ingress', identity: 'rollback', resources: ['ingressRef'] },
+    { argument: 'rollback-receipt-digest', action: 'preprod-rollback-ingress', identity: 'rollback', resources: ['ingressRef'], postSwitchOnly: true },
     { argument: 'rollback-singleton-transfer-receipt-digest', action: 'preprod-rollback-singletons', identity: 'rollback', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram'] },
     { argument: 'rolled-back-probe-digest', action: 'preprod-probe-rollback', identity: 'rollback', resources: ['rollbackProbe'] },
   ],
@@ -118,11 +118,16 @@ async function inspectRuntimeEnvironment(args, runtime) {
 
 async function verifyTransitionReceipts(statePath, state, args) {
   const requirements = RECEIPT_TRANSITIONS[args.to] || [];
+  const rollbackMode = args.to === 'ROLLED_BACK' ? rollbackModeForState(state) : null;
+  if (rollbackMode === ROLLBACK_MODE.PRE_SWITCH_SINGLETON && args['rollback-receipt-digest'] !== undefined) {
+    throw new ContractError('pre-switch rollback must not consume ingress mutation evidence', EXIT.ROLLBACK);
+  }
   const resourceMap = { ...state.resources, telegram: `telegram:${state.project}`,
     candidateProbe: `probe:${state.project}:candidate`, activeProbe: `probe:${state.project}:active`,
     observationProbe: `probe:${state.project}:observation`, rollbackProbe: `probe:${state.project}:rollback` };
   const verified = new Map();
   for (const requirement of requirements) {
+    if (requirement.postSwitchOnly && rollbackMode === ROLLBACK_MODE.PRE_SWITCH_SINGLETON) continue;
     if (requirement.legacyOnly && !(state.active.slot === 'green' && state.active.releaseId === LEGACY_OLD_BINDING.releaseId &&
         state.active.gitSha === LEGACY_OLD_BINDING.gitSha && state.active.manifestDigest === LEGACY_OLD_BINDING.manifestRawDigest)) continue;
     required(args, [requirement.argument]);

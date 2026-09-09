@@ -54,6 +54,8 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   assert.deepEqual(state.rollback, ACTIVE);
   state = step(state, 'OBSERVING', { webhookReceiptDigest: D('6') });
   state = step(state, 'ROLLBACK_PENDING');
+  assert.throws(() => step(state, 'ROLLED_BACK', { rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') }),
+    /post-switch rollback requires.*ingress receipt/);
   assert.throws(() => step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rolledBackProbeDigest: D('3') }), (error) => error.exitCode === EXIT.ROLLBACK);
   state = step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
   assert.deepEqual(state.active, ACTIVE);
@@ -83,9 +85,13 @@ test('rollback before ingress switch restores the old singleton while retaining 
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
   state = step(state, 'ROLLBACK_PENDING');
-  state = step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
+  assert.throws(() => step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') }),
+    /without ingress mutation evidence/);
+  state = step(state, 'ROLLED_BACK', { rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
   assert.deepEqual(state.active, ACTIVE);
   assert.deepEqual(state.candidate, CANDIDATE);
+  assert.equal(state.evidence.rollbackReceiptDigest, null);
+  assert.equal(state.rollbackRehearsalCompleted, false);
 });
 
 test('expired lease takeover increments fence and permanently rejects the old holder', () => {
@@ -508,5 +514,49 @@ test('managed singleton transition consumes only a completed canonical executor 
     assert.deepEqual(committed.active, CANDIDATE);
     assert.deepEqual(committed.rollback, ACTIVE);
     assert.equal(committed.rollbackRehearsalCompleted, false, 'successful commit closes the rehearsal cycle marker');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('managed pre-switch rollback consumes singleton and probe receipts without accepting ingress evidence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-managed-pre-switch-rollback-'));
+  const runtimeEnvFile = join(root, '.runtime.env');
+  await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+  let state = acquired();
+  state = step(state, 'MANIFEST_VERIFIED');
+  state = step(state, 'STAGED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
+  state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
+  state = step(state, 'ROLLBACK_PENDING');
+  const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
+  const actionBase = { execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
+    'expected-generation': '8', 'expected-fencing-epoch': '1', 'manifest-digest': ACTIVE.manifestDigest,
+    'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1' };
+  const actionRuntime = { deployStateRoot: root, now: () => new Date('2026-09-07T15:40:00.000Z'),
+    planBuilder: (_state, action) => ({ executable: '/trusted/action', argv: [action.action], cwd: '/trusted/release',
+      readback: { executable: '/trusted/action', argv: ['readback', action.action], verify: () => ({ exactIdentity: true }) } }),
+    commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) };
+  const managerRuntime = { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+    nowMs: Date.parse('2026-09-07T15:41:00.000Z') };
+  try {
+    await initializeStateFile(statePath, state);
+    const singleton = await runFencedAction({ ...actionBase, action: 'preprod-rollback-singletons',
+      'resource-id': 'booking-preprod-edge', 'action-id': 'rollback-singletons-pre-switch' }, actionRuntime);
+    const probe = await runFencedAction({ ...actionBase, action: 'preprod-probe-rollback',
+      'resource-id': 'probe:booking-preprod:rollback', 'action-id': 'rollback-probe-pre-switch' }, actionRuntime);
+    const transition = { action: 'transition', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+      'approval-id': 'approval-1', 'expected-generation': '8', 'expected-fencing-epoch': '1',
+      'manifest-digest': CANDIDATE.manifestDigest, 'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1',
+      to: 'ROLLED_BACK', 'rollback-singleton-transfer-receipt-digest': singleton.receiptDigest,
+      'rolled-back-probe-digest': probe.receiptDigest };
+    await assert.rejects(runManageDeployState({ ...transition, 'rollback-receipt-digest': D('f') }, managerRuntime),
+      /pre-switch rollback must not consume ingress mutation evidence/);
+    const rolledBack = await runManageDeployState(transition, managerRuntime);
+    assert.equal(rolledBack.phase, 'ROLLED_BACK');
+    assert.deepEqual(rolledBack.active, ACTIVE);
+    assert.deepEqual(rolledBack.candidate, CANDIDATE);
+    assert.equal(rolledBack.evidence.rollbackReceiptDigest, null);
+    assert.equal(rolledBack.rollbackRehearsalCompleted, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

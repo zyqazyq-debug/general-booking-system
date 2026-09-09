@@ -11,6 +11,7 @@ import { composeBundleDigest, digestFile, directoryDigest } from './lib/artifact
 import { canonicalStatePath, withDeployStateLock } from './lib/deploy-state-store.mjs';
 import { acceptResourceEpoch, acquireResourceLocks, adoptPriorEpochPendingAction, completeResourceAction, inspectLockedResourceState, readCanonicalExecutorReceiptByDigest, readExecutorReceipt, readExecutorRecoveryReceiptByDigest, recoverResourceAction, releaseResourceLocks, supersedePriorEpochPendingAction, writeExecutorReceipt, writeExecutorRecoveryReceipt } from './lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
+import { ROLLBACK_MODE, rollbackModeForState } from './lib/state-machine.mjs';
 import { validateRegistryAttestationReceipt } from './lib/registry-attestation.mjs';
 import { TELEGRAM_PROXY_URL, verifyTelegramEgressReceipt } from './verify-telegram-egress.mjs';
 
@@ -75,6 +76,9 @@ function assertStateBinding(state, args, spec, nowMs) {
     throw new ContractError('lease identity mismatch', EXIT.SINGLETON);
   }
   if (Date.parse(state.lease.expiresAt) <= nowMs) throw new ContractError('lease has expired', EXIT.SINGLETON);
+  if (args.action === 'preprod-rollback-ingress' && rollbackModeForState(state) !== ROLLBACK_MODE.POST_SWITCH_FULL) {
+    throw new ContractError('ingress rollback is forbidden before the candidate ingress promotion', EXIT.ROLLBACK);
+  }
   const releaseIdentity = releaseFor(state, spec);
   if (!releaseIdentity) throw new ContractError('action release identity is unavailable', EXIT.IDENTITY);
   if (!releaseIdentity || releaseIdentity.manifestDigest !== args['manifest-digest']) throw new ContractError('action release manifest identity mismatch', EXIT.IDENTITY);

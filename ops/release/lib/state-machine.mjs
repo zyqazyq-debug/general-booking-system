@@ -28,6 +28,11 @@ const ROOT_KEYS = new Set(['schema', 'environment', 'project', 'resources', 'run
 const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest', 'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
 const POST_SWITCH_PHASES = new Set(['SWITCHED', 'OBSERVING', 'COMMITTED', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN']);
 
+export const ROLLBACK_MODE = Object.freeze({
+  PRE_SWITCH_SINGLETON: 'pre-switch-singleton',
+  POST_SWITCH_FULL: 'post-switch-full',
+});
+
 function exactKeys(value, keys, path) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ContractError(`${path} must be an object`);
   for (const key of keys) if (!(key in value)) throw new ContractError(`${path}.${key} is required`);
@@ -50,6 +55,17 @@ function validateIdentity(identity, path) {
 
 function sameIdentity(left, right) {
   return left && right && left.slot === right.slot && left.releaseId === right.releaseId && left.gitSha === right.gitSha && left.manifestDigest === right.manifestDigest;
+}
+
+export function rollbackModeForState(state) {
+  if (!state || typeof state !== 'object') throw new ContractError('rollback mode requires deployment state', EXIT.ROLLBACK);
+  if (state.phase === 'SINGLETON_TRANSFERRED') return ROLLBACK_MODE.PRE_SWITCH_SINGLETON;
+  if (state.phase === 'SWITCHED' || state.phase === 'OBSERVING') return ROLLBACK_MODE.POST_SWITCH_FULL;
+  if (state.phase !== 'ROLLBACK_PENDING') throw new ContractError('rollback mode is unavailable outside a rollback-capable phase', EXIT.ROLLBACK);
+  const preSwitch = Boolean(state.candidate !== null && state.evidence?.switchReceiptDigest === null && sameIdentity(state.active, state.rollback));
+  const postSwitch = Boolean(state.candidate === null && DIGEST.test(state.evidence?.switchReceiptDigest || '') && !sameIdentity(state.active, state.rollback));
+  if (preSwitch === postSwitch) throw new ContractError('rollback mode cannot be derived from the deployment state', EXIT.ROLLBACK);
+  return preSwitch ? ROLLBACK_MODE.PRE_SWITCH_SINGLETON : ROLLBACK_MODE.POST_SWITCH_FULL;
 }
 
 function isLegacyOldActive(identity) {
@@ -115,6 +131,7 @@ export function validateDeployState(state) {
     requireIso(state.lease.expiresAt, 'state.lease.expiresAt');
     if (Date.parse(state.lease.expiresAt) <= Date.parse(state.lease.acquiredAt)) throw new ContractError('lease expiry must follow acquisition');
   }
+  if (state.phase === 'ROLLBACK_PENDING') rollbackModeForState(state);
   return state;
 }
 
@@ -264,16 +281,24 @@ export function transitionDeployState(state, input) {
     next.rollbackRehearsalCompleted = false;
   }
   if (input.to === 'ROLLED_BACK') {
-    if (!next.rollback || !DIGEST.test(input.rollbackReceiptDigest || '') || !DIGEST.test(input.rollbackSingletonTransferReceiptDigest || '') || !DIGEST.test(input.rolledBackProbeDigest || '')) {
-      throw new ContractError('rollback requires immutable target, ingress receipt, singleton receipt, and post-rollback probe evidence', EXIT.ROLLBACK);
+    const rollbackMode = rollbackModeForState(state);
+    const postSwitch = rollbackMode === ROLLBACK_MODE.POST_SWITCH_FULL;
+    if (!next.rollback || !DIGEST.test(input.rollbackSingletonTransferReceiptDigest || '') || !DIGEST.test(input.rolledBackProbeDigest || '') ||
+        (postSwitch && !DIGEST.test(input.rollbackReceiptDigest || '')) || (!postSwitch && input.rollbackReceiptDigest !== undefined)) {
+      throw new ContractError(postSwitch
+        ? 'post-switch rollback requires immutable target, ingress receipt, singleton receipt, and post-rollback probe evidence'
+        : 'pre-switch rollback requires immutable target, singleton receipt, and post-rollback probe evidence without ingress mutation evidence', EXIT.ROLLBACK);
     }
-    next.evidence.rollbackReceiptDigest = input.rollbackReceiptDigest;
+    if (postSwitch) next.evidence.rollbackReceiptDigest = input.rollbackReceiptDigest;
     next.evidence.rollbackSingletonTransferReceiptDigest = input.rollbackSingletonTransferReceiptDigest;
     next.evidence.rolledBackProbeDigest = input.rolledBackProbeDigest;
     const failedCandidate = structuredClone(next.candidate || next.active);
     next.active = structuredClone(next.rollback);
     next.candidate = failedCandidate;
-    next.rollbackRehearsalCompleted = true;
+    // A singleton-only abort before ingress promotion is a recovery, not a
+    // rollback rehearsal. Preserve an earlier completed full rehearsal, but do
+    // not create one from the pre-switch path.
+    next.rollbackRehearsalCompleted = postSwitch || state.rollbackRehearsalCompleted;
   }
   if (input.to === 'IDLE') {
     next.operationId = null;
