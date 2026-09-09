@@ -502,6 +502,54 @@ test('external command budgets are derived from the post-gate clock rather than 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('one-shot cleanup revalidates the lease after inspect on normal and replay paths', async (t) => {
+  for (const mode of ['normal', 'replay']) await t.test(mode, async () => {
+    const { root, statePath } = await fixtureFromState(preMigrationState());
+    const releaseRoot = await concreteReleaseRoot();
+    const resourcePaths = ['database:booking-preprod', 'booking-preprod-data']
+      .map((resourceId) => join(resourceDirectory(statePath, resourceId), 'resource-state.json'));
+    const receiptDirectory = join(dirname(statePath), 'executor', 'receipts');
+    const snapshot = async () => ({
+      resources: await Promise.all(resourcePaths.map((path) => readFile(path, 'utf8'))),
+      receipts: await readdir(receiptDirectory).catch((error) => {
+        if (error?.code === 'ENOENT') return [];
+        throw error;
+      }),
+    });
+    const concreteRunner = concreteMigrationRunner();
+    let crossed = false;
+    let atExpiry = null;
+    let removeCalls = 0;
+    const expiringRunner = async (executable, argv, options) => {
+      if (argv[0] === 'container' && argv[1] === 'rm') removeCalls += 1;
+      const result = await concreteRunner(executable, argv, options);
+      if (!crossed && argv[0] === 'container' && argv[1] === 'inspect' &&
+          !String(argv.at(-1)).includes('booking-preprod-postgres') && !String(argv.at(-1)).includes('booking-preprod-redis')) {
+        atExpiry = await snapshot();
+        crossed = true;
+      }
+      return result;
+    };
+    const runtime = { deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST, backupArtifactVerifier,
+      dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
+      now: () => new Date(crossed ? '2026-09-09T16:00:00.000Z' : '2026-09-09T15:05:00.000Z') };
+    try {
+      if (mode === 'replay') {
+        await runFencedAction(migrationArgs(), { ...runtime, now: at('2026-09-09T15:05:00.000Z'),
+          commandRunner: concreteRunner });
+      }
+      await assert.rejects(runFencedAction(migrationArgs(), { ...runtime, commandRunner: expiringRunner }),
+        /lease has expired|insufficient remaining time/);
+      assert.equal(crossed, true, 'one-shot inspect must be the operation that crosses the lease deadline');
+      assert.equal(removeCalls, 0, 'expired holder must not start nested one-shot cleanup');
+      assert.deepEqual(await snapshot(), atExpiry, 'expiry failure must not publish a receipt or mutate resource state');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(releaseRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 test('preproduction ledger baseline is fenced to the canonical database resources', async () => {
   const { root } = await fixtureFromState(preMigrationState());
   try {

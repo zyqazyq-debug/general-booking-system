@@ -885,7 +885,10 @@ async function buildPlan(state, args, runtime) {
   const oneShotName = `booking-preprod-${sha256(`${args.action}:${args['action-id']}`).slice(7, 19)}`;
   const readbackName = `${oneShotName}-readback`;
   const ledgerReadbackName = `${oneShotName}-ledger`;
-  const verifyOneShotArtifacts = (containers) => async ({ runner, env, timeoutMs, preflightEvidence }) => {
+  const verifyOneShotArtifacts = (containers) => async ({ runner, env, timeoutMs, preflightEvidence, revalidateLease }) => {
+    if (typeof revalidateLease !== 'function') {
+      throw new ContractError('one-shot cleanup requires a live lease revalidator', EXIT.SINGLETON);
+    }
     const imageEvidence = await backendImagePreflight({ runner, env, timeoutMs });
     if (preflightEvidence?.backend && imageEvidence.backend.imageId !== preflightEvidence.backend.imageId) {
       throw new ContractError('backend release tag drifted during one-shot action', EXIT.IDENTITY);
@@ -898,7 +901,10 @@ async function buildPlan(state, args, runtime) {
       }
     }
     for (const container of containers) {
-      const removed = await runner(docker, ['container', 'rm', container], { cwd: paths.releaseDirectory, env, timeoutMs });
+      const leaseWindow = revalidateLease();
+      const removed = await runner(docker, ['container', 'rm', container], {
+        cwd: paths.releaseDirectory, env, timeoutMs: leaseWindow.timeoutMs,
+      });
       assertResult(removed, EXIT.IDENTITY);
     }
     return { backend: imageEvidence.backend, containers };
@@ -1461,6 +1467,7 @@ export async function runFencedAction(args, runtime = {}) {
                   env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs, statePath }) : null;
                 leaseWindow = revalidateLease();
                 await replayArtifacts({ runner, env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs, statePath,
+                  revalidateLease,
                   preflightEvidence });
               }
             } else {
@@ -1617,7 +1624,7 @@ export async function runFencedAction(args, runtime = {}) {
           const artifactVerifier = plan.verifyArtifacts;
           leaseWindow = await passRegistryGate(plan, revalidateLease);
           const artifactVerification = artifactVerifier ? await artifactVerifier({ runner, env: plan.env || runtime.env || process.env,
-            timeoutMs: leaseWindow.timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence }) : null;
+            timeoutMs: leaseWindow.timeoutMs, statePath, revalidateLease, preflightEvidence: preflightArtifactEvidence }) : null;
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
           const { observedAt: completedAt } = await passRegistryGate(plan, revalidateLease);
           const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
@@ -1764,7 +1771,7 @@ export async function runFencedAction(args, runtime = {}) {
         if (plan.verifyArtifacts) {
           leaseWindow = await passRegistryGate(plan, revalidateLease);
           verification.artifacts = await plan.verifyArtifacts({ runner, env: plan.env || runtime.env || process.env,
-            timeoutMs: leaseWindow.timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence });
+            timeoutMs: leaseWindow.timeoutMs, statePath, revalidateLease, preflightEvidence: preflightArtifactEvidence });
         }
         if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
         completedAt = (await passRegistryGate(plan, revalidateLease)).observedAt;
