@@ -26,11 +26,13 @@ function nativeDocument() {
       { id: 'two', location: { path: '/usr/lib/libz.so' }, digests: [{ algorithm: 'sha256', value: hex('e') }] },
       { id: 'one', location: { path: '/app/package.json' }, digests: [{ algorithm: 'sha1', value: 'f'.repeat(40) }, { algorithm: 'sha256', value: hex('d') }] },
     ],
-    source: { id: digest('f'), name: imageRef, version: imageDigest, type: 'image', metadata: {
-      imageID: digest('9'), manifestDigest: imageDigest, repoDigests: [imageRef], tags: [],
+    source: { id: hex('f'), name: image, version: imageDigest, type: 'image', metadata: {
+      userInput: imageRef, imageID: digest('9'), manifestDigest: digest('f'), repoDigests: [imageRef], tags: [],
     } },
     distro: { name: 'alpine', version: '3.22' },
-    descriptor: { name: 'syft', version: SYFT_VERSION, configuration: {} },
+    descriptor: { name: 'syft', version: SYFT_VERSION, configuration: {
+      files: { selection: 'all', hashers: ['sha-256'] }, search: { scope: 'squashed' },
+    } },
     schema: { version: '16.1.10', url: 'https://raw.githubusercontent.com/anchore/syft/main/schema/json/schema-16.1.10.json' },
   };
 }
@@ -43,7 +45,7 @@ function dockerInspect({ id = digest('9'), revision = gitSha, component = 'backe
 }
 
 test('normalizes version-pinned Syft image JSON deterministically and binds the native report', () => {
-  const document = normalizeSyftImageSbom(nativeDocument(), { component: 'backend', gitSha, image, digest: imageDigest, nativeDigest });
+  const document = normalizeSyftImageSbom(nativeDocument(), { component: 'backend', gitSha, image, digest: imageDigest, nativeDigest, imageId: digest('9') });
   assert.equal(validateImageSbom(document, { component: 'backend', gitSha, image, digest: imageDigest }), document);
   assert.deepEqual(document.packages.map((entry) => entry.name), ['zlib', 'booking-runtime']);
   assert.deepEqual(document.files.map((entry) => entry.path), ['/app/package.json', '/usr/lib/libz.so']);
@@ -56,8 +58,14 @@ test('normalizes version-pinned Syft image JSON deterministically and binds the 
 test('rejects Syft reports that do not prove exact image source, scanner, package, and all-file SHA-256 evidence', () => {
   const cases = [
     [(value) => { value.source.type = 'directory'; }, /container image/],
-    [(value) => { value.source.metadata.manifestDigest = digest('1'); }, /exact requested repository digest/],
+    [(value) => { value.source.version = digest('1'); }, /exact requested repository digest/],
+    [(value) => { value.source.metadata.userInput = `${image}:mutable`; }, /exact requested repository digest/],
     [(value) => { value.source.metadata.repoDigests = [`registry.acme.test/booking/other@${imageDigest}`]; }, /exact requested repository digest/],
+    [(value) => { value.source.metadata.manifestDigest = digest('1'); }, /native manifest identity/],
+    [(value) => { value.source.metadata.imageID = digest('8'); }, /Docker image ID/],
+    [(value) => { value.descriptor.configuration.files.selection = 'owned-by-package'; }, /all-file SHA-256/],
+    [(value) => { value.descriptor.configuration.files.hashers = ['sha-1', 'sha-256']; }, /all-file SHA-256/],
+    [(value) => { value.descriptor.configuration.search.scope = 'all-layers'; }, /all-file SHA-256/],
     [(value) => { value.descriptor.version = '1.50.0'; }, /descriptor/],
     [(value) => { value.schema.version = '15.2.0'; }, /schema major/],
     [(value) => { value.artifacts[0].purl = ''; }, /purl/],
@@ -67,7 +75,9 @@ test('rejects Syft reports that do not prove exact image source, scanner, packag
   for (const [mutate, expected] of cases) {
     const value = nativeDocument();
     mutate(value);
-    assert.throws(() => normalizeSyftImageSbom(value, { component: 'backend', gitSha, image, digest: imageDigest, nativeDigest }), expected);
+    assert.throws(() => normalizeSyftImageSbom(value, {
+      component: 'backend', gitSha, image, digest: imageDigest, nativeDigest, imageId: digest('9'),
+    }), expected);
   }
 });
 
@@ -94,7 +104,7 @@ test('executes exact Docker digest scan, strips ambient Syft overrides, double-i
     assert.equal(result.normalizedDigest, await digestFile(output));
     assert.equal(calls.filter((call) => call.executable === '/trusted/docker').length, 2);
     const scan = calls.find((call) => call.executable === '/trusted/syft' && call.args[0] === 'scan');
-    assert.deepEqual(scan.args, ['scan', imageRef, '--output', 'syft-json']);
+    assert.deepEqual(scan.args, ['scan', imageRef, '--from', 'docker', '--output', 'syft-json']);
     assert.equal(scan.env.SYFT_FILE_METADATA_SELECTION, 'all');
     assert.equal(scan.env.SYFT_FILE_METADATA_DIGESTS, 'sha256');
     assert.equal(scan.env.SYFT_EXCLUDE, undefined);

@@ -1,12 +1,10 @@
 # Immutable H5 gateway image.  The build context must be the repository root.
-ARG BOOKING_GIT_SHA
-ARG BOOKING_RELEASE_ID
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
-ARG BOOKING_GIT_SHA
-ARG BOOKING_RELEASE_ID
 WORKDIR /workspace/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --ignore-scripts
+ARG BOOKING_GIT_SHA
+ARG BOOKING_RELEASE_ID
 COPY frontend ./
 ARG VITE_TELEGRAM_BOT_NAME
 ARG VITE_TELEGRAM_BOT_DISPLAY_NAME

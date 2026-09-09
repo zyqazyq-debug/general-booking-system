@@ -184,7 +184,7 @@ function sameDockerIdentity(before, after) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
-export function normalizeSyftImageSbom(native, { component, gitSha, image, digest, nativeDigest }) {
+export function normalizeSyftImageSbom(native, { component, gitSha, image, digest, nativeDigest, imageId }) {
   if (!COMPONENTS.has(component)) throw new ContractError('SBOM component is unsupported');
   if (!SHA.test(gitSha || '')) throw new ContractError('SBOM Git SHA is invalid');
   const repository = imageRepository(image, 'SBOM image');
@@ -201,9 +201,23 @@ export function normalizeSyftImageSbom(native, { component, gitSha, image, diges
     throw new ContractError(`Syft JSON schema major must be ${SYFT_JSON_SCHEMA_MAJOR}`);
   }
   if (native.source?.type !== 'image') throw new ContractError('Syft source must be a container image');
-  if (native.source?.metadata?.manifestDigest !== immutableDigest ||
-      !Array.isArray(native.source?.metadata?.repoDigests) || !native.source.metadata.repoDigests.includes(imageRef)) {
+  const metadata = native.source?.metadata;
+  const nativeManifestDigest = metadata?.manifestDigest;
+  if (native.source?.name !== repository || native.source?.version !== immutableDigest || metadata?.userInput !== imageRef ||
+      !Array.isArray(metadata?.repoDigests) || !metadata.repoDigests.includes(imageRef)) {
     throw new ContractError('Syft source does not bind the exact requested repository digest');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(nativeManifestDigest || '') || native.source?.id !== nativeManifestDigest.slice(7)) {
+    throw new ContractError('Syft source native manifest identity is invalid');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(metadata?.imageID || '') || (imageId && metadata.imageID !== imageId)) {
+    throw new ContractError('Syft source does not bind the Docker image ID');
+  }
+  const syftFiles = native.descriptor?.configuration?.files;
+  if (syftFiles?.selection !== 'all' || !Array.isArray(syftFiles.hashers) ||
+      syftFiles.hashers.length !== 1 || syftFiles.hashers[0] !== 'sha-256' ||
+      native.descriptor?.configuration?.search?.scope !== 'squashed') {
+    throw new ContractError('Syft descriptor does not prove squashed all-file SHA-256 cataloging');
   }
 
   if (!Array.isArray(native.artifacts) || native.artifacts.length === 0) {
@@ -291,14 +305,17 @@ export async function generateImageSbom(args, runtime = {}) {
     if (beforeResult.exitCode !== 0) throw new ContractError('Docker could not inspect the immutable image before scanning');
     const before = parseDockerInspect(beforeResult.stdout, { imageRef, component, gitSha: args['git-sha'] });
 
-    const scanResult = await scanToFile(syftExecutable, ['scan', imageRef, '--output', 'syft-json'], nativeTemp, {
+    const scanResult = await scanToFile(syftExecutable, ['scan', imageRef, '--from', 'docker', '--output', 'syft-json'], nativeTemp, {
       timeoutMs: 1_800_000, env: scannerEnvironment(runtime.env),
     });
     if (scanResult.exitCode !== 0) throw new ContractError(`Syft image scan failed${scanResult.stderr ? `: ${scanResult.stderr.trim().slice(0, 500)}` : ''}`);
     await syncFile(nativeTemp);
     const native = await readJsonFile(nativeTemp);
     const nativeDocumentDigest = await digestFile(nativeTemp);
-    const normalized = normalizeSyftImageSbom(native, { component, gitSha: args['git-sha'], image: repository, digest, nativeDigest: nativeDocumentDigest });
+    const normalized = normalizeSyftImageSbom(native, {
+      component, gitSha: args['git-sha'], image: repository, digest,
+      nativeDigest: nativeDocumentDigest, imageId: before.imageId,
+    });
     await writeFile(normalizedTemp, canonicalDocument(normalized), { flag: 'wx', mode: 0o600 });
     await syncFile(normalizedTemp);
 
