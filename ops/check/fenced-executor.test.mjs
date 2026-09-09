@@ -370,7 +370,7 @@ test('registry runtime gate is repeated around mutation and its operation/fence 
     await runFencedAction(args({ 'action-id': 'stage-registry-runtime-gate' }), { deployStateRoot: root,
       now: at('2026-09-09T15:05:00.000Z'), planBuilder: async () => guardedPlan(),
       commandRunner: async () => { commandCalls += 1; return successRunner(); } });
-    assert.equal(gateCalls, 4, 'gate must run after locking, before fencing/execution, and after readback');
+    assert.equal(gateCalls, 5, 'gate must run after locking, before fencing/execution/readback, and after readback');
     assert.equal(commandCalls, 2);
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-registry-runtime-gate' }), { deployStateRoot: root,
       now: at('2026-09-09T15:05:01.000Z'), planBuilder: async () => guardedPlan({ ...binding, operationId: 'op-old', fencingEpoch: 0 }),
@@ -395,6 +395,108 @@ test('registry deletion or drift immediately before the external mutation record
         } }), commandRunner: async () => { commandCalls += 1; return successRunner(); } }), /registry evidence disappeared/);
     assert.equal(gateCalls, 3);
     assert.equal(commandCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a live registry gate that crosses lease expiry blocks normal, replay, recovery, and adoption commands', async (t) => {
+  const binding = { schema: 'booking.registry-runtime-gate/v1', operationId: 'op-1', fencingEpoch: 1,
+    releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest };
+  const guardedPlan = (gate, currentBinding = binding) => ({ ...planBuilder(), registrySupplyChainBinding: currentBinding,
+    registrySupplyChainGate: gate });
+  const expiring = (threshold, before, expired) => {
+    let calls = 0;
+    let crossed = false;
+    return { now: () => new Date(crossed ? expired : before), gate: async () => {
+      calls += 1;
+      if (calls >= threshold) crossed = true;
+      return binding;
+    }, calls: () => calls };
+  };
+
+  await t.test('normal execution', async () => {
+    const { root } = await fixture();
+    const clock = expiring(3, '2026-09-09T15:59:00.000Z', '2026-09-09T16:00:00.000Z');
+    let mutations = 0;
+    try {
+      await assert.rejects(runFencedAction(args({ 'action-id': 'stage-expired-after-live-gate' }), { deployStateRoot: root,
+        now: clock.now, planBuilder: async () => guardedPlan(clock.gate), commandRunner: async () => {
+          mutations += 1; return successRunner();
+        } }), /lease has expired|insufficient remaining time/);
+      assert.equal(clock.calls(), 3);
+      assert.equal(mutations, 0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  for (const mode of ['replay', 'recovery']) await t.test(mode, async () => {
+    const { root, statePath } = await fixture();
+    const steadyGate = async () => binding;
+    try {
+      const receipt = await runFencedAction(args({ 'action-id': `stage-expired-${mode}` }), { deployStateRoot: root,
+        now: at('2026-09-09T15:05:00.000Z'), planBuilder: async () => guardedPlan(steadyGate), commandRunner: successRunner });
+      if (mode === 'recovery') {
+        const path = join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json');
+        const resource = JSON.parse(await readFile(path, 'utf8'));
+        resource.pendingAction = { actionId: `stage-expired-${mode}`, requestDigest: receipt.requestDigest };
+        resource.receiptChainHead = null;
+        await writeFile(path, `${JSON.stringify(resource)}\n`);
+      }
+      const clock = expiring(2, '2026-09-09T15:59:00.000Z', '2026-09-09T16:00:00.000Z');
+      let commands = 0;
+      await assert.rejects(runFencedAction(args({ 'action-id': `stage-expired-${mode}` }), { deployStateRoot: root,
+        now: clock.now, planBuilder: async () => guardedPlan(clock.gate), commandRunner: async () => {
+          commands += 1; return successRunner();
+        } }), /lease has expired|insufficient remaining time/);
+      assert.equal(clock.calls(), 2);
+      assert.equal(commands, 0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  await t.test('takeover adoption', async () => {
+    const { root } = await fixtureFromState(candidateReadyState());
+    const runtimeEnvFile = join(root, '.runtime.env');
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    const singletonPlan = () => ({ executable: '/trusted/singletons', argv: ['transfer'], cwd: '/trusted/release',
+      readback: { executable: '/trusted/singletons', argv: ['readback'], verify: () => ({ exactlyOne: true }) } });
+    const oldArgs = args({ action: 'preprod-transfer-singletons', 'expected-generation': '6', 'resource-id': 'booking-preprod-edge',
+      'action-id': 'singleton-expiry-old' });
+    let mutations = 0;
+    const runner = async (_executable, argv) => { if (argv[0] === 'transfer') mutations += 1; return successRunner(); };
+    try {
+      await runFencedAction(oldArgs, { deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'),
+        planBuilder: singletonPlan, commandRunner: runner });
+      const taken = await runManageDeployState({ action: 'takeover', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+        'approval-id': 'approval-2', 'expected-generation': '6', 'expected-fencing-epoch': '1',
+        'manifest-digest': CANDIDATE.manifestDigest, 'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2',
+        'lease-duration-ms': '1800000' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+        nowMs: Date.parse('2026-09-09T16:01:00.000Z') });
+      const currentBinding = { ...binding, fencingEpoch: 2 };
+      const clock = expiring(2, '2026-09-09T16:30:00.000Z', '2026-09-09T16:31:00.000Z');
+      const gate = async () => { await clock.gate(); return currentBinding; };
+      await assert.rejects(runFencedAction({ ...oldArgs, 'approval-id': 'approval-2',
+        'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'lease-id': 'lease-2',
+        'holder-id': 'owner-2', 'action-id': 'singleton-expiry-adopt' }, { deployStateRoot: root, now: clock.now,
+        planBuilder: async () => guardedPlan(gate, currentBinding), commandRunner: runner }),
+      /lease has expired|insufficient remaining time/);
+      assert.equal(clock.calls(), 2);
+      assert.equal(mutations, 1, 'only the original holder mutation may have executed');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+test('external command budgets are derived from the post-gate clock rather than firstNow', async () => {
+  const { root } = await fixture();
+  const binding = { schema: 'booking.registry-runtime-gate/v1', operationId: 'op-1', fencingEpoch: 1,
+    releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest };
+  let clockReads = 0;
+  const now = () => new Date(clockReads++ === 0 ? '2026-09-09T15:00:00.000Z' : '2026-09-09T15:59:00.000Z');
+  const timeouts = [];
+  try {
+    await runFencedAction(args({ 'action-id': 'stage-post-gate-budget' }), { deployStateRoot: root, now,
+      planBuilder: async () => ({ ...planBuilder(), registrySupplyChainBinding: binding,
+        registrySupplyChainGate: async () => binding }), commandRunner: async (_executable, _argv, options) => {
+        timeouts.push(options.timeoutMs); return successRunner();
+      } });
+    assert.deepEqual(timeouts, [59_000, 59_500]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

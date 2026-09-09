@@ -1349,27 +1349,40 @@ function assertResult(result, exitCode) {
   if (!result || result.exitCode !== 0 || result.signal || result.overflow) throw new ContractError('external action failed or exceeded its bounded output', exitCode);
 }
 
-async function verifyCurrentExternalState(plan, context) {
+async function passRegistryGate(plan, revalidateLease, reserveMs = 500) {
   if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
+  return revalidateLease(reserveMs);
+}
+
+async function verifyCurrentExternalState(plan, context) {
+  let leaseWindow = await passRegistryGate(plan, context.revalidateLease);
   if (!plan.readback) throw new ContractError('recorded action has no independent replay readback', EXIT.SINGLETON);
   let preflightVerification = null;
   if (plan.preflight) {
     const preflight = await context.runner(plan.preflight.executable, plan.preflight.argv, {
-      cwd: plan.cwd, env: context.env, timeoutMs: context.timeoutMs,
+      cwd: plan.cwd, env: context.env, timeoutMs: leaseWindow.timeoutMs,
     });
     assertResult(preflight, EXIT.IDENTITY);
     preflightVerification = plan.preflight.verify(preflight.stdout);
   }
   let preflightArtifactEvidence = null;
   const replayPreflightArtifacts = plan.replayPreflightArtifacts || plan.preflightArtifacts;
-  if (replayPreflightArtifacts) preflightArtifactEvidence = await replayPreflightArtifacts(context);
+  if (replayPreflightArtifacts) {
+    leaseWindow = context.revalidateLease();
+    preflightArtifactEvidence = await replayPreflightArtifacts({ ...context, timeoutMs: leaseWindow.timeoutMs });
+  }
+  leaseWindow = await passRegistryGate(plan, context.revalidateLease);
   const readback = await context.runner(plan.readback.executable, plan.readback.argv, {
-    cwd: plan.cwd, env: context.env, timeoutMs: context.timeoutMs,
+    cwd: plan.cwd, env: context.env, timeoutMs: leaseWindow.timeoutMs,
   });
   assertResult(readback, EXIT.IDENTITY);
   const verification = { ...(preflightVerification ? { preflight: preflightVerification } : {}), runtime: plan.readback.verify(readback.stdout) };
   const artifactVerifier = plan.replayVerifyArtifacts || plan.verifyArtifacts;
-  if (artifactVerifier) verification.artifacts = await artifactVerifier({ ...context, preflightEvidence: preflightArtifactEvidence });
+  if (artifactVerifier) {
+    leaseWindow = await passRegistryGate(plan, context.revalidateLease);
+    verification.artifacts = await artifactVerifier({ ...context, timeoutMs: leaseWindow.timeoutMs,
+      preflightEvidence: preflightArtifactEvidence });
+  }
   return { verification, readbackOutputDigest: sha256(readback.stdout) };
 }
 
@@ -1382,6 +1395,16 @@ export async function runFencedAction(args, runtime = {}) {
   const statePath = await canonicalStatePath({ environment: args.environment, project: args.project, deployStateRoot: runtime.deployStateRoot });
   return withDeployStateLock(statePath, async (state) => {
     const { resourceIds, releaseIdentity } = assertStateBinding(state, args, spec, firstNow.getTime());
+    const revalidateLease = (reserveMs = 500) => {
+      const observedAt = now();
+      if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
+        throw new ContractError('trusted runtime clock is invalid', EXIT.SWITCH);
+      }
+      assertStateBinding(state, args, spec, observedAt.getTime());
+      const timeoutMs = Date.parse(state.lease.expiresAt) - observedAt.getTime() - reserveMs;
+      if (timeoutMs < 1) throw new ContractError('lease has insufficient remaining time for external action', EXIT.SINGLETON);
+      return { observedAt, timeoutMs };
+    };
     let rootedWebhookReplay = false;
     if (args.action === 'preprod-set-webhook' && state.phase === 'OBSERVING') {
       const rootedDigest = state.evidence.webhookReceiptDigest;
@@ -1407,7 +1430,7 @@ export async function runFencedAction(args, runtime = {}) {
     const locks = await acquireResourceLocks(statePath, resourceIds);
     try {
       const runner = runtime.commandRunner || defaultCommandRunner;
-      if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
+      await passRegistryGate(plan, revalidateLease);
       if (priorReceipt) {
         if (spec.kind.includes('ingress') && locks.length === 1) {
           const priorEpochResource = await inspectLockedResourceState(locks[0], {
@@ -1423,39 +1446,37 @@ export async function runFencedAction(args, runtime = {}) {
             }
             if (adoption.mode === 'prior-pending-proven-applied-read-only') {
               const priorIdentity = priorPendingIngressPlan(state, args, releaseIdentity, priorEpochResource, plan, resourceIds);
+              let leaseWindow = await passRegistryGate(plan, revalidateLease);
               const priorReadback = await runner(plan.readback.executable, plan.readback.argv, {
                 cwd: plan.cwd, env: plan.env || runtime.env || process.env,
-                timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500),
+                timeoutMs: leaseWindow.timeoutMs,
               });
               assertResult(priorReadback, EXIT.INGRESS);
               verifyPriorPendingIngress(priorReadback, state, args, releaseIdentity, priorEpochResource, priorIdentity);
               const replayArtifacts = plan.replayVerifyArtifacts || plan.verifyArtifacts;
               if (replayArtifacts) {
                 const replayPreflight = plan.replayPreflightArtifacts || plan.preflightArtifacts;
+                leaseWindow = revalidateLease();
                 const preflightEvidence = replayPreflight ? await replayPreflight({ runner,
-                  env: plan.env || runtime.env || process.env,
-                  timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath }) : null;
-                await replayArtifacts({ runner, env: plan.env || runtime.env || process.env,
-                  timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath,
+                  env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs, statePath }) : null;
+                leaseWindow = revalidateLease();
+                await replayArtifacts({ runner, env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs, statePath,
                   preflightEvidence });
               }
             } else {
               await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-                timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
+                revalidateLease, statePath });
             }
             if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
-            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-            const recoveredAt = now();
-            if (!(recoveredAt instanceof Date) || recoveredAt.getTime() >= Date.parse(state.lease.expiresAt)) {
-              throw new ContractError('lease expired before ingress completion recovery', EXIT.SINGLETON);
-            }
+            await passRegistryGate(plan, revalidateLease);
+            const mutationAt = revalidateLease().observedAt;
             await adoptPriorEpochPendingAction(locks[0], {
               fencingEpoch: priorEpochResource.highestAcceptedFencingEpoch,
               pendingAction: structuredClone(priorEpochResource.pendingAction),
               receiptChainHead: priorEpochResource.receiptChainHead,
             }, { environment: state.environment, project: state.project, resourceId: priorEpochResource.resourceId,
               fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
-              now: recoveredAt.toISOString() }, priorReceipt.receiptDigest);
+              now: mutationAt.toISOString() }, priorReceipt.receiptDigest);
             return priorReceipt;
           }
         }
@@ -1478,11 +1499,9 @@ export async function runFencedAction(args, runtime = {}) {
           resourceStates.push(resourceState);
         }
         const replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-          timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
+          revalidateLease, statePath });
         if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
-        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-        const recoveredAt = now();
-        if (!(recoveredAt instanceof Date) || recoveredAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before replay readback completed', EXIT.SINGLETON);
+        const { observedAt: recoveredAt } = await passRegistryGate(plan, revalidateLease);
         if (resourceStates.some((item) => item.pendingAction !== null)) {
           const recoveryBody = { schema: 'booking.external-action-recovery/v1', environment: state.environment, project: state.project,
             action: args.action, actionId: args['action-id'], operationId: state.operationId, fencingEpoch: state.fencingEpoch,
@@ -1490,10 +1509,14 @@ export async function runFencedAction(args, runtime = {}) {
             recoveredAt: recoveredAt.toISOString(), readbackOutputDigest: replay.readbackOutputDigest, verification: replay.verification,
             resources: resourceStates.map((item) => ({ resourceId: item.resourceId, previousReceiptDigest: item.receiptChainHead, wasPending: item.pendingAction !== null })) };
           const recoveryReceipt = { ...recoveryBody, receiptDigest: sha256(recoveryBody) };
+          revalidateLease();
           await writeExecutorRecoveryReceipt(statePath, recoveryReceipt);
-          for (const lock of locks) await recoverResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
-            fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: recoveredAt.toISOString() },
-          [...acceptedPriorReceiptDigests], recoveryReceipt.receiptDigest);
+          for (const lock of locks) {
+            const mutationAt = revalidateLease().observedAt;
+            await recoverResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
+              fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() },
+            [...acceptedPriorReceiptDigests], recoveryReceipt.receiptDigest);
+          }
           return recoveryReceipt;
         }
         return priorReceipt;
@@ -1507,21 +1530,21 @@ export async function runFencedAction(args, runtime = {}) {
             throw new ContractError('prior pending ingress resource identity cannot be recovered', EXIT.INGRESS);
           }
           const runner = runtime.commandRunner || defaultCommandRunner;
-          const timeoutMs = Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500);
           const priorIdentity = priorPendingIngressPlan(state, args, releaseIdentity, priorResource, plan, resourceIds);
           let priorProof = null;
           let priorProofOutput = null;
           let notApplied = null;
+          let leaseWindow = await passRegistryGate(plan, revalidateLease);
           const priorReadback = await runner(plan.readback.executable, plan.readback.argv, {
-            cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs,
+            cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs,
           });
           if (priorReadback?.exitCode === 0 && !priorReadback.signal && !priorReadback.overflow) {
             priorProof = verifyPriorPendingIngress(priorReadback, state, args, releaseIdentity, priorResource, priorIdentity);
             priorProofOutput = priorReadback.stdout;
           } else {
-            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
             const recovered = await runner(plan.executable, priorIdentity.recoveryArgv, {
-              cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs,
+              cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs,
             });
             assertResult(recovered, EXIT.INGRESS);
             let recoveryValue;
@@ -1559,10 +1582,13 @@ export async function runFencedAction(args, runtime = {}) {
             }
           }
           let preflightArtifactEvidence = null;
-          if (plan.preflightArtifacts) preflightArtifactEvidence = await plan.preflightArtifacts({
-            runner, env: plan.env || runtime.env || process.env, timeoutMs, statePath,
-          });
+          if (plan.preflightArtifacts) {
+            leaseWindow = revalidateLease();
+            preflightArtifactEvidence = await plan.preflightArtifacts({ runner,
+              env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs, statePath });
+          }
           if (notApplied) {
+            const { observedAt: supersededAt } = await passRegistryGate(plan, revalidateLease);
             await supersedePriorEpochPendingAction(locks[0], {
               fencingEpoch: priorResource.highestAcceptedFencingEpoch,
               pendingAction: structuredClone(priorResource.pendingAction), receiptChainHead: priorResource.receiptChainHead,
@@ -1570,28 +1596,30 @@ export async function runFencedAction(args, runtime = {}) {
               fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
               action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
               leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
-              commandDigest: requestBody.commandDigest, now: firstNow.toISOString() });
+              commandDigest: requestBody.commandDigest, now: supersededAt.toISOString() });
           }
           let execution = null;
           let executionVerification = null;
           let readback = null;
           let verification = priorProof;
           if (notApplied) {
-            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-            execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
+            leaseWindow = await passRegistryGate(plan, revalidateLease, 1_000);
+            execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
+              timeoutMs: leaseWindow.timeoutMs });
             assertResult(execution, EXIT.INGRESS);
             executionVerification = plan.readback.verify(execution.stdout);
-            readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
+            readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd,
+              env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
             assertResult(readback, EXIT.INGRESS);
             verification = plan.readback.verify(readback.stdout);
           }
           const artifactVerifier = plan.verifyArtifacts;
-          const artifactVerification = artifactVerifier ? await artifactVerifier({ runner,
-            env: plan.env || runtime.env || process.env, timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence }) : null;
+          leaseWindow = await passRegistryGate(plan, revalidateLease);
+          const artifactVerification = artifactVerifier ? await artifactVerifier({ runner, env: plan.env || runtime.env || process.env,
+            timeoutMs: leaseWindow.timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence }) : null;
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
-          if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-          const completedAt = now();
-          if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before pending ingress recovery completed', EXIT.SINGLETON);
+          const { observedAt: completedAt } = await passRegistryGate(plan, revalidateLease);
           const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
             startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
             executionOutputDigest: sha256(execution?.stdout || ''),
@@ -1605,17 +1633,20 @@ export async function runFencedAction(args, runtime = {}) {
             resources: [{ resourceId: priorResource.resourceId, highestAcceptedFencingEpoch: state.fencingEpoch,
               previousReceiptDigest: priorResource.receiptChainHead }] };
           const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+          revalidateLease();
           await writeExecutorReceipt(statePath, receipt);
           if (notApplied) {
+            const mutationAt = revalidateLease().observedAt;
             await completeResourceAction(locks[0], { environment: state.environment, project: state.project,
               resourceId: priorResource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
-              actionId: args['action-id'], requestDigest, now: completedAt.toISOString() }, receipt.receiptDigest);
+              actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
           } else {
+            const mutationAt = revalidateLease().observedAt;
             await adoptPriorEpochPendingAction(locks[0], { fencingEpoch: priorResource.highestAcceptedFencingEpoch,
               pendingAction: structuredClone(priorResource.pendingAction),
               receiptChainHead: priorResource.receiptChainHead }, { environment: state.environment, project: state.project,
               resourceId: priorResource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
-              manifestDigest: releaseIdentity.manifestDigest, now: completedAt.toISOString() }, receipt.receiptDigest);
+              manifestDigest: releaseIdentity.manifestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
           }
           return receipt;
         }
@@ -1634,36 +1665,39 @@ export async function runFencedAction(args, runtime = {}) {
         ? await takeoverAdoption(statePath, state, args, releaseIdentity, resourceIds, resourceStatesBeforeAction)
         : null;
       if (adoption) {
+        await passRegistryGate(plan, revalidateLease);
         const accepted = [];
-        for (const lock of locks) accepted.push(await acceptResourceEpoch(lock, {
-          environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
-          operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest, allowedPreviousManifestDigest,
-          action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
-          leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
-          commandDigest: requestBody.commandDigest, now: firstNow.toISOString(),
-        }));
+        for (const lock of locks) {
+          const mutationAt = revalidateLease().observedAt;
+          accepted.push(await acceptResourceEpoch(lock, {
+            environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
+            operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest, allowedPreviousManifestDigest,
+            action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+            leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+            commandDigest: requestBody.commandDigest, now: mutationAt.toISOString(),
+          }));
+        }
         let replay;
         try {
           replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-            timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath,
+            revalidateLease, statePath,
             adoptionReceipt: adoption.receipt });
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
-          if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
+          await passRegistryGate(plan, revalidateLease);
         } catch (error) {
-          const failedAt = now();
+          let failedAt;
+          try { failedAt = revalidateLease(0).observedAt; } catch { throw error; }
           const failureBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
-            startedAt: firstNow.toISOString(), completedAt: failedAt instanceof Date && Number.isFinite(failedAt.getTime()) ? failedAt.toISOString() : firstNow.toISOString(),
+            startedAt: firstNow.toISOString(), completedAt: failedAt.toISOString(),
             status: 'fail', executionOutputDigest: sha256(''), readbackOutputDigest: sha256(''),
             verification: { error: error instanceof ContractError ? error.message : 'takeover adoption readback failed' },
             resources: accepted.map((item) => ({ resourceId: item.resourceId, highestAcceptedFencingEpoch: item.highestAcceptedFencingEpoch,
               previousReceiptDigest: item.receiptChainHead })) };
+          revalidateLease(0);
           await writeExecutorReceipt(statePath, { ...failureBody, receiptDigest: sha256(failureBody) });
           throw error;
         }
-        const completedAt = now();
-        if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) {
-          throw new ContractError('lease expired before takeover adoption readback completed', EXIT.SINGLETON);
-        }
+        const completedAt = revalidateLease().observedAt;
         const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
           startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass', executionOutputDigest: sha256(''),
           readbackOutputDigest: replay.readbackOutputDigest,
@@ -1672,67 +1706,78 @@ export async function runFencedAction(args, runtime = {}) {
           resources: accepted.map((item) => ({ resourceId: item.resourceId, highestAcceptedFencingEpoch: item.highestAcceptedFencingEpoch,
             previousReceiptDigest: item.receiptChainHead })) };
         const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+        revalidateLease();
         await writeExecutorReceipt(statePath, receipt);
-        for (const lock of locks) await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
-          fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest,
-          now: completedAt.toISOString() }, receipt.receiptDigest);
+        for (const lock of locks) {
+          const mutationAt = revalidateLease().observedAt;
+          await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
+            fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest,
+            now: mutationAt.toISOString() }, receipt.receiptDigest);
+        }
         return receipt;
       }
       let preflightArtifactEvidence = null;
       let preflightVerification = null;
       if (plan.preflight) {
+        const leaseWindow = await passRegistryGate(plan, revalidateLease, 1_000);
         const preflight = await runner(plan.preflight.executable, plan.preflight.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
-          timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - firstNow.getTime() - 1_000) });
+          timeoutMs: leaseWindow.timeoutMs });
         assertResult(preflight, EXIT.IDENTITY);
         preflightVerification = plan.preflight.verify(preflight.stdout);
       }
       if (plan.preflightArtifacts) {
+        const leaseWindow = revalidateLease(1_000);
         preflightArtifactEvidence = await plan.preflightArtifacts({ runner, env: plan.env || runtime.env || process.env,
-          timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - firstNow.getTime() - 1_000) });
+          timeoutMs: leaseWindow.timeoutMs });
       }
-      if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
+      await passRegistryGate(plan, revalidateLease);
       const accepted = [];
-      for (const lock of locks) accepted.push(await acceptResourceEpoch(lock, {
-        environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
-        operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest, allowedPreviousManifestDigest,
-        action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
-        leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
-        commandDigest: requestBody.commandDigest, now: firstNow.toISOString(),
-      }));
+      for (const lock of locks) {
+        const mutationAt = revalidateLease().observedAt;
+        accepted.push(await acceptResourceEpoch(lock, {
+          environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
+          operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest, allowedPreviousManifestDigest,
+          action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+          leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+          commandDigest: requestBody.commandDigest, now: mutationAt.toISOString(),
+        }));
+      }
       let execution;
       let readback;
       let verification;
       let completedAt;
       try {
-        const remaining = Date.parse(state.lease.expiresAt) - firstNow.getTime();
-        if (remaining < 2_000) throw new ContractError('lease has insufficient remaining time for external action', EXIT.SINGLETON);
-        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-        execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs: remaining - 1_000 });
+        let leaseWindow = await passRegistryGate(plan, revalidateLease, 1_000);
+        execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
+          timeoutMs: leaseWindow.timeoutMs });
         assertResult(execution, spec.kind === 'compose-migrate' || spec.kind === 'compose-baseline' ? EXIT.DATABASE : spec.kind.includes('webhook') || spec.kind.includes('ingress') ? EXIT.INGRESS : EXIT.SWITCH);
         const executionVerification = plan.verifyExecution ? plan.verifyExecution(execution.stdout) : null;
         readback = execution;
         if (plan.readback) {
-          readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500) });
+          leaseWindow = await passRegistryGate(plan, revalidateLease);
+          readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd,
+            env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
           assertResult(readback, spec.kind === 'compose-migrate' ? EXIT.DATABASE : spec.kind.includes('ingress') ? EXIT.INGRESS : EXIT.READINESS);
         }
         verification = { ...(preflightVerification ? { preflight: preflightVerification } : {}),
           ...(executionVerification ? { execution: executionVerification } : {}), runtime: (plan.readback?.verify || plan.verify)(readback.stdout) };
         if (plan.verifyArtifacts) {
+          leaseWindow = await passRegistryGate(plan, revalidateLease);
           verification.artifacts = await plan.verifyArtifacts({ runner, env: plan.env || runtime.env || process.env,
-            timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath, preflightEvidence: preflightArtifactEvidence });
+            timeoutMs: leaseWindow.timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence });
         }
         if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
-        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
-        completedAt = now();
-        if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before external action readback completed', EXIT.SINGLETON);
+        completedAt = (await passRegistryGate(plan, revalidateLease)).observedAt;
       } catch (error) {
-        const failedAt = now();
+        let failedAt;
+        try { failedAt = revalidateLease(0).observedAt; } catch { throw error; }
         const failureBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest, startedAt: firstNow.toISOString(),
-          completedAt: failedAt instanceof Date && Number.isFinite(failedAt.getTime()) ? failedAt.toISOString() : firstNow.toISOString(), status: 'fail',
+          completedAt: failedAt.toISOString(), status: 'fail',
           executionOutputDigest: sha256(execution?.stdout || ''), readbackOutputDigest: sha256(readback?.stdout || ''),
           verification: { error: error instanceof ContractError ? error.message : 'external action failed' },
           resources: accepted.map((item) => ({ resourceId: item.resourceId, highestAcceptedFencingEpoch: item.highestAcceptedFencingEpoch, previousReceiptDigest: item.receiptChainHead })) };
         const failureReceipt = { ...failureBody, receiptDigest: sha256(failureBody) };
+        revalidateLease(0);
         await writeExecutorReceipt(statePath, failureReceipt);
         throw error;
       }
@@ -1740,9 +1785,14 @@ export async function runFencedAction(args, runtime = {}) {
         status: 'pass', executionOutputDigest: sha256(execution.stdout), readbackOutputDigest: sha256(readback.stdout), verification,
         resources: accepted.map((item) => ({ resourceId: item.resourceId, highestAcceptedFencingEpoch: item.highestAcceptedFencingEpoch, previousReceiptDigest: item.receiptChainHead })) };
       const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+      revalidateLease();
       await writeExecutorReceipt(statePath, receipt);
-      for (const lock of locks) await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
-        fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: completedAt.toISOString() }, receipt.receiptDigest);
+      for (const lock of locks) {
+        const mutationAt = revalidateLease().observedAt;
+        await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
+          fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() },
+        receipt.receiptDigest);
+      }
       return receipt;
     } finally { await releaseResourceLocks(locks); }
   });
