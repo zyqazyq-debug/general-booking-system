@@ -4,10 +4,11 @@
   "title": "Booking registry signature and attestation pull-back receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "component", "releaseId", "gitSha", "manifestDigest", "image", "evidence", "signer", "verification", "verifiedAt"],
+  "required": ["schema", "component", "registryTransport", "releaseId", "gitSha", "manifestDigest", "image", "evidence", "signer", "verification", "verifiedAt"],
   "properties": {
     "schema": { "const": "booking.registry-attestation-receipt/v1" },
     "component": { "enum": ["backend", "gateway"] },
+    "registryTransport": { "enum": ["https", "loopback-http"] },
     "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
     "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "manifestDigest": { "$ref": "#/$defs/digest" },
@@ -60,6 +61,12 @@
     },
     "verifiedAt": { "type": "string", "format": "date-time" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "registryTransport": { "type": "string", "const": "loopback-http" } }, "required": ["registryTransport"] },
+      "then": { "properties": { "image": { "type": "object", "properties": { "name": { "type": "string", "pattern": "^127\\.0\\.0\\.1:15001/" } } } } }
+    }
+  ],
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "digestSet": {
@@ -82,18 +89,18 @@
     "sbomAttestation": {
       "allOf": [
         { "$ref": "#/$defs/baseAttestation" },
-        { "properties": {
-          "kind": { "const": "image-sbom" },
-          "predicateType": { "const": "https://happybooking.uk/attestations/image-sbom/v2" }
+        { "type": "object", "properties": {
+          "kind": { "type": "string", "const": "image-sbom" },
+          "predicateType": { "type": "string", "const": "https://happybooking.uk/attestations/image-sbom/v2" }
         } }
       ]
     },
     "provenanceAttestation": {
       "allOf": [
         { "$ref": "#/$defs/baseAttestation" },
-        { "properties": {
-          "kind": { "const": "local-provenance" },
-          "predicateType": { "const": "https://happybooking.uk/attestations/local-provenance/v1" }
+        { "type": "object", "properties": {
+          "kind": { "type": "string", "const": "local-provenance" },
+          "predicateType": { "type": "string", "const": "https://happybooking.uk/attestations/local-provenance/v1" }
         } }
       ]
     }

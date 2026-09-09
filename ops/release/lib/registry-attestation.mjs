@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { ContractError, canonicalJson, sha256 } from './contracts.mjs';
 
 export const COSIGN_VERSION = '3.1.2';
+export const LOOPBACK_HTTP_REGISTRY = '127.0.0.1:15001';
 export const ATTESTATION_TYPES = Object.freeze({
   'image-sbom': 'https://happybooking.uk/attestations/image-sbom/v2',
   'local-provenance': 'https://happybooking.uk/attestations/local-provenance/v1',
@@ -141,12 +142,16 @@ export function verifyImageSignatureOutput(stdout, { image, imageDigest, annotat
 }
 
 export function validateRegistryAttestationReceipt(value, expected = {}) {
-  exactObject(value, ['schema', 'component', 'releaseId', 'gitSha', 'manifestDigest', 'image', 'evidence', 'signer', 'verification', 'verifiedAt'], 'registry attestation receipt');
+  exactObject(value, ['schema', 'component', 'registryTransport', 'releaseId', 'gitSha', 'manifestDigest', 'image', 'evidence', 'signer', 'verification', 'verifiedAt'], 'registry attestation receipt');
   if (value.schema !== 'booking.registry-attestation-receipt/v1' || !['backend', 'gateway'].includes(value.component) ||
       !RELEASE.test(value.releaseId || '') || !SHA.test(value.gitSha || '')) throw new ContractError('registry attestation receipt identity is invalid');
+  if (!['https', 'loopback-http'].includes(value.registryTransport)) throw new ContractError('receipt registry transport is invalid');
   digest(value.manifestDigest, 'receipt manifest digest');
   exactObject(value.image, ['name', 'digest'], 'receipt image');
   if (typeof value.image.name !== 'string' || value.image.name.length === 0 || value.image.name.includes('@')) throw new ContractError('receipt image repository is invalid');
+  if (value.registryTransport === 'loopback-http' && !value.image.name.startsWith(`${LOOPBACK_HTTP_REGISTRY}/`)) {
+    throw new ContractError('receipt loopback HTTP transport is not bound to the approved registry');
+  }
   digest(value.image.digest, 'receipt image digest');
   exactObject(value.evidence, ['sbomDigest', 'provenanceDigest'], 'receipt evidence');
   digest(value.evidence.sbomDigest, 'receipt SBOM digest');
@@ -168,7 +173,7 @@ export function validateRegistryAttestationReceipt(value, expected = {}) {
   if (typeof value.verifiedAt !== 'string' || !Number.isFinite(Date.parse(value.verifiedAt)) ||
       new Date(value.verifiedAt).toISOString() !== value.verifiedAt) throw new ContractError('receipt verifiedAt is invalid');
   for (const [path, observed] of Object.entries({
-    component: value.component, releaseId: value.releaseId, gitSha: value.gitSha, manifestDigest: value.manifestDigest,
+    component: value.component, registryTransport: value.registryTransport, releaseId: value.releaseId, gitSha: value.gitSha, manifestDigest: value.manifestDigest,
     image: value.image.name, imageDigest: value.image.digest, sbomDigest: value.evidence.sbomDigest,
     provenanceDigest: value.evidence.provenanceDigest, publicKeyDigest: value.signer.publicKeyDigest,
   })) {

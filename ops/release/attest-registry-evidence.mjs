@@ -11,6 +11,7 @@ import { ContractError, gateResult, parseArgs, readJsonFile, sha256, validateRel
 import {
   ATTESTATION_TYPES,
   COSIGN_VERSION,
+  LOOPBACK_HTTP_REGISTRY,
   evidencePredicate,
   validateRegistryAttestationReceipt,
   verifyAttestationOutput,
@@ -19,8 +20,9 @@ import {
 
 const ALLOWED_ARGS = new Set([
   'execute', 'component', 'manifest', 'manifest-digest', 'native-sbom', 'sbom', 'provenance',
-  'private-key', 'public-key', 'public-key-digest', 'receipt',
+  'private-key', 'public-key', 'public-key-digest', 'registry-transport', 'receipt',
 ]);
+const REQUIRED_ARGS = [...ALLOWED_ARGS].filter((key) => key !== 'registry-transport');
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const COSIGN_BINARY_DIGESTS = Object.freeze({
   x64: 'sha256:f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf',
@@ -136,13 +138,28 @@ function annotationArgs(annotations) {
 
 function validateArguments(args) {
   for (const key of Object.keys(args)) if (!ALLOWED_ARGS.has(key)) throw new ContractError(`unsupported registry attestation argument: --${key}`);
-  for (const key of ALLOWED_ARGS) if (!args[key]) throw new ContractError(`--${key} is required`);
+  for (const key of REQUIRED_ARGS) if (!args[key]) throw new ContractError(`--${key} is required`);
   if (args.execute !== 'true' || !['backend', 'gateway'].includes(args.component)) throw new ContractError('--execute true and a valid --component are required');
   if (!SHA256_DIGEST.test(args['public-key-digest'])) throw new ContractError('--public-key-digest must be a SHA-256 digest');
+  if (args['registry-transport'] && !['https', 'loopback-http'].includes(args['registry-transport'])) {
+    throw new ContractError('--registry-transport must be https or loopback-http');
+  }
   for (const key of ['manifest', 'native-sbom', 'sbom', 'provenance', 'private-key', 'public-key', 'receipt']) {
     if (resolve(args[key]) !== args[key]) throw new ContractError(`--${key} must be an absolute path`);
   }
   return args;
+}
+
+function registryTransport(image, requested) {
+  const transport = requested || 'https';
+  if (transport === 'loopback-http' && !image.startsWith(`${LOOPBACK_HTTP_REGISTRY}/`)) {
+    throw new ContractError(`loopback HTTP registry transport is restricted to ${LOOPBACK_HTTP_REGISTRY}`);
+  }
+  return transport;
+}
+
+function registryTransportArgs(binding) {
+  return binding.registryTransport === 'loopback-http' ? ['--allow-insecure-registry'] : [];
 }
 
 async function verifyRegistry(binding, runtime) {
@@ -151,7 +168,7 @@ async function verifyRegistry(binding, runtime) {
   const imageRef = `${binding.image}@${binding.imageDigest}`;
   const annotations = annotationsFor(binding);
   const signature = assertSuccess(await runner(binding.cosign, [
-    'verify', '--insecure-ignore-tlog', '--key', binding.publicKey, ...annotationArgs(annotations), imageRef,
+    'verify', ...registryTransportArgs(binding), '--insecure-ignore-tlog', '--key', binding.publicKey, ...annotationArgs(annotations), imageRef,
   ], options), 'Cosign image signature pull-back verification');
   const imageSignaturePayloadDigests = verifyImageSignatureOutput(signature.stdout, {
     image: binding.image, imageDigest: binding.imageDigest, annotations,
@@ -159,7 +176,7 @@ async function verifyRegistry(binding, runtime) {
   const attestations = [];
   for (const item of binding.predicates) {
     const verified = assertSuccess(await runner(binding.cosign, [
-      'verify-attestation', '--insecure-ignore-tlog', '--key', binding.publicKey, '--type', item.predicateType, imageRef,
+      'verify-attestation', ...registryTransportArgs(binding), '--insecure-ignore-tlog', '--key', binding.publicKey, '--type', item.predicateType, imageRef,
     ], options), `Cosign ${item.kind} pull-back verification`);
     attestations.push({
       kind: item.kind,
@@ -182,12 +199,12 @@ async function attachRegistry(binding, runtime) {
   const options = { timeoutMs: 300_000, env: cleanCosignEnvironment(environment, { signing: true }) };
   const imageRef = `${binding.image}@${binding.imageDigest}`;
   assertSuccess(await runner(binding.cosign, [
-    'sign', '--yes', '--tlog-upload=false', '--key', binding.privateKey,
+    'sign', ...registryTransportArgs(binding), '--yes', '--tlog-upload=false', '--key', binding.privateKey,
     ...annotationArgs(annotationsFor(binding)), imageRef,
   ], options), 'Cosign immutable image signing');
   for (const item of binding.predicates) {
     assertSuccess(await runner(binding.cosign, [
-      'attest', '--yes', '--tlog-upload=false', '--key', binding.privateKey,
+      'attest', ...registryTransportArgs(binding), '--yes', '--tlog-upload=false', '--key', binding.privateKey,
       '--type', item.predicateType, '--predicate', item.path, imageRef,
     ], options), `Cosign ${item.kind} registry attachment`);
   }
@@ -220,10 +237,11 @@ async function loadBinding(args, runtime) {
     component: args.component, releaseId: manifest.releaseId, gitSha: manifest.source.gitSha,
     manifestDigest, image: artifact.image, imageDigest: artifact.digest,
   };
+  const transport = registryTransport(artifact.image, args['registry-transport']);
   const publicKeyDigest = await digestFile(publicKey);
   if (publicKeyDigest !== args['public-key-digest']) throw new ContractError('Cosign public key digest differs from the approved trust root');
   return {
-    ...common, sbomDigest, provenanceDigest, publicKey,
+    ...common, sbomDigest, provenanceDigest, publicKey, registryTransport: transport,
     publicKeyDigest, cosign: await trustedCosign(runtime),
     predicates: [
       { kind: 'image-sbom', predicateType: ATTESTATION_TYPES['image-sbom'], evidenceDigest: sbomDigest,
@@ -288,7 +306,7 @@ export async function attestRegistryEvidence(args, runtime = {}) {
     await attachRegistry(binding, runtime);
     const verification = await verifyRegistry(binding, runtime);
     const receipt = validateRegistryAttestationReceipt({
-      schema: 'booking.registry-attestation-receipt/v1', component: binding.component,
+      schema: 'booking.registry-attestation-receipt/v1', component: binding.component, registryTransport: binding.registryTransport,
       releaseId: binding.releaseId, gitSha: binding.gitSha, manifestDigest: binding.manifestDigest,
       image: { name: binding.image, digest: binding.imageDigest },
       evidence: { sbomDigest: binding.sbomDigest, provenanceDigest: binding.provenanceDigest },

@@ -17,10 +17,10 @@ const image = 'registry.acme.test/booking-preprod/backend';
 const imageDigest = digest('a');
 const releaseId = 'booking-20260910T010203Z-abcdef123456';
 
-function sbom(nativeDigest) {
+function sbom(nativeDigest, repository = image) {
   return {
     schema: 'booking.image-sbom/v2', component: 'backend',
-    image: { name: image, digest: imageDigest }, source: { gitSha },
+    image: { name: repository, digest: imageDigest }, source: { gitSha },
     scanner: { name: 'syft', version: '1.51.1', schemaVersion: '16.1.10', nativeDigest,
       fileSelection: 'all', fileDigestAlgorithm: 'sha256' },
     packages: [{ name: 'booking-runtime', version: '1.0.0', purl: 'pkg:npm/booking-runtime@1.0.0' }],
@@ -28,11 +28,11 @@ function sbom(nativeDigest) {
   };
 }
 
-function manifest(sbomDigest, provenanceDigest) {
+function manifest(sbomDigest, provenanceDigest, repository = image) {
   return {
     schema: 'booking.release/v2', releaseId, source: { gitSha, treeState: 'clean' },
     artifacts: {
-      backend: { image, digest: imageDigest, sbomDigest, provenanceDigest },
+      backend: { image: repository, digest: imageDigest, sbomDigest, provenanceDigest },
       gateway: { image: 'registry.acme.test/booking-preprod/gateway', digest: digest('2'), sbomDigest: digest('3'), provenanceDigest: digest('4'),
         frontendAssetDigest: digest('5'), routeContractDigest: digest('6'), telegramBotUsername: 'happybooking_preprod_bot', telegramBotDisplayName: 'HappyBooking Preprod' },
       deployment: { composeDigest: digest('7') },
@@ -44,7 +44,7 @@ function manifest(sbomDigest, provenanceDigest) {
   };
 }
 
-async function fixture() {
+async function fixture({ repository = image, registryTransport } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'booking-registry-attestation-'));
   const evidenceRoot = join(root, 'evidence');
   await mkdir(evidenceRoot);
@@ -57,29 +57,29 @@ async function fixture() {
   const receipt = join(evidenceRoot, 'registry-receipt.json');
   await writeFile(nativePath, '{"native":"syft"}\n');
   const nativeDigest = await digestFile(nativePath);
-  const sbomDocument = sbom(nativeDigest);
+  const sbomDocument = sbom(nativeDigest, repository);
   await writeFile(sbomPath, canonicalDocument(sbomDocument));
   const sbomDigest = await digestFile(sbomPath);
-  const provenanceDocument = createLocalProvenance({ component: 'backend', gitSha, image, digest: imageDigest, sbomDigest });
+  const provenanceDocument = createLocalProvenance({ component: 'backend', gitSha, image: repository, digest: imageDigest, sbomDigest });
   await writeFile(provenancePath, canonicalDocument(provenanceDocument));
   const provenanceDigest = await digestFile(provenancePath);
-  const manifestDocument = manifest(sbomDigest, provenanceDigest);
+  const manifestDocument = manifest(sbomDigest, provenanceDigest, repository);
   await writeFile(manifestPath, canonicalDocument(manifestDocument));
   await writeFile(privateKey, 'encrypted-private-key\n');
   await writeFile(publicKey, 'public-key\n');
   await chmod(privateKey, 0o600);
   const publicKeyDigest = await digestFile(publicKey);
   return {
-    root, evidenceRoot, nativePath, sbomPath, provenancePath, manifestPath, privateKey, publicKey, receipt,
+    root, evidenceRoot, nativePath, sbomPath, provenancePath, manifestPath, privateKey, publicKey, receipt, repository,
     manifestDocument, manifestDigest: sha256(manifestDocument), sbomDocument, provenanceDocument, sbomDigest, provenanceDigest,
     args: { execute: 'true', component: 'backend', manifest: manifestPath, 'manifest-digest': sha256(manifestDocument),
       'native-sbom': nativePath, sbom: sbomPath, provenance: provenancePath, 'private-key': privateKey, 'public-key': publicKey,
-      'public-key-digest': publicKeyDigest, receipt },
+      'public-key-digest': publicKeyDigest, ...(registryTransport ? { 'registry-transport': registryTransport } : {}), receipt },
   };
 }
 
 function signaturePayload(annotations, override = {}) {
-  return { critical: { identity: { 'docker-reference': image }, image: { 'docker-manifest-digest': override.imageDigest || imageDigest },
+  return { critical: { identity: { 'docker-reference': override.image || image }, image: { 'docker-manifest-digest': override.imageDigest || imageDigest },
     type: 'cosign container image signature' }, optional: { ...annotations, ...(override.annotations || {}) } };
 }
 
@@ -107,11 +107,16 @@ function mockCosign({ tamperKind = null, signatureOverride = null } = {}) {
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[0] === 'verify') {
+      const imageRef = args.at(-1);
+      const separator = imageRef.lastIndexOf('@sha256:');
+      const repository = imageRef.slice(0, separator);
+      const manifestDigest = imageRef.slice(separator + 1);
       const annotations = {};
       for (let index = 0; index < args.length; index += 1) if (args[index] === '-a') {
         const [key, ...rest] = args[index + 1].split('='); annotations[key] = rest.join('=');
       }
-      return { exitCode: 0, stdout: JSON.stringify([signaturePayload(annotations, signatureOverride || {})]), stderr: '' };
+      return { exitCode: 0, stdout: JSON.stringify([signaturePayload(annotations,
+        { image: repository, imageDigest: manifestDigest, ...(signatureOverride || {}) })]), stderr: '' };
     }
     if (args[0] === 'verify-attestation') {
       const type = args[args.indexOf('--type') + 1];
@@ -119,7 +124,8 @@ function mockCosign({ tamperKind = null, signatureOverride = null } = {}) {
       if (!predicate) return { exitCode: 1, stdout: '', stderr: 'not found' };
       const kind = type === ATTESTATION_TYPES['image-sbom'] ? 'image-sbom' : 'local-provenance';
       if (tamperKind === kind) predicate.releaseId = 'booking-20260910T010204Z-deadbee';
-      return { exitCode: 0, stdout: `${JSON.stringify(envelope(type, predicate))}\n`, stderr: '' };
+      return { exitCode: 0, stdout: `${JSON.stringify(envelope(type, predicate,
+        { image: predicate.image.name, imageDigest: predicate.image.digest }))}\n`, stderr: '' };
     }
     throw new Error(`unexpected Cosign command: ${args.join(' ')}`);
   };
@@ -136,6 +142,7 @@ test('attaches signature and two typed predicates, then independently pulls back
     assert.equal(result.replayed, false);
     assert.equal(validateRegistryAttestationReceipt(result.receipt), result.receipt);
     assert.equal(result.receipt.manifestDigest, f.manifestDigest);
+    assert.equal(result.receipt.registryTransport, 'https');
     assert.equal(result.receipt.evidence.sbomDigest, f.sbomDigest);
     assert.equal(result.receipt.evidence.provenanceDigest, f.provenanceDigest);
     assert.equal(result.receipt.verification.attestations[1].kind, 'local-provenance');
@@ -149,6 +156,7 @@ test('attaches signature and two typed predicates, then independently pulls back
     assert.ok(cosign.calls.find((call) => call.args[0] === 'sign').args.includes(`${image}@${imageDigest}`));
     assert.ok(cosign.calls.filter((call) => ['verify', 'verify-attestation'].includes(call.args[0]))
       .every((call) => call.args.includes('--insecure-ignore-tlog')));
+    assert.ok(cosign.calls.every((call) => !call.args.includes('--allow-insecure-registry')));
     assert.equal(cosign.predicates.get(ATTESTATION_TYPES['local-provenance']).evidence.document.predicateType,
       'urn:booking:attestation:local-provenance:v1');
     assert.deepEqual((await readdir(f.evidenceRoot)).filter((name) => name.includes('.predicate.json')), []);
@@ -215,7 +223,7 @@ test('pure validators reject wrong subjects, malformed base64, predicate type co
       image, imageDigest, annotations: {},
     }), /immutable image digest/);
     const invalidReceipt = {
-      schema: 'booking.registry-attestation-receipt/v1', component: 'backend', releaseId, gitSha,
+      schema: 'booking.registry-attestation-receipt/v1', component: 'backend', registryTransport: 'https', releaseId, gitSha,
       manifestDigest: f.manifestDigest, image: { name: image, digest: imageDigest },
       evidence: { sbomDigest: f.sbomDigest, provenanceDigest: f.provenanceDigest },
       signer: { mode: 'self-managed-key', cosignVersion: COSIGN_VERSION, publicKeyDigest: digest('9') },
@@ -225,6 +233,8 @@ test('pure validators reject wrong subjects, malformed base64, predicate type co
       ], pullBackVerified: true }, verifiedAt: '1',
     };
     assert.throws(() => validateRegistryAttestationReceipt(invalidReceipt), /verifiedAt/);
+    assert.throws(() => validateRegistryAttestationReceipt({ ...invalidReceipt, registryTransport: 'loopback-http',
+      verifiedAt: '2026-09-10T02:03:04.000Z' }), /approved registry/);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -254,5 +264,52 @@ test('library entry rejects an unapproved public key before registry I/O', async
       env: { COSIGN_PASSWORD: 'not-logged' },
     }), /approved trust root/);
     assert.equal(cosign.calls.length, 0);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('explicit loopback HTTP mode is restricted, recorded, replay-bound, and passed to every registry command', async () => {
+  const f = await fixture({ repository: '127.0.0.1:15001/booking-preprod/backend', registryTransport: 'loopback-http' });
+  const cosign = mockCosign();
+  const runtime = { cosignExecutable: '/trusted/cosign', commandRunner: cosign.runner, allowInsecureTestPaths: true,
+    env: { COSIGN_PASSWORD: 'not-logged' }, now: () => new Date('2026-09-10T02:03:04.000Z') };
+  try {
+    const result = await attestRegistryEvidence(f.args, runtime);
+    assert.equal(result.receipt.registryTransport, 'loopback-http');
+    const registryCalls = cosign.calls.filter((call) => call.args[0] !== 'version');
+    assert.equal(registryCalls.length, 6);
+    assert.ok(registryCalls.every((call) => call.args.includes('--allow-insecure-registry')));
+    cosign.calls.length = 0;
+    await assert.rejects(attestRegistryEvidence({ ...f.args, 'registry-transport': 'https' }, {
+      ...runtime, env: {},
+    }), /registryTransport/);
+    assert.deepEqual(cosign.calls.map((call) => call.args[0]), ['version']);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('loopback HTTP mode rejects external hosts, localhost aliases, and every unapproved port before registry I/O', async () => {
+  for (const repository of [
+    'registry.acme.test/booking-preprod/backend',
+    'localhost:15001/booking-preprod/backend',
+    '127.0.0.1:15000/booking-preprod/backend',
+    '127.0.0.1:15001.evil.test/booking-preprod/backend',
+  ]) {
+    const f = await fixture({ repository, registryTransport: 'loopback-http' });
+    const cosign = mockCosign();
+    try {
+      await assert.rejects(attestRegistryEvidence(f.args, { cosignExecutable: '/trusted/cosign', commandRunner: cosign.runner,
+        allowInsecureTestPaths: true, env: { COSIGN_PASSWORD: 'not-logged' } }), /restricted to 127\.0\.0\.1:15001/);
+      assert.equal(cosign.calls.length, 0);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  }
+});
+
+test('loopback registry without explicit transport remains HTTPS and never receives the insecure registry flag', async () => {
+  const f = await fixture({ repository: '127.0.0.1:15001/booking-preprod/backend' });
+  const cosign = mockCosign();
+  try {
+    const result = await attestRegistryEvidence(f.args, { cosignExecutable: '/trusted/cosign', commandRunner: cosign.runner,
+      allowInsecureTestPaths: true, env: { COSIGN_PASSWORD: 'not-logged' } });
+    assert.equal(result.receipt.registryTransport, 'https');
+    assert.ok(cosign.calls.every((call) => !call.args.includes('--allow-insecure-registry')));
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
