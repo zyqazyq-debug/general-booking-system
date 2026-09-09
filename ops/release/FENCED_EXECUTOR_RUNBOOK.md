@@ -197,13 +197,31 @@ ordinary candidates and every non-exact legacy identity still require the full
 OCI label contract. Ingress rollback does not run a Docker image preflight.
 
 Every non-legacy executor invocation also validates three root-controlled
-registry-attestation receipts (`backend`, `gateway`, and `telegram-egress`)
-under `.g4/supply-chain/<releaseId>/<component>/`. Each receipt must bind the
-same release manifest, immutable image digest, normalized image SBOM digest,
-local provenance digest, approved signer identity, and trust root. The egress
-provenance has a third material that binds the actual digest-preserving Debian
-base-image reference selected for the build. Missing or mismatched receipts
-fail closed before Docker mutation and are rechecked on receipt replay.
+registry-attestation evidence sets (`backend`, `gateway`, and
+`telegram-egress`) under `.g4/supply-chain/<releaseId>/<component>/`. Each set
+contains the canonical normalized SBOM, canonical local provenance, and its
+immutable receipt. The executor derives these paths from the finalized release
+ID; receipt digests do not enter the release manifest, so there is no circular
+manifest/receipt identity.
+
+Receipt parsing is only the first check. The fixed `/usr/local/bin/cosign`
+3.1.2 binary performs a new signature and two-attestation pull-back for all
+three images before planning, after the resource locks are held, immediately
+before a mutation, and after readback before a pass receipt is published. Live
+subjects, annotations, predicates and verification digests must equal both the
+manifest/evidence and the immutable receipt. The only insecure transport flag
+remains `--allow-insecure-registry` for exact authority
+`127.0.0.1:15001`; verification remains offline-key mode with no ambient
+`COSIGN_*` redirect settings.
+
+The approved signer digest comes only from the independently provisioned,
+root-owned `/etc/happybooking/trust/cosign-preprod.pub.sha256` anchor and must
+match the bytes of `cosign-preprod.pub`. Three receipts carrying the same
+unapproved value are rejected. The gate result includes the current operation
+ID and fencing epoch and is included in the fenced command identity. Missing
+local evidence, missing registry objects, altered trust files, stale operation
+or fence identity, or any pull-back drift fails closed before the action can
+advance.
 
 Every external milestone is selected from the canonical executor receipt store:
 expand requires baseline (for the exact legacy bootstrap) plus migration;

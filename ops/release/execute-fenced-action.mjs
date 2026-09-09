@@ -12,7 +12,7 @@ import { canonicalStatePath, withDeployStateLock } from './lib/deploy-state-stor
 import { acceptResourceEpoch, acquireResourceLocks, adoptPriorEpochPendingAction, completeResourceAction, inspectLockedResourceState, readCanonicalExecutorReceiptByDigest, readExecutorReceipt, readExecutorRecoveryReceiptByDigest, recoverResourceAction, releaseResourceLocks, supersedePriorEpochPendingAction, writeExecutorReceipt, writeExecutorRecoveryReceipt } from './lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
 import { ROLLBACK_MODE, rollbackModeForState } from './lib/state-machine.mjs';
-import { validateRegistryAttestationReceipt } from './lib/registry-attestation.mjs';
+import { verifyRegistrySupplyChainRuntime } from './lib/registry-runtime-gate.mjs';
 import { TELEGRAM_PROXY_URL, verifyTelegramEgressReceipt } from './verify-telegram-egress.mjs';
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -652,32 +652,29 @@ async function buildPlan(state, args, runtime) {
   const runtimeEnvironment = await inspectTrustedRuntimeEnvironment(state, runtime);
   const trustedEnvironment = bindTrustedEnvironment(runtime.env, state, releaseIdentity, manifest, runtimeEnvironment);
   const inspectRegistrySupplyChain = async () => {
-    if (exactLegacyCompose) return { legacy: true };
+    if (exactLegacyCompose) return { schema: 'booking.registry-runtime-gate-exemption/v1', legacy: true,
+      environment: state.environment, project: state.project, operationId: state.operationId,
+      fencingEpoch: state.fencingEpoch, releaseId: releaseIdentity.releaseId, gitSha: releaseIdentity.gitSha,
+      manifestDigest: releaseIdentity.manifestDigest };
     if (runtime.registryReceiptVerifier) return runtime.registryReceiptVerifier({ state, releaseIdentity, manifest });
-    if (runtime.releaseManifest && runtime.releaseRoot) return { injectedFixture: true };
-    const receiptRoot = `/volume1/homes/realzyq/${state.project}/.g4/supply-chain/${releaseIdentity.releaseId}`;
-    const evidence = {};
-    let publicKeyDigest = null;
-    for (const component of ['backend', 'gateway', 'telegram-egress']) {
-      const artifact = manifest.artifacts[component === 'telegram-egress' ? 'telegramEgress' : component];
-      const expectedPath = join(receiptRoot, component, `${component}.registry-attestation-receipt.json`);
-      const canonical = await realpath(expectedPath).catch(() => { throw new ContractError(`${component} registry attestation receipt is unavailable`, EXIT.IDENTITY); });
-      const metadata = await stat(canonical);
-      if (canonical !== expectedPath || !metadata.isFile() || (process.platform !== 'win32' && (metadata.uid !== 0 || (metadata.mode & 0o077) !== 0))) {
-        throw new ContractError(`${component} registry attestation receipt must be a root-only canonical file`, EXIT.IDENTITY);
-      }
-      const receipt = validateRegistryAttestationReceipt(await readJsonFile(canonical), { component, releaseId: releaseIdentity.releaseId,
-        gitSha: releaseIdentity.gitSha, manifestDigest: releaseIdentity.manifestDigest, image: artifact.image,
-        imageDigest: artifact.digest, sbomDigest: artifact.sbomDigest, provenanceDigest: artifact.provenanceDigest });
-      if (publicKeyDigest !== null && receipt.signer.publicKeyDigest !== publicKeyDigest) throw new ContractError('registry attestation receipts use different trust roots', EXIT.IDENTITY);
-      publicKeyDigest = receipt.signer.publicKeyDigest;
-      evidence[component] = { receiptDigest: await digestFile(canonical), publicKeyDigest,
-        signingMode: receipt.signer.signingMode, pullBackVerified: receipt.verification.pullBackVerified };
-    }
-    return evidence;
+    if (runtime.releaseManifest && runtime.releaseRoot) return { schema: 'booking.registry-runtime-gate-fixture/v1', injectedFixture: true,
+      environment: state.environment, project: state.project, operationId: state.operationId,
+      fencingEpoch: state.fencingEpoch, releaseId: releaseIdentity.releaseId, gitSha: releaseIdentity.gitSha,
+      manifestDigest: releaseIdentity.manifestDigest };
+    return verifyRegistrySupplyChainRuntime({ state, releaseIdentity, manifest }, {
+      ...runtime, cosignCommandRunner: runtime.cosignCommandRunner || defaultCommandRunner,
+    });
   };
   const registrySupplyChain = await inspectRegistrySupplyChain();
   trustedEnvironment.environmentBinding.BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST = sha256(registrySupplyChain);
+  const guardPlan = (plan) => ({ ...plan, registrySupplyChainBinding: registrySupplyChain,
+    registrySupplyChainGate: async () => {
+      const current = await inspectRegistrySupplyChain();
+      if (canonicalJson(current) !== canonicalJson(registrySupplyChain)) {
+        throw new ContractError('registry supply-chain gate drifted during the fenced action', EXIT.IDENTITY);
+      }
+      return current;
+    } });
   const docker = runtime.dockerExecutable || await findExecutable(['/var/packages/ContainerManager/target/usr/bin/docker', '/usr/bin/docker']);
   const controlEnvFile = runtime.controlEnvFile || '/etc/happybooking/secrets/booking-preprod-control-plane.env';
   if (!isAbsolute(controlEnvFile)) throw new ContractError('trusted Compose env file must be absolute', EXIT.IDENTITY);
@@ -910,7 +907,7 @@ async function buildPlan(state, args, runtime) {
   };
   if (spec.kind === 'compose-egress') {
     const preflightArtifacts = combineArtifactChecks(inspectComposeConfig, inspectImages(['telegram-egress']));
-    return { executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', 'telegram-egress'], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', 'telegram-egress'], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { telegramEgress: { image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
         sbomDigest: artifacts.telegramEgress.sbomDigest, provenanceDigest: artifacts.telegramEgress.provenanceDigest,
@@ -918,7 +915,7 @@ async function buildPlan(state, args, runtime) {
       preflightArtifacts,
       readback: { executable: docker, argv: [...composePrefix, 'ps', '--format', 'json', 'telegram-egress'],
         verify: (value) => verifyComposeServices(value, ['telegram-egress']) },
-      verifyArtifacts: inspectTelegramEgress, replayPreflightArtifacts: inspectTelegramEgress, replayVerifyArtifacts: inspectTelegramEgress };
+      verifyArtifacts: inspectTelegramEgress, replayPreflightArtifacts: inspectTelegramEgress, replayVerifyArtifacts: inspectTelegramEgress });
   }
   if (spec.kind === 'singleton-transfer') {
     const sourceIdentity = singletonSourceIdentity(state, spec.identity === 'rollback');
@@ -964,7 +961,7 @@ async function buildPlan(state, args, runtime) {
     const singletonArtifacts = exactLegacyCompose
       ? backendImagePreflight
       : combineArtifactChecks(backendImagePreflight, inspectReleaseRuntime, inspectTelegramEgress);
-    return { executable: process.execPath, argv: [helper, ...helperArgs], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: process.execPath, argv: [helper, ...helperArgs], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest }, singletonAction,
         sourceSlot: sourceIdentity.slot, targetSlot: releaseIdentity.slot,
@@ -974,7 +971,7 @@ async function buildPlan(state, args, runtime) {
         verify: verifyTelegramIdentity } } : {}),
       preflightArtifacts: singletonArtifacts, verifyExecution: verifySingleton,
       readback: { executable: process.execPath, argv: [helper, '--readback', 'true', ...helperArgs], verify: verifySingleton },
-      replayVerifyArtifacts: singletonArtifacts, verifyArtifacts: singletonArtifacts };
+      replayVerifyArtifacts: singletonArtifacts, verifyArtifacts: singletonArtifacts });
   }
   if (spec.kind === 'release-probe') {
     const publicProbe = ['preprod-probe-observation', 'preprod-probe-rollback'].includes(args.action);
@@ -1008,7 +1005,7 @@ async function buildPlan(state, args, runtime) {
         '--telegram-bot-mode', 'webhook', '--telegram-webhook-enabled', 'true',
         '--telegram-webhook-url', 'https://booking-preprod.happybooking.uk/telegram/webhook'] : [])];
     const probeRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
-    return { executable: process.execPath, argv: probeArgs, cwd: paths.releaseDirectory,
+    return guardPlan({ executable: process.execPath, argv: probeArgs, cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { probe: { slot: releaseIdentity.slot, ...(publicProbe ? { origin: 'https://booking-preprod.happybooking.uk',
         ...(!exactLegacyCompose ? { configSchema: manifest.contracts.configSchema, migrationFloor: manifest.contracts.migration.expandFloor,
@@ -1017,7 +1014,7 @@ async function buildPlan(state, args, runtime) {
         releaseId: releaseIdentity.releaseId, gitSha: releaseIdentity.gitSha, manifestDigest: releaseIdentity.manifestDigest } },
       ...(probeRuntimeArtifacts ? { preflightArtifacts: probeRuntimeArtifacts, verifyArtifacts: probeRuntimeArtifacts,
         replayPreflightArtifacts: probeRuntimeArtifacts, replayVerifyArtifacts: probeRuntimeArtifacts } : {}),
-      verifyExecution: verifyProbe, readback: { executable: process.execPath, argv: probeArgs, verify: verifyProbe }, readbackFromExecution: false };
+      verifyExecution: verifyProbe, readback: { executable: process.execPath, argv: probeArgs, verify: verifyProbe }, readbackFromExecution: false });
   }
   if (spec.kind === 'compose-stage') {
     const services = [`backend-${state.candidate.slot}`, `gateway-${state.candidate.slot}`];
@@ -1048,7 +1045,7 @@ async function buildPlan(state, args, runtime) {
       if (state.phase !== 'ROLLED_BACK') await assertLoopbackPortAvailable(candidatePort, runtime);
       return inspectStageArtifacts(context);
     };
-    return { executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', ...services], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', ...services], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest },
         gateway: { image: artifacts.gateway.image, digest: artifacts.gateway.digest, frontendAssetDigest: artifacts.gateway.frontendAssetDigest,
@@ -1102,7 +1099,7 @@ async function buildPlan(state, args, runtime) {
           return { ...imageEvidence, runtimeBindings, frontendAssetDigest: observedFrontendDigest,
             routeContractDigest: imageEvidence.routeContract.digest };
         } finally { await rm(frontendDirectory, { recursive: true, force: true }); }
-      } };
+      } });
   }
   if (spec.kind === 'compose-migrate') {
     requireBoundEnvironment(trustedEnvironment, ['BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST', 'BOOKING_MIGRATION_BACKUP_RECEIPT_HOST_FILE', 'BOOKING_MIGRATION_APPROVED_PENDING_JSON']);
@@ -1122,14 +1119,14 @@ async function buildPlan(state, args, runtime) {
       dataPlane: await inspectDataPlane(context), backup: await migrationBackupPreflight(context) });
     const replayVerifyMigrationArtifacts = async (context) => ({ ...(await verifyOneShotArtifacts([readbackName])(context)),
       dataPlane: await inspectDataPlane(context), backup: await migrationBackupPreflight(context) });
-    return { executable: docker, argv: [...composePrefix, '--profile', 'migrate', 'run', '--no-deps', '--name', oneShotName, 'schema-migrate'], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, '--profile', 'migrate', 'run', '--no-deps', '--name', oneShotName, 'schema-migrate'], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest } },
       preflightArtifacts: migrationArtifacts, replayPreflightArtifacts: migrationArtifacts,
       verifyExecution: (value) => verifyMigrationReceipt(value, expectedMigration, 'apply'),
       readback: { executable: docker, argv: [...composePrefix, '--profile', 'migrate-readback', 'run', '--no-deps', '--name', readbackName, 'schema-migration-readback'],
         verify: (value) => verifyMigrationReceipt(value, expectedMigration, 'verify') },
-      verifyArtifacts: verifyMigrationArtifacts, replayVerifyArtifacts: replayVerifyMigrationArtifacts };
+      verifyArtifacts: verifyMigrationArtifacts, replayVerifyArtifacts: replayVerifyMigrationArtifacts });
   }
   if (spec.kind === 'compose-baseline') {
     const baselineKeys = ['BOOKING_BASELINE_OLD_RELEASE_ID', 'BOOKING_BASELINE_OLD_GIT_SHA', 'BOOKING_BASELINE_OLD_MANIFEST_DIGEST',
@@ -1155,14 +1152,14 @@ async function buildPlan(state, args, runtime) {
       dataPlane: await inspectDataPlane(context), backup: await baselineBackupPreflight(context) });
     const replayVerifyBaselineArtifacts = async (context) => ({ ...(await verifyOneShotArtifacts([readbackName])(context)),
       dataPlane: await inspectDataPlane(context), backup: await baselineBackupPreflight(context) });
-    return { executable: docker, argv: [...composePrefix, '--profile', 'baseline-ledger', 'run', '--no-deps', '--name', oneShotName, 'schema-baseline-ledger'], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, '--profile', 'baseline-ledger', 'run', '--no-deps', '--name', oneShotName, 'schema-baseline-ledger'], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest }, baseline: expectedBaseline },
       preflightArtifacts: baselineArtifacts, replayPreflightArtifacts: baselineArtifacts,
       verifyExecution: (value) => verifyBaselineReceipt(value, expectedBaseline, 'apply'),
       readback: { executable: docker, argv: [...composePrefix, '--profile', 'baseline-readback', 'run', '--no-deps', '--name', readbackName, 'schema-baseline-readback'],
         verify: (value) => verifyBaselineReceipt(value, expectedBaseline, 'verify') },
-      verifyArtifacts: verifyBaselineArtifacts, replayVerifyArtifacts: replayVerifyBaselineArtifacts };
+      verifyArtifacts: verifyBaselineArtifacts, replayVerifyArtifacts: replayVerifyBaselineArtifacts });
   }
   if (spec.kind === 'compose-webhook') {
     requireBoundEnvironment(trustedEnvironment, ['BOOKING_TELEGRAM_WEBHOOK_URL', 'BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST',
@@ -1180,7 +1177,7 @@ async function buildPlan(state, args, runtime) {
       migrationCatalogDigest: manifest.contracts.migration.catalogDigest, migrationFloor: manifest.contracts.migration.expandFloor,
       backupReceiptDigest: trustedEnvironment.env.BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST, approvedPending: [],
       ledgerHead: `${floorParts.slice(1).join('')}${floorParts[0]}` };
-    return { executable: docker, argv: [...composePrefix, '--profile', 'telegram-webhook-set', 'run', '--no-deps', '--name', oneShotName, 'telegram-webhook-set'], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, '--profile', 'telegram-webhook-set', 'run', '--no-deps', '--name', oneShotName, 'telegram-webhook-set'], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest }, webhook: expectedWebhook,
         migrationLedger: { catalogDigest: expectedMigration.migrationCatalogDigest, floor: expectedMigration.migrationFloor,
@@ -1192,7 +1189,7 @@ async function buildPlan(state, args, runtime) {
       readback: { executable: docker, argv: [...composePrefix, '--profile', 'telegram-webhook-readback', 'run', '--no-deps', '--name', readbackName, 'telegram-webhook-readback'],
         verify: (value) => verifyWebhookReceipt(value, expectedWebhook, 'verify') },
       verifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, oneShotName, readbackName]), inspectTelegramEgress),
-      replayVerifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, readbackName]), inspectTelegramEgress) };
+      replayVerifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, readbackName]), inspectTelegramEgress) });
   }
   const helper = runtime.ingressExecutable || await findTrustedRootExecutable(['/usr/local/libexec/happybooking/switch-preprod-ingress']);
   const hostname = 'booking-preprod.happybooking.uk';
@@ -1214,7 +1211,7 @@ async function buildPlan(state, args, runtime) {
     '--fencing-epoch', String(state.fencingEpoch), '--rollback-upstream', rollbackUpstream, '--rollback-release', rollbackIdentity.releaseId,
     '--rollback-manifest-digest', rollbackIdentity.manifestDigest];
   const ingressRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
-  return { executable: helper, argv: mutationArgs, cwd: paths.releaseDirectory,
+  return guardPlan({ executable: helper, argv: mutationArgs, cwd: paths.releaseDirectory,
     env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
     artifactBinding: { ingress: { hostname, upstream, releaseId: releaseIdentity.releaseId, manifestDigest: releaseIdentity.manifestDigest,
       operationId: state.operationId, fencingEpoch: state.fencingEpoch, ...cycleBinding } },
@@ -1239,7 +1236,7 @@ async function buildPlan(state, args, runtime) {
           guard.exclusiveWriteRequired !== true ||
           !Number.isFinite(Date.parse(parsed.observedAt))) throw new ContractError('ingress readback identity mismatch', EXIT.INGRESS);
       return parsed;
-    } } };
+    } } });
 }
 
 function commandIdentity(plan) {
@@ -1247,7 +1244,8 @@ function commandIdentity(plan) {
     preflight: plan.preflight ? { executable: plan.preflight.executable, argv: plan.preflight.argv } : null,
     readback: plan.readback ? { executable: plan.readback.executable, argv: plan.readback.argv } : null,
     readbackFromExecution: plan.readbackFromExecution === true, artifactBinding: plan.artifactBinding || null,
-    environmentBinding: plan.environmentBinding || null });
+    environmentBinding: plan.environmentBinding || null,
+    registrySupplyChainBinding: plan.registrySupplyChainBinding || null });
 }
 
 function replaceCliValue(argv, name, value) {
@@ -1267,9 +1265,15 @@ function priorPendingIngressPlan(state, args, releaseIdentity, resource, plan, r
   let priorArgv = plan.argv;
   for (const [name, value] of [['--approval-id', pending.approvalId], ['--lease-id', pending.leaseId], ['--holder-id', pending.holderId],
     ['--action-id', pending.actionId], ['--fencing-epoch', pending.fencingEpoch]]) priorArgv = replaceCliValue(priorArgv, name, value);
+  const priorRegistryBinding = plan.registrySupplyChainBinding
+    ? { ...plan.registrySupplyChainBinding, fencingEpoch: pending.fencingEpoch }
+    : null;
   const priorPlan = { ...plan, argv: priorArgv, artifactBinding: { ...plan.artifactBinding,
     ingress: { ...plan.artifactBinding.ingress, approvalId: pending.approvalId, leaseId: pending.leaseId,
-      holderId: pending.holderId, actionId: pending.actionId, fencingEpoch: pending.fencingEpoch } } };
+      holderId: pending.holderId, actionId: pending.actionId, fencingEpoch: pending.fencingEpoch } },
+    ...(priorRegistryBinding ? { registrySupplyChainBinding: priorRegistryBinding,
+      environmentBinding: { ...plan.environmentBinding,
+        BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(priorRegistryBinding) } } : {}) };
   const priorRequest = { schema: 'booking.fenced-action-request/v1', environment: state.environment, project: state.project,
     action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
     generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
@@ -1348,6 +1352,7 @@ function assertResult(result, exitCode) {
 }
 
 async function verifyCurrentExternalState(plan, context) {
+  if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
   if (!plan.readback) throw new ContractError('recorded action has no independent replay readback', EXIT.SINGLETON);
   let preflightVerification = null;
   if (plan.preflight) {
@@ -1404,6 +1409,7 @@ export async function runFencedAction(args, runtime = {}) {
     const locks = await acquireResourceLocks(statePath, resourceIds);
     try {
       const runner = runtime.commandRunner || defaultCommandRunner;
+      if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
       if (priorReceipt) {
         if (spec.kind.includes('ingress') && locks.length === 1) {
           const priorEpochResource = await inspectLockedResourceState(locks[0], {
@@ -1440,6 +1446,7 @@ export async function runFencedAction(args, runtime = {}) {
                 timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
             }
             if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
             const recoveredAt = now();
             if (!(recoveredAt instanceof Date) || recoveredAt.getTime() >= Date.parse(state.lease.expiresAt)) {
               throw new ContractError('lease expired before ingress completion recovery', EXIT.SINGLETON);
@@ -1475,6 +1482,7 @@ export async function runFencedAction(args, runtime = {}) {
         const replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
           timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath });
         if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
         const recoveredAt = now();
         if (!(recoveredAt instanceof Date) || recoveredAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before replay readback completed', EXIT.SINGLETON);
         if (resourceStates.some((item) => item.pendingAction !== null)) {
@@ -1513,6 +1521,7 @@ export async function runFencedAction(args, runtime = {}) {
             priorProof = verifyPriorPendingIngress(priorReadback, state, args, releaseIdentity, priorResource, priorIdentity);
             priorProofOutput = priorReadback.stdout;
           } else {
+            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
             const recovered = await runner(plan.executable, priorIdentity.recoveryArgv, {
               cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs,
             });
@@ -1570,6 +1579,7 @@ export async function runFencedAction(args, runtime = {}) {
           let readback = null;
           let verification = priorProof;
           if (notApplied) {
+            if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
             execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs });
             assertResult(execution, EXIT.INGRESS);
             executionVerification = plan.readback.verify(execution.stdout);
@@ -1581,6 +1591,7 @@ export async function runFencedAction(args, runtime = {}) {
           const artifactVerification = artifactVerifier ? await artifactVerifier({ runner,
             env: plan.env || runtime.env || process.env, timeoutMs, statePath, preflightEvidence: preflightArtifactEvidence }) : null;
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+          if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
           const completedAt = now();
           if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before pending ingress recovery completed', EXIT.SINGLETON);
           const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
@@ -1639,6 +1650,7 @@ export async function runFencedAction(args, runtime = {}) {
             timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath,
             adoptionReceipt: adoption.receipt });
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+          if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
         } catch (error) {
           const failedAt = now();
           const failureBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
@@ -1680,6 +1692,7 @@ export async function runFencedAction(args, runtime = {}) {
         preflightArtifactEvidence = await plan.preflightArtifacts({ runner, env: plan.env || runtime.env || process.env,
           timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - firstNow.getTime() - 1_000) });
       }
+      if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
       const accepted = [];
       for (const lock of locks) accepted.push(await acceptResourceEpoch(lock, {
         environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
@@ -1695,6 +1708,7 @@ export async function runFencedAction(args, runtime = {}) {
       try {
         const remaining = Date.parse(state.lease.expiresAt) - firstNow.getTime();
         if (remaining < 2_000) throw new ContractError('lease has insufficient remaining time for external action', EXIT.SINGLETON);
+        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
         execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env, timeoutMs: remaining - 1_000 });
         assertResult(execution, spec.kind === 'compose-migrate' || spec.kind === 'compose-baseline' ? EXIT.DATABASE : spec.kind.includes('webhook') || spec.kind.includes('ingress') ? EXIT.INGRESS : EXIT.SWITCH);
         const executionVerification = plan.verifyExecution ? plan.verifyExecution(execution.stdout) : null;
@@ -1710,6 +1724,7 @@ export async function runFencedAction(args, runtime = {}) {
             timeoutMs: Math.max(1, Date.parse(state.lease.expiresAt) - now().getTime() - 500), statePath, preflightEvidence: preflightArtifactEvidence });
         }
         if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+        if (plan.registrySupplyChainGate) await plan.registrySupplyChainGate();
         completedAt = now();
         if (!(completedAt instanceof Date) || completedAt.getTime() >= Date.parse(state.lease.expiresAt)) throw new ContractError('lease expired before external action readback completed', EXIT.SINGLETON);
       } catch (error) {

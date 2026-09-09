@@ -358,6 +358,46 @@ test('fenced executor persists epochs before execution, verifies readback, and e
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('registry runtime gate is repeated around mutation and its operation/fence binding cannot be replayed', async () => {
+  const { root } = await fixture();
+  const binding = { schema: 'booking.registry-runtime-gate/v1', operationId: 'op-1', fencingEpoch: 1,
+    releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest };
+  let gateCalls = 0;
+  let commandCalls = 0;
+  const guardedPlan = (override = binding) => ({ ...planBuilder(), registrySupplyChainBinding: override,
+    registrySupplyChainGate: async () => { gateCalls += 1; return override; } });
+  try {
+    await runFencedAction(args({ 'action-id': 'stage-registry-runtime-gate' }), { deployStateRoot: root,
+      now: at('2026-09-09T15:05:00.000Z'), planBuilder: async () => guardedPlan(),
+      commandRunner: async () => { commandCalls += 1; return successRunner(); } });
+    assert.equal(gateCalls, 4, 'gate must run after locking, before fencing/execution, and after readback');
+    assert.equal(commandCalls, 2);
+    await assert.rejects(runFencedAction(args({ 'action-id': 'stage-registry-runtime-gate' }), { deployStateRoot: root,
+      now: at('2026-09-09T15:05:01.000Z'), planBuilder: async () => guardedPlan({ ...binding, operationId: 'op-old', fencingEpoch: 0 }),
+      commandRunner: async () => { throw new Error('stale binding must fail before command replay'); } }),
+    /existing action receipt does not match this request/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('registry deletion or drift immediately before the external mutation records failure without running it', async () => {
+  const { root } = await fixture();
+  let gateCalls = 0;
+  let commandCalls = 0;
+  const binding = { schema: 'booking.registry-runtime-gate/v1', operationId: 'op-1', fencingEpoch: 1,
+    releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest };
+  try {
+    await assert.rejects(runFencedAction(args({ 'action-id': 'stage-registry-disappeared' }), { deployStateRoot: root,
+      now: at('2026-09-09T15:05:00.000Z'), planBuilder: async () => ({ ...planBuilder(), registrySupplyChainBinding: binding,
+        registrySupplyChainGate: async () => {
+          gateCalls += 1;
+          if (gateCalls === 3) throw new Error('registry evidence disappeared');
+          return binding;
+        } }), commandRunner: async () => { commandCalls += 1; return successRunner(); } }), /registry evidence disappeared/);
+    assert.equal(gateCalls, 3);
+    assert.equal(commandCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('preproduction ledger baseline is fenced to the canonical database resources', async () => {
   const { root } = await fixtureFromState(preMigrationState());
   try {

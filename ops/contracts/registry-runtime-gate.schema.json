@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/registry-runtime-gate.schema.json",
+  "title": "HappyBooking live registry supply-chain gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "project", "operationId", "fencingEpoch", "releaseId", "gitSha", "manifestDigest", "trust", "components"],
+  "properties": {
+    "schema": { "const": "booking.registry-runtime-gate/v1" },
+    "environment": { "const": "preprod" },
+    "project": { "const": "booking-preprod" },
+    "operationId": { "$ref": "#/$defs/identifier" },
+    "fencingEpoch": { "type": "integer", "minimum": 1 },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicKeyDigest", "anchorDigest", "cosignVersion", "signingMode"],
+      "properties": {
+        "publicKeyDigest": { "$ref": "#/$defs/digest" },
+        "anchorDigest": { "$ref": "#/$defs/digest" },
+        "cosignVersion": { "const": "3.1.2" },
+        "signingMode": { "const": "cosign-v3.1.2-key-offline" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "gateway", "telegram-egress"],
+      "properties": {
+        "backend": { "$ref": "#/$defs/component" },
+        "gateway": { "$ref": "#/$defs/component" },
+        "telegram-egress": { "$ref": "#/$defs/component" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptDigest", "publicKeyDigest", "signingMode", "registryTransport", "verificationDigest"],
+      "properties": {
+        "receiptDigest": { "$ref": "#/$defs/digest" },
+        "publicKeyDigest": { "$ref": "#/$defs/digest" },
+        "signingMode": { "const": "cosign-v3.1.2-key-offline" },
+        "registryTransport": { "enum": ["https", "loopback-http"] },
+        "verificationDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

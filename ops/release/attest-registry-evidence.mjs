@@ -10,6 +10,7 @@ import { canonicalDocument, digestFile, readArtifact } from './lib/artifacts.mjs
 import { ContractError, gateResult, parseArgs, readJsonFile, sha256, validateReleaseManifest } from './lib/contracts.mjs';
 import {
   ATTESTATION_TYPES,
+  COSIGN_BINARY_DIGESTS,
   COSIGN_SIGNING_MODE,
   COSIGN_VERSION,
   LOOPBACK_HTTP_REGISTRY,
@@ -25,10 +26,6 @@ const ALLOWED_ARGS = new Set([
 ]);
 const REQUIRED_ARGS = [...ALLOWED_ARGS].filter((key) => key !== 'registry-transport');
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
-const COSIGN_BINARY_DIGESTS = Object.freeze({
-  x64: 'sha256:f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf',
-  arm64: 'sha256:90e7ae0b5dfd60f20816b52c012addf7fc055ebcc7bea4ce81c428ca8518c302',
-});
 
 export function parseRegistryAttestationArgs(argv) {
   const seen = new Set();
