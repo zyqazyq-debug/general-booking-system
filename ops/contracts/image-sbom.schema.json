@@ -36,6 +36,16 @@
         "fileDigestAlgorithm": { "const": "sha256" }
       }
     },
+    "buildInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseImage", "debianMirror", "securityMirror"],
+      "properties": {
+        "baseImage": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$" },
+        "debianMirror": { "$ref": "#/$defs/httpsAptMirror" },
+        "securityMirror": { "$ref": "#/$defs/httpsAptMirror" }
+      }
+    },
     "packages": {
       "type": "array",
       "minItems": 1,
@@ -64,5 +74,13 @@
       }
     }
   },
-  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+  "allOf": [{
+    "if": { "properties": { "component": { "const": "telegram-egress" } }, "required": ["component"] },
+    "then": { "required": ["buildInputs"] },
+    "else": { "not": { "required": ["buildInputs"] } }
+  }],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "httpsAptMirror": { "type": "string", "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$" }
+  }
 }

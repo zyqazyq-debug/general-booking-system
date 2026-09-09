@@ -107,7 +107,7 @@ Before and after the scan, the generator independently runs Docker image inspect
 
 Closing G4 requires this executable chain, all pinned to the same immutable `repository@sha256` identity:
 
-1. Build the backend, gateway, and Telegram egress images, resolve their immutable digests, and make the exact images available to the scanner without replacing or retagging them during the run. The egress build must pass `TELEGRAM_EGRESS_BASE_IMAGE` as an explicit immutable `repository@sha256` reference; a digest-preserving local mirror is allowed, but the actual selected reference must be recorded in its build-input inventory and provenance.
+1. Build the backend, gateway, and Telegram egress images, resolve their immutable digests, and make the exact images available to the scanner without replacing or retagging them during the run. The egress build must pass `TELEGRAM_EGRESS_BASE_IMAGE` as an explicit immutable `repository@sha256` reference; a digest-preserving local mirror is allowed. Its APT inputs default to the official HTTPS Debian and Debian-security repositories. An operator may explicitly select canonical credential-free HTTPS mirrors, for example `https://mirrors.ustc.edu.cn/debian` and `https://mirrors.ustc.edu.cn/debian-security`. The selected base and both selected APT URLs must be identical in the build command, build-input inventory, provenance, release manifest, and OCI labels.
 2. Install Syft 1.51.1 at `/usr/local/bin/syft` from the official release archive and verify the archive before installation. The published SHA-256 values are `8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3` for `syft_1.51.1_linux_amd64.tar.gz` and `a7fd2b784e6664acd44719270574f6cd8c6864fc2b1700bf9099bd1cccda7d7f` for `syft_1.51.1_linux_arm64.tar.gz`. Preserve the downloaded checksum list and its verified release signature as installation evidence.
 3. Generate the native and normalized evidence outside the Git worktree. For each component run:
 
@@ -118,6 +118,11 @@ Closing G4 requires this executable chain, all pinned to the same immutable `rep
      --native-output <evidence>/<component>.syft.json \
      --output <evidence>/<component>.image-sbom.json
    ```
+
+   For `telegram-egress`, the scan additionally requires the exact
+   `--base-image`, `--debian-mirror`, and `--security-mirror` values used by the
+   build. Before scanning, both Docker inspections require the corresponding
+   OCI labels to match those values exactly.
 
    The generator resolves Docker only from Synology Container Manager's fixed binary path or `/usr/bin/docker`, and Syft only from `/usr/local/bin/syft`. It resolves symlinks and requires each target to be a root-owned regular file with no group/other write permission; executable paths cannot be overridden from the CLI. Both output parents must be root-owned mode-0700 directories, and existing evidence is never overwritten. Run it from a root-controlled release checkout. A test dependency may inject executables and insecure temporary paths only through the exported library API.
 4. Generate and validate the local provenance binding, then attach the normalized image SBOM and local provenance to the same OCI image digest with the pinned signing/attestation tool. The normalized SBOM transitively binds the preserved native Syft report.
@@ -157,9 +162,27 @@ Approval is not established by the three receipts agreeing with one another. The
 
 This implementation deliberately uses a self-managed encrypted key, disables the signing-config/TUF and transparency-log paths through the exact version-bound offline mode, and makes the corresponding Cosign verification policy explicit with `--insecure-ignore-tlog`. That Cosign flag name is a warning about the deliberately absent transparency-log guarantee; it does not disable public-key signature or claim verification. Therefore the receipt proves verification against the supplied public key and exact retrieved registry payloads; it does not prove a transparency-log identity, trusted timestamp, hosted builder, registry retention policy, or successful live G4 execution. The repository contains no production private key or registry credential. G4 remains unmet until all three real component digests are scanned, signed, attached, pulled back from the target registry, independently verified with the approved public key, and their receipts admitted by the release gate.
 
-`generate-provenance.mjs` requires both `--native-sbom` and `--sbom`, recomputes the native report digest recorded in the normalized document, and validates the image SBOM before emitting the exact `ops/contracts/local-provenance.schema.json` statement. Release generation requires native and normalized SBOM inputs for backend, gateway, and Telegram egress. The provenance predicate and build type are deliberately local Booking URNs. Backend and gateway provenance have two materials binding the normalized SBOM document and immutable image identity; Telegram egress adds a third material binding the actual digest-preserving base-image reference passed to the build. The normalized SBOM transitively binds the preserved native Syft report. This is local provenance evidence only: it is not SLSA provenance, a registry attestation, or proof of a hosted builder.
+`generate-provenance.mjs` requires both `--native-sbom` and `--sbom`, recomputes the native report digest recorded in the normalized document, and validates the image SBOM before emitting the exact `ops/contracts/local-provenance.schema.json` statement. Release generation requires native and normalized SBOM inputs for backend, gateway, and Telegram egress. The provenance predicate and build type are deliberately local Booking URNs. Backend and gateway provenance have two materials binding the normalized SBOM document and immutable image identity; Telegram egress adds three materials binding the actual digest-preserving base-image reference and the exact Debian and Debian-security HTTPS URLs passed to the build. Each URL material also hashes its canonical URL bytes. The normalized SBOM transitively binds the preserved native Syft report. This is local provenance evidence only: it is not SLSA provenance, a registry attestation, or proof of a hosted builder.
 
-The manifest/provenance scripts are local-only: they do not build, sign, attest, or push images, and they refuse a dirty Git worktree. Only `generate-image-sbom.mjs` performs an image scan. Generate evidence files outside the repository (otherwise their untracked files intentionally make the gate fail). The `booking.release/v2` manifest requires `sbomDigest` and `provenanceDigest` for all three images, records the egress base-image and WARP package identities, and additionally binds the H5 directory, route contract, migration catalog, fixed probe paths, and canonical two-file Compose bundle.
+The manifest/provenance scripts are local-only: they do not build, sign, attest, or push images, and they refuse a dirty Git worktree. Only `generate-image-sbom.mjs` performs an image scan. Generate evidence files outside the repository (otherwise their untracked files intentionally make the gate fail). For Telegram egress, pass the same `--base-image`, `--debian-mirror`, and `--security-mirror` to both `generate-build-input-inventory.mjs` and `generate-provenance.mjs`; pass them as `--telegram-egress-base-image`, `--telegram-egress-debian-mirror`, and `--telegram-egress-security-mirror` to manifest generation and validation, together with `--telegram-egress-build-input-inventory <evidence-file>`. Missing, HTTP, credential-bearing, query-bearing, fragment-bearing, non-canonical, or subsequently mismatched URLs fail closed. The manifest binds the digest of that exact inventory, so another source-file set or an independently generated mirror selection cannot be substituted. The `booking.release/v2` manifest requires `sbomDigest` and `provenanceDigest` for all three images, records the egress build-input digest, base-image, APT-source, and WARP package identities, and additionally binds the H5 directory, route contract, migration catalog, fixed probe paths, and canonical two-file Compose bundle.
+
+The Dockerfile deliberately performs a first `apt-get` layer that installs only
+`ca-certificates` using the reviewed base image's original official source
+configuration. Mirror build arguments are declared only after that layer. A
+typical explicit mirror selection is:
+
+```text
+docker build ops/telegram-egress \
+  --build-arg BOOKING_GIT_SHA=<40-hex> \
+  --build-arg BOOKING_RELEASE_ID=<release-id> \
+  --build-arg TELEGRAM_EGRESS_BASE_IMAGE=<repository@sha256> \
+  --build-arg TELEGRAM_EGRESS_DEBIAN_MIRROR=https://mirrors.ustc.edu.cn/debian \
+  --build-arg TELEGRAM_EGRESS_DEBIAN_SECURITY_MIRROR=https://mirrors.ustc.edu.cn/debian-security
+```
+
+This is a reproducibility and transport-integrity control, not an endorsement
+or uptime guarantee for a particular mirror. No NAS address, host proxy, APT
+credential, or mutable local endpoint belongs in these inputs.
 
 Use an immutable image repository (no tag, digest supplied separately); placeholder registries and mutable tags are rejected. `validate-artifacts.mjs` recomputes local document bindings and rejects schema, source, image, SBOM-material, or supplied-document drift. It does not independently rescan image contents. Passing it does not satisfy G4 by itself and is not an image push, registry attestation, deployment, or live probe.
 

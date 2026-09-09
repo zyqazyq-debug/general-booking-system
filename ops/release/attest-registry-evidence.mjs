@@ -222,10 +222,16 @@ async function loadBinding(args, runtime) {
   const manifestDigest = sha256(manifest);
   if (manifestDigest !== args['manifest-digest']) throw new ContractError('release manifest digest does not match the canonical manifest');
   const artifact = manifest.artifacts[args.component === 'telegram-egress' ? 'telegramEgress' : args.component];
-  const sbomDigest = await readArtifact(sbomPath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'SBOM', { nativePath: nativeSbomPath });
+  const sbomDigest = await readArtifact(sbomPath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'SBOM', {
+    nativePath: nativeSbomPath, ...(args.component === 'telegram-egress' ? {
+      baseImage: `${artifact.baseImage}@${artifact.baseImageDigest}`, aptSources: artifact.aptSources,
+    } : {}),
+  });
   if (sbomDigest !== artifact.sbomDigest) throw new ContractError('normalized image SBOM digest differs from the release manifest');
   const provenanceDigest = await readArtifact(provenancePath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'provenance', {
-    sbomDigest, ...(args.component === 'telegram-egress' ? { baseImage: `${artifact.baseImage}@${artifact.baseImageDigest}` } : {}),
+    sbomDigest, ...(args.component === 'telegram-egress' ? {
+      baseImage: `${artifact.baseImage}@${artifact.baseImageDigest}`, aptSources: artifact.aptSources,
+    } : {}),
   });
   if (provenanceDigest !== artifact.provenanceDigest) throw new ContractError('local provenance digest differs from the release manifest');
   const [sbomDocument, provenanceDocument] = await Promise.all([

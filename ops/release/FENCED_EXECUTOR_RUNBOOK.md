@@ -397,8 +397,14 @@ history. Webhook readback does not call `setWebhook`; it checks public readiness
 
 ## Image and static-asset identity
 
-Build backend and gateway images with the exact `BOOKING_GIT_SHA` and
-`BOOKING_RELEASE_ID` build arguments. Both final images must carry
+Build backend, gateway, and Telegram egress images with the exact
+`BOOKING_GIT_SHA` and `BOOKING_RELEASE_ID` build arguments. The egress image
+first bootstraps `ca-certificates` from the reviewed base configuration; only a
+later layer may replace Debian and Debian-security with explicitly selected
+canonical HTTPS mirrors. Official HTTPS endpoints remain the defaults. The
+exact selected mirror URLs are required in the build inventory, provenance,
+release manifest, and OCI labels. An HTTP URL, credential-bearing URL, omitted
+value, or label/evidence drift blocks admission. All final images must carry
 `org.opencontainers.image.revision`, `uk.happybooking.release-id`, and the
 component label. Generate `release-manifest.json` only after those final images
 exist. When a registry `RepoDigest` exists, the manifest image digest must be

@@ -31,8 +31,8 @@
         "materials": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 3,
-          "prefixItems": [{ "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }],
+          "maxItems": 5,
+          "prefixItems": [{ "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }],
           "items": false
         }
       }

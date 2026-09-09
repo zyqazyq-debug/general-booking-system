@@ -39,10 +39,15 @@ function nativeDocument() {
   };
 }
 
-function dockerInspect({ id = digest('9'), revision = gitSha, component = 'backend', repoDigests = [imageRef] } = {}) {
+function dockerInspect({ id = digest('9'), revision = gitSha, component = 'backend', repoDigests = [imageRef], egressBuildInputs = null } = {}) {
   return JSON.stringify({ Id: id, RepoDigests: repoDigests, Config: { Labels: {
     'org.opencontainers.image.revision': revision,
     'uk.happybooking.component': component,
+    ...(egressBuildInputs ? {
+      'uk.happybooking.base-image': egressBuildInputs.baseImage,
+      'uk.happybooking.apt.debian-mirror': egressBuildInputs.debianMirror,
+      'uk.happybooking.apt.security-mirror': egressBuildInputs.securityMirror,
+    } : {}),
   } } });
 }
 
@@ -154,9 +159,55 @@ test('fails closed and publishes no evidence on Docker label or post-scan identi
   }
 });
 
+test('Telegram egress scan admits only OCI labels matching the explicitly recorded HTTPS APT inputs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-syft-egress-'));
+  const nativeOutput = join(root, 'native.syft.json');
+  const output = join(root, 'normalized.json');
+  const egressBuildInputs = { baseImage: `debian:bookworm-20260824-slim@${digest('7')}`,
+    debianMirror: 'https://mirrors.ustc.edu.cn/debian', securityMirror: 'https://mirrors.ustc.edu.cn/debian-security' };
+  const runner = async (executable, args) => {
+    if (executable === '/trusted/syft' && args[0] === 'version') return { exitCode: 0, stdout: JSON.stringify({ version: SYFT_VERSION }), stderr: '' };
+    if (executable === '/trusted/syft' && args[0] === 'scan') return { exitCode: 0, stdout: JSON.stringify(nativeDocument()), stderr: '' };
+    if (executable === '/trusted/docker') return { exitCode: 0, stdout: dockerInspect({ component: 'telegram-egress', egressBuildInputs }), stderr: '' };
+    throw new Error('unexpected call');
+  };
+  try {
+    const result = await generateImageSbom({ execute: 'true', component: 'telegram-egress', 'git-sha': gitSha, image,
+      'image-digest': imageDigest, 'native-output': nativeOutput, output,
+      'base-image': egressBuildInputs.baseImage, 'debian-mirror': egressBuildInputs.debianMirror,
+      'security-mirror': egressBuildInputs.securityMirror }, {
+      dockerExecutable: '/trusted/docker', syftExecutable: '/trusted/syft', commandRunner: runner, allowInsecureTestPaths: true,
+    });
+    assert.equal(result.document.component, 'telegram-egress');
+    assert.deepEqual(result.document.buildInputs, egressBuildInputs);
+  } finally { await rm(root, { recursive: true, force: true }); }
+
+  await assert.rejects(generateImageSbom({ execute: 'true', component: 'telegram-egress', 'git-sha': gitSha, image,
+    'image-digest': imageDigest, 'native-output': '/tmp/native-egress', output: '/tmp/normalized-egress',
+    'base-image': egressBuildInputs.baseImage, 'debian-mirror': 'http://mirrors.ustc.edu.cn/debian',
+    'security-mirror': egressBuildInputs.securityMirror }, { allowInsecureTestPaths: true }), /HTTPS/);
+
+  const driftRoot = await mkdtemp(join(tmpdir(), 'booking-syft-egress-drift-'));
+  try {
+    await assert.rejects(generateImageSbom({ execute: 'true', component: 'telegram-egress', 'git-sha': gitSha, image,
+      'image-digest': imageDigest, 'native-output': join(driftRoot, 'native.json'), output: join(driftRoot, 'normalized.json'),
+      'base-image': egressBuildInputs.baseImage, 'debian-mirror': egressBuildInputs.debianMirror,
+      'security-mirror': egressBuildInputs.securityMirror }, {
+      dockerExecutable: '/trusted/docker', syftExecutable: '/trusted/syft', allowInsecureTestPaths: true,
+      commandRunner: async (executable, args) => {
+        if (executable === '/trusted/syft' && args[0] === 'version') return { exitCode: 0, stdout: JSON.stringify({ version: SYFT_VERSION }), stderr: '' };
+        if (executable === '/trusted/docker') return { exitCode: 0, stdout: dockerInspect({ component: 'telegram-egress',
+          egressBuildInputs: { ...egressBuildInputs, securityMirror: 'https://deb.debian.org/debian-security' } }), stderr: '' };
+        throw new Error('scan must not begin after OCI label drift');
+      },
+    }), /OCI labels/);
+  } finally { await rm(driftRoot, { recursive: true, force: true }); }
+});
+
 test('CLI contract rejects unknown and duplicate arguments before external execution', async () => {
   assert.throws(() => parseImageSbomArgs(['--component', 'backend', '--component', 'gateway']), /duplicate/);
   assert.throws(() => parseImageSbomArgs(['--syft-executable', '/tmp/fake']), /unsupported/);
+  assert.doesNotThrow(() => parseImageSbomArgs(['--debian-mirror', 'https://mirrors.ustc.edu.cn/debian']));
   await assert.rejects(generateImageSbom({ execute: 'true', component: 'backend', 'git-sha': gitSha, image,
     'image-digest': imageDigest, 'native-output': '/tmp/native', output: '/tmp/normalized', token: 'secret' }, {
     allowInsecureTestPaths: true,

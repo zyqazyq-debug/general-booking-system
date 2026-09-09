@@ -44,6 +44,10 @@ test('egress overlay forbids shared proxy, host networking, ports and privileges
   assert.match(dockerfile, /ARG TELEGRAM_EGRESS_BASE_IMAGE=debian:bookworm-20260824-slim@sha256:[0-9a-f]{64}/);
   assert.match(dockerfile, /CLOUDFLARE_WARP_VERSION=2026\.7\.1377\.0/);
   assert.match(dockerfile, /CLOUDFLARE_WARP_DEB_SHA256=95d33c2b4fc42f21c204981c51470a6a679d618fb0b78ee64bdd0db142230c55/);
+  assert.match(dockerfile, /ARG TELEGRAM_EGRESS_DEBIAN_MIRROR=https:\/\/deb\.debian\.org\/debian/);
+  assert.match(dockerfile, /ARG TELEGRAM_EGRESS_DEBIAN_SECURITY_MIRROR=https:\/\/deb\.debian\.org\/debian-security/);
+  assert.match(dockerfile, /uk\.happybooking\.apt\.debian-mirror="\$TELEGRAM_EGRESS_DEBIAN_MIRROR"/);
+  assert.match(dockerfile, /uk\.happybooking\.apt\.security-mirror="\$TELEGRAM_EGRESS_DEBIAN_SECURITY_MIRROR"/);
   assert.doesNotMatch(dockerfile, /:latest/);
   assert.match(entrypoint, /trap cleanup EXIT/);
   assert.match(entrypoint, /trap 'exit 1' INT TERM/);
@@ -84,12 +88,15 @@ test('runtime readback binds exact egress image labels, container isolation, net
   const releaseIdentity = { releaseId: 'booking-20260910T000000Z-0123456', gitSha: '1'.repeat(40), manifestDigest: digest('a') };
   const manifest = { artifacts: { telegramEgress: { digest: digest('b'), baseImage: 'debian:bookworm-20260824-slim',
     baseImageDigest: 'sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867',
+    aptSources: { debianMirror: 'https://mirrors.ustc.edu.cn/debian', securityMirror: 'https://mirrors.ustc.edu.cn/debian-security' },
     warpPackage: { version: '2026.7.1377.0', sha256: '95d33c2b4fc42f21c204981c51470a6a679d618fb0b78ee64bdd0db142230c55' } } } };
   const lines = [
     { 'com.docker.compose.project': state.project, 'com.docker.compose.service': 'telegram-egress',
       'org.opencontainers.image.revision': releaseIdentity.gitSha, 'uk.happybooking.release-id': releaseIdentity.releaseId,
       'uk.happybooking.component': 'telegram-egress',
       'uk.happybooking.base-image': `${manifest.artifacts.telegramEgress.baseImage}@${manifest.artifacts.telegramEgress.baseImageDigest}`,
+      'uk.happybooking.apt.debian-mirror': manifest.artifacts.telegramEgress.aptSources.debianMirror,
+      'uk.happybooking.apt.security-mirror': manifest.artifacts.telegramEgress.aptSources.securityMirror,
       'uk.happybooking.cloudflare-warp.version': manifest.artifacts.telegramEgress.warpPackage.version,
       'uk.happybooking.cloudflare-warp.deb-sha256': manifest.artifacts.telegramEgress.warpPackage.sha256 },
     [`BOOKING_RELEASE_ID=${releaseIdentity.releaseId}`, `BOOKING_GIT_SHA=${releaseIdentity.gitSha}`,
@@ -111,7 +118,11 @@ test('runtime readback binds exact egress image labels, container isolation, net
 test('manifest rejects mutable or incomplete Telegram egress identity', async () => {
   const manifest = JSON.parse(await readFile(resolve(root, 'ops/contracts/examples/release-manifest.example.json'), 'utf8'));
   assert.equal(validateReleaseManifest(manifest), manifest);
-  for (const mutate of [(v) => { v.artifacts.telegramEgress.image = 'registry.test/egress:latest'; }, (v) => { delete v.artifacts.telegramEgress.warpPackage.sha256; }]) {
+  for (const mutate of [(v) => { v.artifacts.telegramEgress.image = 'registry.test/egress:latest'; },
+    (v) => { delete v.artifacts.telegramEgress.warpPackage.sha256; },
+    (v) => { v.artifacts.telegramEgress.aptSources.debianMirror = 'http://mirrors.ustc.edu.cn/debian'; },
+    (v) => { delete v.artifacts.telegramEgress.aptSources.securityMirror; },
+    (v) => { v.artifacts.telegramEgress.aptSources.unrecordedMirror = 'https://unknown.example/debian'; }]) {
     const value = structuredClone(manifest); mutate(value); assert.throws(() => validateReleaseManifest(value), ContractError);
   }
 });

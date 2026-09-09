@@ -55,6 +55,18 @@ function requireDigest(value, path) {
   return requireString(value, path, DIGEST);
 }
 
+function requireHttpsAptMirror(value, path) {
+  requireString(value, path);
+  let parsed;
+  try { parsed = new URL(value); } catch { throw new ContractError(`${path} must be an absolute HTTPS repository URL`, EXIT.IDENTITY); }
+  if (!/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$/.test(value) ||
+      parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash ||
+      !parsed.hostname || parsed.pathname === '/' || parsed.pathname.endsWith('/') || parsed.href !== value) {
+    throw new ContractError(`${path} must be a canonical credential-free HTTPS repository URL`, EXIT.IDENTITY);
+  }
+  return value;
+}
+
 function rejectSecretFields(value, path = 'manifest') {
   if (Array.isArray(value)) {
     value.forEach((item, index) => rejectSecretFields(item, `${path}[${index}]`));
@@ -98,7 +110,8 @@ function validateImageArtifact(value, path, gateway = false, legacy = false) {
 }
 
 function validateTelegramEgressArtifact(value, path) {
-  exactKeys(value, ['image', 'digest', 'sbomDigest', 'provenanceDigest', 'baseImage', 'baseImageDigest', 'warpPackage'], ['image', 'digest', 'sbomDigest', 'provenanceDigest', 'baseImage', 'baseImageDigest', 'warpPackage'], path);
+  const keys = ['image', 'digest', 'sbomDigest', 'provenanceDigest', 'buildInputDigest', 'baseImage', 'baseImageDigest', 'aptSources', 'warpPackage'];
+  exactKeys(value, keys, keys, path);
   const image = requireString(value.image, `${path}.image`);
   const finalSegment = image.slice(image.lastIndexOf('/') + 1);
   if (image === 'latest' || image.endsWith(':latest') || image.includes('@') || finalSegment.includes(':')) {
@@ -107,9 +120,13 @@ function validateTelegramEgressArtifact(value, path) {
   requireDigest(value.digest, `${path}.digest`);
   requireDigest(value.sbomDigest, `${path}.sbomDigest`);
   requireDigest(value.provenanceDigest, `${path}.provenanceDigest`);
+  requireDigest(value.buildInputDigest, `${path}.buildInputDigest`);
   const baseImage = requireString(value.baseImage, `${path}.baseImage`);
   if (baseImage.includes('@') || baseImage === 'latest' || baseImage.endsWith(':latest')) throw new ContractError(`${path}.baseImage must be an immutable-digest repository name`, EXIT.IDENTITY);
   requireDigest(value.baseImageDigest, `${path}.baseImageDigest`);
+  exactKeys(value.aptSources, ['debianMirror', 'securityMirror'], ['debianMirror', 'securityMirror'], `${path}.aptSources`);
+  requireHttpsAptMirror(value.aptSources.debianMirror, `${path}.aptSources.debianMirror`);
+  requireHttpsAptMirror(value.aptSources.securityMirror, `${path}.aptSources.securityMirror`);
   exactKeys(value.warpPackage, ['version', 'sha256'], ['version', 'sha256'], `${path}.warpPackage`);
   requireString(value.warpPackage.version, `${path}.warpPackage.version`, /^[0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+$/);
   requireString(value.warpPackage.sha256, `${path}.warpPackage.sha256`, /^[0-9a-f]{64}$/);

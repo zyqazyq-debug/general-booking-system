@@ -16,9 +16,17 @@ try {
   const source = cleanGitSource(root);
   const image = imageRepository(args.image, '--image');
   const digest = imageDigest(args['image-digest'], '--image-digest');
-  const sbomDigest = await readArtifact(args.sbom, component, source.gitSha, image, digest, 'SBOM', { root, nativePath: args['native-sbom'] });
   const baseImage = args['base-image'] || null;
-  const document = createLocalProvenance({ component, gitSha: source.gitSha, image, digest, sbomDigest, baseImage });
+  const aptSources = component === 'telegram-egress' ? {
+    debianMirror: args['debian-mirror'], securityMirror: args['security-mirror'],
+  } : null;
+  if (component !== 'telegram-egress' && (baseImage || args['debian-mirror'] || args['security-mirror'])) {
+    throw new ContractError('base image and APT source parameters are valid only for telegram-egress');
+  }
+  const sbomDigest = await readArtifact(args.sbom, component, source.gitSha, image, digest, 'SBOM', {
+    root, nativePath: args['native-sbom'], ...(component === 'telegram-egress' ? { baseImage, aptSources } : {}),
+  });
+  const document = createLocalProvenance({ component, gitSha: source.gitSha, image, digest, sbomDigest, baseImage, aptSources });
   await writeFile(args.output, canonicalDocument(document), 'utf8');
   process.stdout.write(`${JSON.stringify(gateResult({ gate: 'local-provenance', checks: [{ name: component, status: 'pass', code: 'LOCAL_PROVENANCE_GENERATED' }] }))}\n`);
 } catch (error) {

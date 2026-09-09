@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalDocument, digestFile, imageDigest, imageRepository, validateImageSbom } from './lib/artifacts.mjs';
+import { canonicalDocument, digestFile, httpsAptMirror, imageDigest, imageRepository, validateImageSbom } from './lib/artifacts.mjs';
 import { ContractError, gateResult, parseArgs, readJsonFile } from './lib/contracts.mjs';
 
 export const SYFT_VERSION = '1.51.1';
@@ -15,7 +15,8 @@ export const SYFT_JSON_SCHEMA_MAJOR = 16;
 const SHA = /^[0-9a-f]{40}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const COMPONENTS = new Set(['backend', 'gateway', 'telegram-egress']);
-const ALLOWED_ARGS = new Set(['execute', 'component', 'git-sha', 'image', 'image-digest', 'native-output', 'output']);
+const ALLOWED_ARGS = new Set(['execute', 'component', 'git-sha', 'image', 'image-digest', 'native-output', 'output',
+  'base-image', 'debian-mirror', 'security-mirror']);
 
 function exactObject(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -162,7 +163,7 @@ async function findTrustedExecutable(candidates, label) {
   throw new ContractError(`trusted ${label} executable is unavailable`);
 }
 
-function parseDockerInspect(stdout, { imageRef, component, gitSha }) {
+function parseDockerInspect(stdout, { imageRef, component, gitSha, egressBuildInputs = null }) {
   let value;
   try { value = JSON.parse(stdout); } catch { throw new ContractError('Docker image inspect did not return JSON'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ContractError('Docker image inspect result is invalid');
@@ -177,14 +178,20 @@ function parseDockerInspect(stdout, { imageRef, component, gitSha }) {
   if (!labels || labels['org.opencontainers.image.revision'] !== gitSha || labels['uk.happybooking.component'] !== component) {
     throw new ContractError('Docker image labels do not bind the requested Git SHA and component');
   }
-  return { imageId: value.Id, repoDigests: [...repoDigests].sort(), gitSha, component };
+  if (egressBuildInputs && (labels['uk.happybooking.base-image'] !== egressBuildInputs.baseImage ||
+      labels['uk.happybooking.apt.debian-mirror'] !== egressBuildInputs.debianMirror ||
+      labels['uk.happybooking.apt.security-mirror'] !== egressBuildInputs.securityMirror)) {
+    throw new ContractError('Telegram egress OCI labels do not bind the recorded base image and APT sources');
+  }
+  return { imageId: value.Id, repoDigests: [...repoDigests].sort(), gitSha, component,
+    ...(egressBuildInputs ? { egressBuildInputs } : {}) };
 }
 
 function sameDockerIdentity(before, after) {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
-export function normalizeSyftImageSbom(native, { component, gitSha, image, digest, nativeDigest, imageId }) {
+export function normalizeSyftImageSbom(native, { component, gitSha, image, digest, nativeDigest, imageId, egressBuildInputs = null }) {
   if (!COMPONENTS.has(component)) throw new ContractError('SBOM component is unsupported');
   if (!SHA.test(gitSha || '')) throw new ContractError('SBOM Git SHA is invalid');
   const repository = imageRepository(image, 'SBOM image');
@@ -268,10 +275,13 @@ export function normalizeSyftImageSbom(native, { component, gitSha, image, diges
     image: { name: repository, digest: immutableDigest },
     source: { gitSha },
     scanner: { name: 'syft', version: SYFT_VERSION, schemaVersion, nativeDigest, fileSelection: 'all', fileDigestAlgorithm: 'sha256' },
+    ...(component === 'telegram-egress' ? { buildInputs: structuredClone(egressBuildInputs) } : {}),
     packages,
     files,
   };
-  validateImageSbom(document, { component, gitSha, image: repository, digest: immutableDigest });
+  validateImageSbom(document, { component, gitSha, image: repository, digest: immutableDigest,
+    ...(egressBuildInputs ? { baseImage: egressBuildInputs.baseImage,
+      aptSources: { debianMirror: egressBuildInputs.debianMirror, securityMirror: egressBuildInputs.securityMirror } } : {}) });
   return document;
 }
 
@@ -281,6 +291,19 @@ export async function generateImageSbom(args, runtime = {}) {
   const component = args.component;
   if (!COMPONENTS.has(component) || !SHA.test(args['git-sha'] || '') || !args.image || !args['image-digest'] || !args['native-output'] || !args.output) {
     throw new ContractError('--component, --git-sha, --image, --image-digest, --native-output, and --output are required');
+  }
+  let egressBuildInputs = null;
+  if (component === 'telegram-egress') {
+    if (!/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(args['base-image'] || '')) {
+      throw new ContractError('Telegram egress image scan requires --base-image repository@sha256');
+    }
+    egressBuildInputs = {
+      baseImage: args['base-image'],
+      debianMirror: httpsAptMirror(args['debian-mirror'], '--debian-mirror'),
+      securityMirror: httpsAptMirror(args['security-mirror'], '--security-mirror'),
+    };
+  } else if (args['base-image'] || args['debian-mirror'] || args['security-mirror']) {
+    throw new ContractError('base image and APT source arguments are valid only for telegram-egress');
   }
   const repository = imageRepository(args.image, '--image');
   const digest = imageDigest(args['image-digest'], '--image-digest');
@@ -314,7 +337,7 @@ export async function generateImageSbom(args, runtime = {}) {
     const inspectArgs = ['image', 'inspect', '--format', '{{json .}}', imageRef];
     const beforeResult = await capture(dockerExecutable, inspectArgs, { timeoutMs: 60_000, env: runtime.env || process.env });
     if (beforeResult.exitCode !== 0) throw new ContractError('Docker could not inspect the immutable image before scanning');
-    const before = parseDockerInspect(beforeResult.stdout, { imageRef, component, gitSha: args['git-sha'] });
+    const before = parseDockerInspect(beforeResult.stdout, { imageRef, component, gitSha: args['git-sha'], egressBuildInputs });
 
     const scanResult = await scanToFile(syftExecutable, ['scan', imageRef, '--from', 'docker', '--output', 'syft-json'], nativeTemp, {
       timeoutMs: 1_800_000, env: scannerEnvironment(runtime.env),
@@ -325,14 +348,14 @@ export async function generateImageSbom(args, runtime = {}) {
     const nativeDocumentDigest = await digestFile(nativeTemp);
     const normalized = normalizeSyftImageSbom(native, {
       component, gitSha: args['git-sha'], image: repository, digest,
-      nativeDigest: nativeDocumentDigest, imageId: before.imageId,
+      nativeDigest: nativeDocumentDigest, imageId: before.imageId, egressBuildInputs,
     });
     await writeFile(normalizedTemp, canonicalDocument(normalized), { flag: 'wx', mode: 0o600 });
     await syncFile(normalizedTemp);
 
     const afterResult = await capture(dockerExecutable, inspectArgs, { timeoutMs: 60_000, env: runtime.env || process.env });
     if (afterResult.exitCode !== 0) throw new ContractError('Docker could not inspect the immutable image after scanning');
-    const after = parseDockerInspect(afterResult.stdout, { imageRef, component, gitSha: args['git-sha'] });
+    const after = parseDockerInspect(afterResult.stdout, { imageRef, component, gitSha: args['git-sha'], egressBuildInputs });
     if (!sameDockerIdentity(before, after)) throw new ContractError('Docker image identity changed during the Syft scan');
 
     await publishExclusive(nativeTemp, nativeOutput);

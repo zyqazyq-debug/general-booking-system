@@ -7,9 +7,14 @@ import { ContractError, canonicalJson, readJsonFile, sha256, validateReleaseMani
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
+const HTTPS_APT_MIRROR = /^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$/;
 const COMPONENTS = new Set(['backend', 'gateway', 'telegram-egress']);
 const LOCAL_PROVENANCE_PREDICATE_TYPE = 'urn:booking:attestation:local-provenance:v1';
 const LOCAL_BUILD_TYPE = 'urn:booking:build:local-release:v1';
+export const DEFAULT_TELEGRAM_EGRESS_APT_SOURCES = Object.freeze({
+  debianMirror: 'https://deb.debian.org/debian',
+  securityMirror: 'https://deb.debian.org/debian-security',
+});
 const BUILD_INPUTS = Object.freeze({
   backend: Object.freeze(['backend/Dockerfile', 'backend/package.json', 'backend/package-lock.json']),
   gateway: Object.freeze(['frontend/Dockerfile', 'frontend/nginx.release.conf.template', 'frontend/nginx.preprod.conf', 'frontend/package.json', 'frontend/package-lock.json']),
@@ -82,6 +87,37 @@ export function telegramEgressBaseImage(dockerfileText, requestedReference) {
   return { image, digest };
 }
 
+export function httpsAptMirror(value, label = 'APT mirror') {
+  let parsed;
+  try { parsed = new URL(value); } catch { throw new ContractError(`${label} must be an absolute HTTPS URL`); }
+  if (!HTTPS_APT_MIRROR.test(value) || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash ||
+      !parsed.hostname || parsed.pathname === '/' || parsed.pathname.endsWith('/') || parsed.href !== value) {
+    throw new ContractError(`${label} must be a canonical credential-free HTTPS repository URL`);
+  }
+  return value;
+}
+
+function validatedTelegramEgressAptSources(requested) {
+  if (!requested || typeof requested !== 'object' || Array.isArray(requested) ||
+      Object.keys(requested).sort().join(',') !== ['debianMirror', 'securityMirror'].sort().join(',')) {
+    throw new ContractError('Telegram egress APT sources must be explicitly recorded');
+  }
+  return {
+    debianMirror: httpsAptMirror(requested.debianMirror, 'Telegram egress Debian mirror'),
+    securityMirror: httpsAptMirror(requested.securityMirror, 'Telegram egress security mirror'),
+  };
+}
+
+export function telegramEgressAptSources(dockerfileText, requested) {
+  const defaultDebian = /^ARG TELEGRAM_EGRESS_DEBIAN_MIRROR=(https:\/\/[^\s]+)$/m.exec(dockerfileText || '');
+  const defaultSecurity = /^ARG TELEGRAM_EGRESS_DEBIAN_SECURITY_MIRROR=(https:\/\/[^\s]+)$/m.exec(dockerfileText || '');
+  if (defaultDebian?.[1] !== DEFAULT_TELEGRAM_EGRESS_APT_SOURCES.debianMirror ||
+      defaultSecurity?.[1] !== DEFAULT_TELEGRAM_EGRESS_APT_SOURCES.securityMirror) {
+    throw new ContractError('Telegram egress Dockerfile APT defaults differ from the reviewed official HTTPS sources');
+  }
+  return validatedTelegramEgressAptSources(requested);
+}
+
 function git(root, args) {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
   if (result.status !== 0) throw new ContractError(`git ${args.join(' ')} failed`);
@@ -144,21 +180,23 @@ export async function expectedBuildInputFiles(root, component) {
   return files;
 }
 
-export async function createBuildInputInventory(root, component, gitSha, { baseImage = null } = {}) {
+export async function createBuildInputInventory(root, component, gitSha, { baseImage = null, aptSources = null } = {}) {
   if (!SHA.test(gitSha || '')) throw new ContractError('build-input Git SHA is invalid');
   if (component === 'telegram-egress' && (typeof baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(baseImage))) {
     throw new ContractError('Telegram egress build inventory must bind its actual base image');
   }
+  const telegramAptSources = component === 'telegram-egress' ? validatedTelegramEgressAptSources(aptSources) : null;
+  if (component !== 'telegram-egress' && aptSources !== null) throw new ContractError('APT source parameters are supported only for Telegram egress');
   return {
     schema: 'booking.build-input-inventory/v1',
     component,
     source: { gitSha },
-    ...(component === 'telegram-egress' ? { parameters: { baseImage } } : {}),
+    ...(component === 'telegram-egress' ? { parameters: { baseImage, ...telegramAptSources } } : {}),
     files: await expectedBuildInputFiles(root, component),
   };
 }
 
-export function validateBuildInputInventory(document, { component, gitSha, expectedFiles, baseImage = null } = {}) {
+export function validateBuildInputInventory(document, { component, gitSha, expectedFiles, baseImage = null, aptSources = null } = {}) {
   const telegramEgress = (component || document?.component) === 'telegram-egress';
   exactObject(document, telegramEgress ? ['schema', 'component', 'source', 'parameters', 'files'] : ['schema', 'component', 'source', 'files'], 'build-input inventory');
   if (document.schema !== 'booking.build-input-inventory/v1') throw new ContractError('build-input inventory schema is unsupported');
@@ -170,9 +208,15 @@ export function validateBuildInputInventory(document, { component, gitSha, expec
     throw new ContractError('build-input inventory does not bind the release Git SHA');
   }
   if (telegramEgress) {
-    exactObject(document.parameters, ['baseImage'], 'build-input inventory parameters');
+    exactObject(document.parameters, ['baseImage', 'debianMirror', 'securityMirror'], 'build-input inventory parameters');
     if (typeof document.parameters.baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(document.parameters.baseImage) ||
         (baseImage && document.parameters.baseImage !== baseImage)) throw new ContractError('build-input base image binding is invalid');
+    const observedAptSources = validatedTelegramEgressAptSources({
+      debianMirror: document.parameters.debianMirror, securityMirror: document.parameters.securityMirror,
+    });
+    if (aptSources && JSON.stringify(observedAptSources) !== JSON.stringify(validatedTelegramEgressAptSources(aptSources))) {
+      throw new ContractError('build-input APT source binding is invalid');
+    }
   }
   const inventory = BUILD_INPUTS[document.component];
   if (!Array.isArray(document.files) || document.files.length === 0 || document.files.length !== inventory.length) {
@@ -190,8 +234,10 @@ export function validateBuildInputInventory(document, { component, gitSha, expec
   return document;
 }
 
-export function validateImageSbom(document, { component, gitSha, image, digest } = {}) {
-  exactObject(document, ['schema', 'component', 'image', 'source', 'scanner', 'packages', 'files'], 'image SBOM');
+export function validateImageSbom(document, { component, gitSha, image, digest, baseImage = null, aptSources = null } = {}) {
+  const telegramEgress = (component || document?.component) === 'telegram-egress';
+  exactObject(document, telegramEgress ? ['schema', 'component', 'image', 'source', 'scanner', 'buildInputs', 'packages', 'files'] :
+    ['schema', 'component', 'image', 'source', 'scanner', 'packages', 'files'], 'image SBOM');
   if (document.schema !== 'booking.image-sbom/v2') throw new ContractError('image SBOM schema is unsupported');
   if (!COMPONENTS.has(document.component) || (component && document.component !== component)) {
     throw new ContractError('image SBOM component is invalid');
@@ -213,6 +259,16 @@ export function validateImageSbom(document, { component, gitSha, image, digest }
     throw new ContractError('image SBOM scanner binding is unsupported');
   }
   exactDigest(document.scanner.nativeDigest, 'image SBOM scanner native digest');
+  if (telegramEgress) {
+    exactObject(document.buildInputs, ['baseImage', 'debianMirror', 'securityMirror'], 'image SBOM build inputs');
+    if (typeof document.buildInputs.baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(document.buildInputs.baseImage) ||
+        (baseImage && document.buildInputs.baseImage !== baseImage)) throw new ContractError('image SBOM base image binding is invalid');
+    const observedAptSources = validatedTelegramEgressAptSources({ debianMirror: document.buildInputs.debianMirror,
+      securityMirror: document.buildInputs.securityMirror });
+    if (aptSources && JSON.stringify(observedAptSources) !== JSON.stringify(validatedTelegramEgressAptSources(aptSources))) {
+      throw new ContractError('image SBOM APT source binding is invalid');
+    }
+  }
   if (!Array.isArray(document.packages) || document.packages.length === 0) {
     throw new ContractError('image SBOM package inventory must not be empty');
   }
@@ -238,7 +294,7 @@ export function validateImageSbom(document, { component, gitSha, image, digest }
   return document;
 }
 
-export function createLocalProvenance({ component, gitSha, image, digest, sbomDigest, baseImage = null }) {
+export function createLocalProvenance({ component, gitSha, image, digest, sbomDigest, baseImage = null, aptSources = null }) {
   if (!COMPONENTS.has(component)) throw new ContractError('provenance component is unsupported');
   if (!SHA.test(gitSha || '')) throw new ContractError('provenance Git SHA is invalid');
   imageRepository(image, 'provenance image');
@@ -247,7 +303,10 @@ export function createLocalProvenance({ component, gitSha, image, digest, sbomDi
   if (component === 'telegram-egress' && (typeof baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(baseImage))) {
     throw new ContractError('Telegram egress provenance must bind its actual immutable base image');
   }
-  if (component !== 'telegram-egress' && baseImage !== null) throw new ContractError('base image material is supported only for Telegram egress provenance');
+  const telegramAptSources = component === 'telegram-egress' ? validatedTelegramEgressAptSources(aptSources) : null;
+  if (component !== 'telegram-egress' && (baseImage !== null || aptSources !== null)) {
+    throw new ContractError('base image and APT materials are supported only for Telegram egress provenance');
+  }
   return {
     _type: 'https://in-toto.io/Statement/v1',
     subject: [{ name: image, digest: digestDescriptor(digest) }],
@@ -261,12 +320,16 @@ export function createLocalProvenance({ component, gitSha, image, digest, sbomDi
         { uri: `urn:booking:sbom:${component}`, digest: digestDescriptor(sbomDigest) },
         { uri: image, digest: digestDescriptor(digest) },
         ...(baseImage ? [{ uri: baseImage.slice(0, baseImage.lastIndexOf('@')), digest: digestDescriptor(baseImage.slice(baseImage.lastIndexOf('@') + 1)) }] : []),
+        ...(telegramAptSources ? [
+          { uri: telegramAptSources.debianMirror, digest: digestDescriptor(digestBytes(telegramAptSources.debianMirror)) },
+          { uri: telegramAptSources.securityMirror, digest: digestDescriptor(digestBytes(telegramAptSources.securityMirror)) },
+        ] : []),
       ],
     },
   };
 }
 
-export function validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest, baseImage = null } = {}) {
+export function validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest, baseImage = null, aptSources = null } = {}) {
   exactObject(document, ['_type', 'subject', 'predicateType', 'predicate'], 'provenance');
   if (document._type !== 'https://in-toto.io/Statement/v1') throw new ContractError('provenance statement type is unsupported');
   if (document.predicateType !== LOCAL_PROVENANCE_PREDICATE_TYPE) throw new ContractError('provenance predicateType is unsupported');
@@ -285,7 +348,7 @@ export function validateLocalProvenance(document, { component, gitSha, image, di
     throw new ContractError('provenance does not bind the release Git SHA');
   }
   const expectedComponent = component || document.predicate.component;
-  const expectedMaterialCount = expectedComponent === 'telegram-egress' ? 3 : 2;
+  const expectedMaterialCount = expectedComponent === 'telegram-egress' ? 5 : 2;
   if (!Array.isArray(document.predicate.materials) || document.predicate.materials.length !== expectedMaterialCount) {
     throw new ContractError('provenance materials must bind the exact SBOM, image, and component-specific build inputs');
   }
@@ -305,6 +368,13 @@ export function validateLocalProvenance(document, { component, gitSha, image, di
     const baseMaterial = exactObject(document.predicate.materials[2], ['uri', 'digest'], 'provenance base image material');
     const observedBase = `${baseMaterial.uri}@${descriptorDigest(baseMaterial.digest, 'provenance base image material digest')}`;
     if (!baseImage || observedBase !== baseImage) throw new ContractError('Telegram egress provenance does not bind the selected base image');
+    const expectedAptSources = validatedTelegramEgressAptSources(aptSources);
+    for (const [index, key] of ['debianMirror', 'securityMirror'].entries()) {
+      const material = exactObject(document.predicate.materials[index + 3], ['uri', 'digest'], `provenance ${key} material`);
+      if (material.uri !== expectedAptSources[key] || descriptorDigest(material.digest, `provenance ${key} material digest`) !== digestBytes(expectedAptSources[key])) {
+        throw new ContractError(`Telegram egress provenance does not bind the selected ${key}`);
+      }
+    }
   }
   return document;
 }
@@ -312,13 +382,14 @@ export function validateLocalProvenance(document, { component, gitSha, image, di
 export async function readArtifact(path, component, gitSha, image, digest, kind, options = {}) {
   const document = await readJsonFile(path);
   if (kind === 'SBOM') {
-    validateImageSbom(document, { component, gitSha, image, digest });
+    validateImageSbom(document, { component, gitSha, image, digest, baseImage: options.baseImage || null, aptSources: options.aptSources || null });
     if (!options.nativePath) throw new ContractError('native Syft document is required to verify the normalized SBOM');
     if (await digestFile(options.nativePath) !== document.scanner.nativeDigest) {
       throw new ContractError('normalized SBOM does not bind the supplied native Syft document');
     }
   } else if (kind === 'provenance') {
-    validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest: options.sbomDigest, baseImage: options.baseImage || null });
+    validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest: options.sbomDigest,
+      baseImage: options.baseImage || null, aptSources: options.aptSources || null });
   } else {
     throw new ContractError(`unsupported artifact kind: ${kind}`);
   }
@@ -346,6 +417,16 @@ export async function releaseInputs(root, args) {
   if (typeof egressBaseReference !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(egressBaseReference)) {
     throw new ContractError('--telegram-egress-base-image must be an immutable repository@sha256 reference');
   }
+  const egressAptSources = validatedTelegramEgressAptSources({
+    debianMirror: args['telegram-egress-debian-mirror'],
+    securityMirror: args['telegram-egress-security-mirror'],
+  });
+  const egressBuildInputPath = args['telegram-egress-build-input-inventory'];
+  if (!egressBuildInputPath) throw new ContractError('--telegram-egress-build-input-inventory is required');
+  const egressBuildInputDocument = await readJsonFile(egressBuildInputPath);
+  validateBuildInputInventory(egressBuildInputDocument, { component: 'telegram-egress', gitSha: source.gitSha,
+    expectedFiles: await expectedBuildInputFiles(root, 'telegram-egress'), baseImage: egressBaseReference, aptSources: egressAptSources });
+  const egressBuildInputDigest = await digestFile(egressBuildInputPath);
   for (const component of COMPONENTS) {
     const image = imageRepository(args[`${component}-image`], `--${component}-image`);
     const digest = imageDigest(args[`${component}-digest`], `--${component}-digest`);
@@ -353,14 +434,17 @@ export async function releaseInputs(root, args) {
     const nativeSbomPath = args[`${component}-native-sbom`];
     const provenancePath = args[`${component}-provenance`];
     if (!sbomPath || !nativeSbomPath || !provenancePath) throw new ContractError(`${component} native/normalized SBOM and provenance inputs are required`);
-    const sbomDigest = await readArtifact(sbomPath, component, source.gitSha, image, digest, 'SBOM', { root, nativePath: nativeSbomPath });
+    const sbomDigest = await readArtifact(sbomPath, component, source.gitSha, image, digest, 'SBOM', {
+      root, nativePath: nativeSbomPath,
+      ...(component === 'telegram-egress' ? { baseImage: egressBaseReference, aptSources: egressAptSources } : {}),
+    });
     const artifactKey = component === 'telegram-egress' ? 'telegramEgress' : component;
     artifact[artifactKey] = {
       image,
       digest,
       sbomDigest,
       provenanceDigest: await readArtifact(provenancePath, component, source.gitSha, image, digest, 'provenance', {
-        sbomDigest, ...(component === 'telegram-egress' ? { baseImage: egressBaseReference } : {}),
+        sbomDigest, ...(component === 'telegram-egress' ? { baseImage: egressBaseReference, aptSources: egressAptSources } : {}),
       }),
     };
   }
@@ -385,8 +469,10 @@ export async function releaseInputs(root, args) {
   if (!version || !packageSha) throw new ContractError('Telegram egress Dockerfile package identity is invalid');
   const baseReference = egressBaseReference;
   const { image: baseImage, digest: baseImageDigest } = telegramEgressBaseImage(egressDockerfileText, baseReference);
+  const aptSources = telegramEgressAptSources(egressDockerfileText, egressAptSources);
   Object.assign(artifact.telegramEgress, {
-    baseImage, baseImageDigest,
+    baseImage, baseImageDigest, buildInputDigest: egressBuildInputDigest,
+    aptSources,
     warpPackage: { version: version[1], sha256: packageSha[1] },
   });
   const composeFile = await canonicalSourceFile(root, args['compose-file'], 'ops/compose/compose.preprod.yml', '--compose-file');

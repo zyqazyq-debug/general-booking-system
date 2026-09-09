@@ -18,6 +18,7 @@ import {
   validateBuildInputInventory,
   validateImageSbom,
   validateLocalProvenance,
+  telegramEgressAptSources,
   telegramEgressBaseImage,
 } from './lib/artifacts.mjs';
 import { ContractError, validateReleaseManifest } from './lib/contracts.mjs';
@@ -27,8 +28,10 @@ const source = { gitSha: '1'.repeat(40), committedAt: '2026-09-08T01:02:03Z' };
 const artifacts = {
   backend: { image: 'registry.acme.test/booking/backend', digest: digest('2'), sbomDigest: digest('3'), provenanceDigest: digest('4') },
   gateway: { image: 'registry.acme.test/booking/gateway', digest: digest('5'), sbomDigest: digest('6'), provenanceDigest: digest('7'), frontendAssetDigest: digest('8'), routeContractDigest: digest('9'), telegramBotUsername: 'happybooking_preprod_bot', telegramBotDisplayName: 'HappyBooking Preprod' },
-  telegramEgress: { image: 'registry.acme.test/booking/telegram-egress', digest: digest('c'), sbomDigest: digest('d'), provenanceDigest: digest('e'),
-    baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: digest('f'), warpPackage: { version: '2026.7.1377.0', sha256: '0'.repeat(64) } },
+  telegramEgress: { image: 'registry.acme.test/booking/telegram-egress', digest: digest('c'), sbomDigest: digest('d'), provenanceDigest: digest('e'), buildInputDigest: digest('1'),
+    baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: digest('f'),
+    aptSources: { debianMirror: 'https://deb.debian.org/debian', securityMirror: 'https://deb.debian.org/debian-security' },
+    warpPackage: { version: '2026.7.1377.0', sha256: '0'.repeat(64) } },
   deployment: { composeDigest: digest('b') },
 };
 const migration = { expandFloor: '1774200000002-RemoveAgencyNodeUniqueIndex', catalogDigest: digest('a') };
@@ -96,6 +99,19 @@ test('Telegram egress base image accepts only an explicit digest-preserving sour
   assert.throws(() => telegramEgressBaseImage(dockerfile, `debian:bookworm-20260824-slim@${digest('1')}`), /differs/);
 });
 
+test('Telegram egress APT sources retain official HTTPS defaults and admit only explicit canonical HTTPS mirrors', async () => {
+  const dockerfile = await readFile(fileURLToPath(new URL('../telegram-egress/Dockerfile', import.meta.url)), 'utf8');
+  const ustc = { debianMirror: 'https://mirrors.ustc.edu.cn/debian', securityMirror: 'https://mirrors.ustc.edu.cn/debian-security' };
+  assert.deepEqual(telegramEgressAptSources(dockerfile, ustc), ustc);
+  assert.ok(dockerfile.indexOf('apt-get install -y --no-install-recommends ca-certificates') < dockerfile.indexOf('ARG TELEGRAM_EGRESS_DEBIAN_MIRROR='));
+  for (const aptSources of [
+    { ...ustc, debianMirror: 'http://mirrors.ustc.edu.cn/debian' },
+    { ...ustc, securityMirror: 'https://user:pass@mirrors.ustc.edu.cn/debian-security' },
+    { ...ustc, securityMirror: 'https://mirrors.ustc.edu.cn/debian-security/' },
+    { debianMirror: ustc.debianMirror },
+  ]) assert.throws(() => telegramEgressAptSources(dockerfile, aptSources), ContractError);
+});
+
 test('build-input inventory is exact and cannot be presented as an image SBOM', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-build-inputs-'));
   try {
@@ -111,40 +127,53 @@ test('build-input inventory is exact and cannot be presented as an image SBOM', 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('Telegram egress build inventory and provenance bind the actual digest-preserving base image', async () => {
+test('Telegram egress build inventory and provenance bind the actual base image and APT sources', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-egress-build-inputs-'));
   const baseImage = '127.0.0.1:15001/booking-preprod/base/debian:bookworm-20260824-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867';
+  const aptSources = { debianMirror: 'https://mirrors.ustc.edu.cn/debian', securityMirror: 'https://mirrors.ustc.edu.cn/debian-security' };
   try {
     await mkdir(join(root, 'ops', 'telegram-egress'), { recursive: true });
     for (const file of ['Dockerfile', 'entrypoint.sh', 'healthcheck.sh', 'readback.sh']) {
       await writeFile(join(root, 'ops', 'telegram-egress', file), `${file}\n`);
     }
-    const inventory = await createBuildInputInventory(root, 'telegram-egress', source.gitSha, { baseImage });
+    const inventory = await createBuildInputInventory(root, 'telegram-egress', source.gitSha, { baseImage, aptSources });
     assert.equal(validateBuildInputInventory(inventory, {
-      component: 'telegram-egress', gitSha: source.gitSha, baseImage,
+      component: 'telegram-egress', gitSha: source.gitSha, baseImage, aptSources,
     }), inventory);
     assert.throws(() => validateBuildInputInventory(inventory, {
       component: 'telegram-egress', gitSha: source.gitSha,
       baseImage: `debian:bookworm-20260824-slim@${digest('1')}`,
+      aptSources,
     }), /base image binding/);
+    assert.throws(() => validateBuildInputInventory(inventory, {
+      component: 'telegram-egress', gitSha: source.gitSha, baseImage,
+      aptSources: { ...aptSources, securityMirror: 'https://deb.debian.org/debian-security' },
+    }), /APT source binding/);
 
     const provenance = createLocalProvenance({
       component: 'telegram-egress', gitSha: source.gitSha,
       image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
-      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage, aptSources,
     });
     assert.equal(validateLocalProvenance(provenance, {
       component: 'telegram-egress', gitSha: source.gitSha,
       image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
-      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage, aptSources,
     }), provenance);
     const wrongBase = structuredClone(provenance);
     wrongBase.predicate.materials[2].digest.sha256 = '1'.repeat(64);
     assert.throws(() => validateLocalProvenance(wrongBase, {
       component: 'telegram-egress', gitSha: source.gitSha,
       image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
-      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage, aptSources,
     }), /selected base image/);
+    const wrongMirror = structuredClone(provenance);
+    wrongMirror.predicate.materials[4].uri = 'https://deb.debian.org/debian-security';
+    assert.throws(() => validateLocalProvenance(wrongMirror, {
+      component: 'telegram-egress', gitSha: source.gitSha,
+      image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage, aptSources,
+    }), /selected securityMirror/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
