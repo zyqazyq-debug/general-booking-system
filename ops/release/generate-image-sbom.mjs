@@ -223,8 +223,8 @@ export function normalizeSyftImageSbom(native, { component, gitSha, image, diges
   if (!Array.isArray(native.artifacts) || native.artifacts.length === 0) {
     throw new ContractError('Syft package inventory must not be empty');
   }
-  const packageKeys = new Set();
-  const packages = native.artifacts.map((entry, index) => {
+  const packageInventory = new Map();
+  native.artifacts.forEach((entry, index) => {
     const normalized = {
       name: regularString(entry?.name, `Syft artifacts[${index}].name`),
       version: regularString(entry?.version, `Syft artifacts[${index}].version`),
@@ -232,10 +232,10 @@ export function normalizeSyftImageSbom(native, { component, gitSha, image, diges
     };
     if (!normalized.purl.startsWith('pkg:')) throw new ContractError(`Syft artifacts[${index}].purl is invalid`);
     const key = `${normalized.name}\0${normalized.version}\0${normalized.purl}`;
-    if (packageKeys.has(key)) throw new ContractError(`Syft artifacts[${index}] duplicates a normalized package`);
-    packageKeys.add(key);
-    return normalized;
-  }).sort((left, right) => compareText(left.purl, right.purl) || compareText(left.name, right.name) || compareText(left.version, right.version));
+    if (!packageInventory.has(key)) packageInventory.set(key, normalized);
+  });
+  const packages = [...packageInventory.values()]
+    .sort((left, right) => compareText(left.purl, right.purl) || compareText(left.name, right.name) || compareText(left.version, right.version));
 
   if (!Array.isArray(native.files) || native.files.length === 0) throw new ContractError('Syft file inventory must not be empty');
   const filePaths = new Set();

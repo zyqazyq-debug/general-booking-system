@@ -45,9 +45,12 @@ function dockerInspect({ id = digest('9'), revision = gitSha, component = 'backe
 }
 
 test('normalizes version-pinned Syft image JSON deterministically and binds the native report', () => {
-  const document = normalizeSyftImageSbom(nativeDocument(), { component: 'backend', gitSha, image, digest: imageDigest, nativeDigest, imageId: digest('9') });
+  const native = nativeDocument();
+  native.artifacts.push({ ...structuredClone(native.artifacts[1]), id: 'one-at-another-location' });
+  const document = normalizeSyftImageSbom(native, { component: 'backend', gitSha, image, digest: imageDigest, nativeDigest, imageId: digest('9') });
   assert.equal(validateImageSbom(document, { component: 'backend', gitSha, image, digest: imageDigest }), document);
   assert.deepEqual(document.packages.map((entry) => entry.name), ['zlib', 'booking-runtime']);
+  assert.equal(document.packages.length, 2, 'identical name/version/PURL occurrences collapse to one canonical package');
   assert.deepEqual(document.files.map((entry) => entry.path), ['/app/package.json', '/usr/lib/libz.so']);
   assert.deepEqual(document.scanner, {
     name: 'syft', version: SYFT_VERSION, schemaVersion: '16.1.10', nativeDigest,
@@ -69,6 +72,7 @@ test('rejects Syft reports that do not prove exact image source, scanner, packag
     [(value) => { value.descriptor.version = '1.50.0'; }, /descriptor/],
     [(value) => { value.schema.version = '15.2.0'; }, /schema major/],
     [(value) => { value.artifacts[0].purl = ''; }, /purl/],
+    [(value) => { value.artifacts.push({ ...structuredClone(value.artifacts[0]), version: '' }); }, /version/],
     [(value) => { value.files[0].digests = []; }, /exactly one lowercase SHA-256/],
     [(value) => { value.files[1].location.path = value.files[0].location.path; }, /duplicated/],
   ];
