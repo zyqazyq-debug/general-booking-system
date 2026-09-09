@@ -1,4 +1,6 @@
+import { Buffer } from 'node:buffer';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { canonicalDocument, digestFile } from './artifacts.mjs';
@@ -17,6 +19,32 @@ import {
 
 const COMPONENTS = Object.freeze(['backend', 'gateway', 'telegram-egress']);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function runCosignCapture(executable, argv, options) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(executable, argv, { env: options.env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overflow = false;
+    const timer = setTimeout(() => child.kill('SIGKILL'), options.timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > 64 * 1024 * 1024) { overflow = true; child.kill('SIGKILL'); }
+      else stdout.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes <= 64 * 1024) stderr.push(chunk);
+    });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (exitCode, signal) => {
+      clearTimeout(timer);
+      resolvePromise({ exitCode, signal, overflow, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') });
+    });
+  });
+}
 
 async function trustedFile(path, label, runtime, { rootOnly = false } = {}) {
   if (!isAbsolute(path) || resolve(path) !== path) throw new ContractError(`${label} path must be absolute`, EXIT.IDENTITY);
@@ -198,8 +226,7 @@ export async function verifyRegistrySupplyChainRuntime({ state, releaseIdentity,
     `/volume1/homes/realzyq/${state.project}/.g4/supply-chain/${releaseIdentity.releaseId}`;
   const receiptRoot = await trustedDirectory(receiptRootPath, 'registry supply-chain evidence root', runtime, { rootOnly: true });
   const [{ publicKey, publicKeyDigest, anchorDigest }, cosign] = await Promise.all([approvedTrust(runtime), trustedCosign(runtime)]);
-  const runner = runtime.cosignCommandRunner || runtime.commandRunner;
-  if (typeof runner !== 'function') throw new ContractError('registry runtime gate command runner is unavailable', EXIT.IDENTITY);
+  const runner = runtime.cosignCommandRunner || runCosignCapture;
   const version = assertResult(await runner(cosign, ['version', '--json'], {
     env: cleanCosignEnvironment(runtime.env), timeoutMs: 30_000,
   }), 'Cosign version check');

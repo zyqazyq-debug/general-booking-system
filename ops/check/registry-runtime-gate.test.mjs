@@ -129,6 +129,16 @@ test('runtime gate uses the independent digest anchor and freshly verifies all t
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test('runtime gate uses a dedicated Cosign runner rather than the fenced action command runner', async () => {
+  const f = await fixture();
+  try {
+    const actionRunner = async () => { throw new Error('action runner must not receive Cosign registry output'); };
+    const result = await verifyRegistrySupplyChainRuntime(f, { ...f.runtime, commandRunner: actionRunner });
+    assert.equal(result.components.backend.registryTransport, 'loopback-http');
+    assert.equal(f.calls.length, 10);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
 test('three mutually agreeing receipts cannot substitute an independently approved public-key digest', async () => {
   const f = await fixture();
   try {

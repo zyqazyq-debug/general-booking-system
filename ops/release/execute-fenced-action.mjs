@@ -661,9 +661,7 @@ async function buildPlan(state, args, runtime) {
       environment: state.environment, project: state.project, operationId: state.operationId,
       fencingEpoch: state.fencingEpoch, releaseId: releaseIdentity.releaseId, gitSha: releaseIdentity.gitSha,
       manifestDigest: releaseIdentity.manifestDigest };
-    return verifyRegistrySupplyChainRuntime({ state, releaseIdentity, manifest }, {
-      ...runtime, cosignCommandRunner: runtime.cosignCommandRunner || defaultCommandRunner,
-    });
+    return verifyRegistrySupplyChainRuntime({ state, releaseIdentity, manifest }, runtime);
   };
   const registrySupplyChain = await inspectRegistrySupplyChain();
   trustedEnvironment.environmentBinding.BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST = sha256(registrySupplyChain);
