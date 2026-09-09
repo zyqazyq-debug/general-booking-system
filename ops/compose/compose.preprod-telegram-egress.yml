@@ -4,6 +4,14 @@ services:
   telegram-egress:
     image: ${BOOKING_TELEGRAM_EGRESS_IMAGE:?set egress image repository}@${BOOKING_TELEGRAM_EGRESS_DIGEST:?set immutable egress image digest}
     restart: unless-stopped
+    # WARP's system daemon requires root; all ambient capabilities are still
+    # dropped and the executor attests this exact explicit user at runtime.
+    user: "0:0"
+    environment:
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST:?set canonical manifest digest}
+      BOOKING_TELEGRAM_EGRESS_DIGEST: ${BOOKING_TELEGRAM_EGRESS_DIGEST:?set immutable egress image digest}
     read_only: true
     tmpfs: [/tmp, /run, /var/log/cloudflare-warp]
     volumes:
@@ -25,12 +33,32 @@ services:
     environment:
       BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
       TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    # Compose appends this sequence to the base service networks.  The
+    # executor also validates the rendered JSON before every staged mutation.
     networks: [preprod-telegram]
     depends_on:
       telegram-egress:
         condition: service_healthy
 
   backend-blue:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  order-worker-green:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  order-worker-blue:
     environment:
       BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
       TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080

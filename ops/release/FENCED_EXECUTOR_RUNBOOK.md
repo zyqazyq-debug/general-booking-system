@@ -91,6 +91,7 @@ On Synology the executor derives:
 - canonical state: `/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json`;
 - immutable release: `/volume1/homes/realzyq/booking-preprod/releases/<state releaseId>`;
 - Compose file: `<release>/ops/compose/compose.preprod.yml`;
+- Telegram egress overlay: `<release>/ops/compose/compose.preprod-telegram-egress.yml`;
 - release manifest: `<release>/release-manifest.json`;
 - Docker executable: `/var/packages/ContainerManager/target/usr/bin/docker`,
   falling back to `/usr/bin/docker`.
@@ -100,8 +101,9 @@ the executor as the same dedicated deployment identity. Do not grant the web
 application write access to the state, resource epoch, receipt, release, or
 Docker socket paths.
 
-Candidate manifests use `booking.release/v2` and must bind the raw Compose file
-bytes at `artifacts.deployment.composeDigest`. Before a Compose-backed action,
+Candidate manifests use `booking.release/v2` and must bind the canonical digest
+of the base Compose file plus Telegram egress overlay at
+`artifacts.deployment.composeDigest`. Before a Compose-backed action,
 the executor resolves the fixed release path, rejects a release-local `.env`,
 requires the release directory, manifest and Compose file to be root-owned and
 non-group/non-other-writable, and recomputes that digest. It mounts and supplies the fixed
@@ -134,6 +136,7 @@ never removed automatically, even if it appears stale.
 |---|---|---|---|
 | `preprod-baseline-ledger` | `STAGED` | `database:booking-preprod` | One-time only: verifies old release evidence, zero schema diff and a recent backup, atomically creates the ledger, then uses a separate read-only container to prove the exact committed ledger. |
 | `preprod-expand-migrate` | `STAGED` | `database:booking-preprod` | Verifies the apply receipt and then independently reopens PostgreSQL to prove the complete ordered migration ledger and its exact release/catalog binding. |
+| `preprod-prepare-telegram-egress` | `EXPAND_MIGRATED` or controlled `ROLLED_BACK` re-promotion | `telegram:booking-preprod` | Renders the bound two-file Compose bundle, starts only `telegram-egress`, and proves image, labels, isolation, exact networks, health, and a fresh token-free Telegram HTTPS receipt bound to this operation and container. |
 | `preprod-stage` | `EXPAND_MIGRATED` or controlled `ROLLED_BACK` re-promotion | `booking-preprod-edge` | Starts only `backend-<candidate slot>` and `gateway-<candidate slot>`; then proves both are running and healthy. |
 | `preprod-probe-candidate` | `CANDIDATE_STARTED` | `probe:booking-preprod:candidate` | Proves the isolated candidate release identity. |
 | `preprod-probe-active` | `CANDIDATE_READY` | `probe:booking-preprod:active` | Freshly proves the old active identity before singleton transfer. |
@@ -148,7 +151,8 @@ never removed automatically, even if it appears stale.
 Both API slot services permanently set `BOOKING_WORKERS_ENABLED=false` and
 `ORDER_OUTBOX_DISPATCH_ENABLED=false`. `order-worker-blue` and
 `order-worker-green` use the same manifest-bound backend image, set both flags
-to `true`, publish no host port, join only the data network, and force Telegram
+to `true`, publish no host port, retain the data network and additionally join
+only the internal Telegram egress network, and force Telegram
 delivery off (`polling` mode with delete-on-startup false, webhook false). Thus
 the worker process cannot expose `/telegram/webhook` through either gateway.
 The Telegram persistence encryption key is not stored in the shared `.env`.
@@ -191,6 +195,15 @@ image preflight applies the same one-time binding and requires the observed old
 image to have no RepoDigest, exactly one `uniqueTag`, and absent OCI labels;
 ordinary candidates and every non-exact legacy identity still require the full
 OCI label contract. Ingress rollback does not run a Docker image preflight.
+
+Every non-legacy executor invocation also validates three root-controlled
+registry-attestation receipts (`backend`, `gateway`, and `telegram-egress`)
+under `.g4/supply-chain/<releaseId>/<component>/`. Each receipt must bind the
+same release manifest, immutable image digest, normalized image SBOM digest,
+local provenance digest, approved signer identity, and trust root. The egress
+provenance has a third material that binds the actual digest-preserving Debian
+base-image reference selected for the build. Missing or mismatched receipts
+fail closed before Docker mutation and are rechecked on receipt replay.
 
 Every external milestone is selected from the canonical executor receipt store:
 expand requires baseline (for the exact legacy bootstrap) plus migration;

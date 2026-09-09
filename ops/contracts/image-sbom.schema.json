@@ -7,7 +7,7 @@
   "required": ["schema", "component", "image", "source", "scanner", "packages", "files"],
   "properties": {
     "schema": { "const": "booking.image-sbom/v2" },
-    "component": { "enum": ["backend", "gateway"] },
+    "component": { "enum": ["backend", "gateway", "telegram-egress"] },
     "image": {
       "type": "object",
       "additionalProperties": false,

@@ -140,7 +140,7 @@ function annotationArgs(annotations) {
 function validateArguments(args) {
   for (const key of Object.keys(args)) if (!ALLOWED_ARGS.has(key)) throw new ContractError(`unsupported registry attestation argument: --${key}`);
   for (const key of REQUIRED_ARGS) if (!args[key]) throw new ContractError(`--${key} is required`);
-  if (args.execute !== 'true' || !['backend', 'gateway'].includes(args.component)) throw new ContractError('--execute true and a valid --component are required');
+  if (args.execute !== 'true' || !['backend', 'gateway', 'telegram-egress'].includes(args.component)) throw new ContractError('--execute true and a valid --component are required');
   if (!SHA256_DIGEST.test(args['public-key-digest'])) throw new ContractError('--public-key-digest must be a SHA-256 digest');
   if (args['signing-mode'] !== COSIGN_SIGNING_MODE) throw new ContractError(`--signing-mode must be ${COSIGN_SIGNING_MODE}`);
   if (args['registry-transport'] && !['https', 'loopback-http'].includes(args['registry-transport'])) {
@@ -224,10 +224,12 @@ async function loadBinding(args, runtime) {
   const manifest = validateReleaseManifest(await readJsonFile(manifestPath));
   const manifestDigest = sha256(manifest);
   if (manifestDigest !== args['manifest-digest']) throw new ContractError('release manifest digest does not match the canonical manifest');
-  const artifact = manifest.artifacts[args.component];
+  const artifact = manifest.artifacts[args.component === 'telegram-egress' ? 'telegramEgress' : args.component];
   const sbomDigest = await readArtifact(sbomPath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'SBOM', { nativePath: nativeSbomPath });
   if (sbomDigest !== artifact.sbomDigest) throw new ContractError('normalized image SBOM digest differs from the release manifest');
-  const provenanceDigest = await readArtifact(provenancePath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'provenance', { sbomDigest });
+  const provenanceDigest = await readArtifact(provenancePath, args.component, manifest.source.gitSha, artifact.image, artifact.digest, 'provenance', {
+    sbomDigest, ...(args.component === 'telegram-egress' ? { baseImage: `${artifact.baseImage}@${artifact.baseImageDigest}` } : {}),
+  });
   if (provenanceDigest !== artifact.provenanceDigest) throw new ContractError('local provenance digest differs from the release manifest');
   const [sbomDocument, provenanceDocument] = await Promise.all([
     canonicalEvidence(sbomPath, 'normalized image SBOM'), canonicalEvidence(provenancePath, 'local provenance'),

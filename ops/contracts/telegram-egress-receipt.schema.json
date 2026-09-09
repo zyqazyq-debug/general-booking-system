@@ -4,10 +4,11 @@
   "title": "HappyBooking preproduction Telegram egress receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "status", "releaseId", "manifestDigest", "egress", "transport", "observedAt"],
+  "required": ["schema", "status", "operationId", "releaseId", "manifestDigest", "egress", "container", "transport", "observedAt"],
   "properties": {
     "schema": { "const": "booking.telegram-egress-receipt/v1" },
     "status": { "const": "pass" },
+    "operationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
     "manifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "egress": {
@@ -19,13 +20,25 @@
         "proxyUrl": { "const": "socks5h://telegram-egress:1080" }
       }
     },
+    "container": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "imageId", "composeProject", "composeService"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{12,64}$" },
+        "imageId": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "composeProject": { "const": "booking-preprod" },
+        "composeService": { "const": "telegram-egress" }
+      }
+    },
     "transport": {
       "type": "object", "additionalProperties": false,
-      "required": ["target", "tokenFree", "httpStatus"],
+      "required": ["scheme", "target", "path", "tokenFree", "httpStatus"],
       "properties": {
+        "scheme": { "const": "https" },
         "target": { "const": "api.telegram.org" },
+        "path": { "const": "/botinvalid/getMe" },
         "tokenFree": { "const": true },
-        "httpStatus": { "type": "integer", "minimum": 400, "maximum": 499 }
+        "httpStatus": { "const": 404 }
       }
     },
     "observedAt": { "type": "string", "format": "date-time" }

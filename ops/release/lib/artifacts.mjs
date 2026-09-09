@@ -7,12 +7,13 @@ import { ContractError, canonicalJson, readJsonFile, sha256, validateReleaseMani
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
-const COMPONENTS = new Set(['backend', 'gateway']);
+const COMPONENTS = new Set(['backend', 'gateway', 'telegram-egress']);
 const LOCAL_PROVENANCE_PREDICATE_TYPE = 'urn:booking:attestation:local-provenance:v1';
 const LOCAL_BUILD_TYPE = 'urn:booking:build:local-release:v1';
 const BUILD_INPUTS = Object.freeze({
   backend: Object.freeze(['backend/Dockerfile', 'backend/package.json', 'backend/package-lock.json']),
   gateway: Object.freeze(['frontend/Dockerfile', 'frontend/nginx.release.conf.template', 'frontend/nginx.preprod.conf', 'frontend/package.json', 'frontend/package-lock.json']),
+  'telegram-egress': Object.freeze(['ops/telegram-egress/Dockerfile', 'ops/telegram-egress/entrypoint.sh', 'ops/telegram-egress/healthcheck.sh', 'ops/telegram-egress/readback.sh']),
 });
 
 function exactObject(value, keys, label) {
@@ -66,6 +67,19 @@ export function imageRepository(value, label = 'image') {
 export function imageDigest(value, label = 'image digest') {
   if (typeof value !== 'string' || !DIGEST.test(value)) throw new ContractError(`${label} must be a sha256 digest`);
   return value;
+}
+
+export function telegramEgressBaseImage(dockerfileText, requestedReference) {
+  const base = /^ARG TELEGRAM_EGRESS_BASE_IMAGE=debian:bookworm-20260824-slim@(sha256:[0-9a-f]{64})$/m.exec(dockerfileText || '');
+  const split = typeof requestedReference === 'string' ? requestedReference.lastIndexOf('@') : -1;
+  if (!base || split < 1) throw new ContractError('--telegram-egress-base-image must be an immutable repository@sha256 reference');
+  const image = requestedReference.slice(0, split);
+  if (!/^[A-Za-z0-9._:/-]+$/.test(image) || image.endsWith(':latest') || image.includes('registry.example.invalid')) {
+    throw new ContractError('--telegram-egress-base-image repository is invalid');
+  }
+  const digest = imageDigest(requestedReference.slice(split + 1), '--telegram-egress-base-image digest');
+  if (digest !== base[1]) throw new ContractError('Telegram egress base image digest differs from the reviewed Dockerfile input');
+  return { image, digest };
 }
 
 function git(root, args) {
@@ -130,18 +144,23 @@ export async function expectedBuildInputFiles(root, component) {
   return files;
 }
 
-export async function createBuildInputInventory(root, component, gitSha) {
+export async function createBuildInputInventory(root, component, gitSha, { baseImage = null } = {}) {
   if (!SHA.test(gitSha || '')) throw new ContractError('build-input Git SHA is invalid');
+  if (component === 'telegram-egress' && (typeof baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(baseImage))) {
+    throw new ContractError('Telegram egress build inventory must bind its actual base image');
+  }
   return {
     schema: 'booking.build-input-inventory/v1',
     component,
     source: { gitSha },
+    ...(component === 'telegram-egress' ? { parameters: { baseImage } } : {}),
     files: await expectedBuildInputFiles(root, component),
   };
 }
 
-export function validateBuildInputInventory(document, { component, gitSha, expectedFiles } = {}) {
-  exactObject(document, ['schema', 'component', 'source', 'files'], 'build-input inventory');
+export function validateBuildInputInventory(document, { component, gitSha, expectedFiles, baseImage = null } = {}) {
+  const telegramEgress = (component || document?.component) === 'telegram-egress';
+  exactObject(document, telegramEgress ? ['schema', 'component', 'source', 'parameters', 'files'] : ['schema', 'component', 'source', 'files'], 'build-input inventory');
   if (document.schema !== 'booking.build-input-inventory/v1') throw new ContractError('build-input inventory schema is unsupported');
   if (!COMPONENTS.has(document.component) || (component && document.component !== component)) {
     throw new ContractError('build-input inventory component is invalid');
@@ -149,6 +168,11 @@ export function validateBuildInputInventory(document, { component, gitSha, expec
   exactObject(document.source, ['gitSha'], 'build-input inventory source');
   if (!SHA.test(document.source.gitSha || '') || (gitSha && document.source.gitSha !== gitSha)) {
     throw new ContractError('build-input inventory does not bind the release Git SHA');
+  }
+  if (telegramEgress) {
+    exactObject(document.parameters, ['baseImage'], 'build-input inventory parameters');
+    if (typeof document.parameters.baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(document.parameters.baseImage) ||
+        (baseImage && document.parameters.baseImage !== baseImage)) throw new ContractError('build-input base image binding is invalid');
   }
   const inventory = BUILD_INPUTS[document.component];
   if (!Array.isArray(document.files) || document.files.length === 0 || document.files.length !== inventory.length) {
@@ -214,12 +238,16 @@ export function validateImageSbom(document, { component, gitSha, image, digest }
   return document;
 }
 
-export function createLocalProvenance({ component, gitSha, image, digest, sbomDigest }) {
+export function createLocalProvenance({ component, gitSha, image, digest, sbomDigest, baseImage = null }) {
   if (!COMPONENTS.has(component)) throw new ContractError('provenance component is unsupported');
   if (!SHA.test(gitSha || '')) throw new ContractError('provenance Git SHA is invalid');
   imageRepository(image, 'provenance image');
   imageDigest(digest, 'provenance image digest');
   exactDigest(sbomDigest, 'provenance SBOM digest');
+  if (component === 'telegram-egress' && (typeof baseImage !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(baseImage))) {
+    throw new ContractError('Telegram egress provenance must bind its actual immutable base image');
+  }
+  if (component !== 'telegram-egress' && baseImage !== null) throw new ContractError('base image material is supported only for Telegram egress provenance');
   return {
     _type: 'https://in-toto.io/Statement/v1',
     subject: [{ name: image, digest: digestDescriptor(digest) }],
@@ -232,12 +260,13 @@ export function createLocalProvenance({ component, gitSha, image, digest, sbomDi
       materials: [
         { uri: `urn:booking:sbom:${component}`, digest: digestDescriptor(sbomDigest) },
         { uri: image, digest: digestDescriptor(digest) },
+        ...(baseImage ? [{ uri: baseImage.slice(0, baseImage.lastIndexOf('@')), digest: digestDescriptor(baseImage.slice(baseImage.lastIndexOf('@') + 1)) }] : []),
       ],
     },
   };
 }
 
-export function validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest } = {}) {
+export function validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest, baseImage = null } = {}) {
   exactObject(document, ['_type', 'subject', 'predicateType', 'predicate'], 'provenance');
   if (document._type !== 'https://in-toto.io/Statement/v1') throw new ContractError('provenance statement type is unsupported');
   if (document.predicateType !== LOCAL_PROVENANCE_PREDICATE_TYPE) throw new ContractError('provenance predicateType is unsupported');
@@ -255,21 +284,27 @@ export function validateLocalProvenance(document, { component, gitSha, image, di
   if (!SHA.test(document.predicate.source.gitSha || '') || (gitSha && document.predicate.source.gitSha !== gitSha)) {
     throw new ContractError('provenance does not bind the release Git SHA');
   }
-  if (!Array.isArray(document.predicate.materials) || document.predicate.materials.length !== 2) {
-    throw new ContractError('provenance materials must bind exactly the SBOM and image');
+  const expectedComponent = component || document.predicate.component;
+  const expectedMaterialCount = expectedComponent === 'telegram-egress' ? 3 : 2;
+  if (!Array.isArray(document.predicate.materials) || document.predicate.materials.length !== expectedMaterialCount) {
+    throw new ContractError('provenance materials must bind the exact SBOM, image, and component-specific build inputs');
   }
   const [sbomMaterial, imageMaterial] = document.predicate.materials;
   exactObject(sbomMaterial, ['uri', 'digest'], 'provenance SBOM material');
   exactObject(imageMaterial, ['uri', 'digest'], 'provenance image material');
   const sbomMaterialDigest = descriptorDigest(sbomMaterial.digest, 'provenance SBOM material digest');
   const imageMaterialDigest = descriptorDigest(imageMaterial.digest, 'provenance image material digest');
-  const expectedComponent = component || document.predicate.component;
   if (sbomMaterial.uri !== `urn:booking:sbom:${expectedComponent}` || (sbomDigest && sbomMaterialDigest !== sbomDigest)) {
     throw new ContractError('provenance does not bind the requested SBOM digest');
   }
   if (imageMaterial.uri !== subject.name || imageMaterialDigest !== subjectDigest ||
       (image && subject.name !== image) || (digest && subjectDigest !== digest)) {
     throw new ContractError('provenance does not bind one immutable image identity');
+  }
+  if (expectedComponent === 'telegram-egress') {
+    const baseMaterial = exactObject(document.predicate.materials[2], ['uri', 'digest'], 'provenance base image material');
+    const observedBase = `${baseMaterial.uri}@${descriptorDigest(baseMaterial.digest, 'provenance base image material digest')}`;
+    if (!baseImage || observedBase !== baseImage) throw new ContractError('Telegram egress provenance does not bind the selected base image');
   }
   return document;
 }
@@ -283,7 +318,7 @@ export async function readArtifact(path, component, gitSha, image, digest, kind,
       throw new ContractError('normalized SBOM does not bind the supplied native Syft document');
     }
   } else if (kind === 'provenance') {
-    validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest: options.sbomDigest });
+    validateLocalProvenance(document, { component, gitSha, image, digest, sbomDigest: options.sbomDigest, baseImage: options.baseImage || null });
   } else {
     throw new ContractError(`unsupported artifact kind: ${kind}`);
   }
@@ -307,6 +342,10 @@ export async function releaseInputs(root, args) {
   const targetPlatform = args['target-platform'];
   if (!/^linux\/(amd64|arm64)$/.test(targetPlatform || '')) throw new ContractError('--target-platform must be linux/amd64 or linux/arm64');
   const artifact = {};
+  const egressBaseReference = args['telegram-egress-base-image'];
+  if (typeof egressBaseReference !== 'string' || !/^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$/.test(egressBaseReference)) {
+    throw new ContractError('--telegram-egress-base-image must be an immutable repository@sha256 reference');
+  }
   for (const component of COMPONENTS) {
     const image = imageRepository(args[`${component}-image`], `--${component}-image`);
     const digest = imageDigest(args[`${component}-digest`], `--${component}-digest`);
@@ -315,11 +354,14 @@ export async function releaseInputs(root, args) {
     const provenancePath = args[`${component}-provenance`];
     if (!sbomPath || !nativeSbomPath || !provenancePath) throw new ContractError(`${component} native/normalized SBOM and provenance inputs are required`);
     const sbomDigest = await readArtifact(sbomPath, component, source.gitSha, image, digest, 'SBOM', { root, nativePath: nativeSbomPath });
-    artifact[component] = {
+    const artifactKey = component === 'telegram-egress' ? 'telegramEgress' : component;
+    artifact[artifactKey] = {
       image,
       digest,
       sbomDigest,
-      provenanceDigest: await readArtifact(provenancePath, component, source.gitSha, image, digest, 'provenance', { sbomDigest }),
+      provenanceDigest: await readArtifact(provenancePath, component, source.gitSha, image, digest, 'provenance', {
+        sbomDigest, ...(component === 'telegram-egress' ? { baseImage: egressBaseReference } : {}),
+      }),
     };
   }
   const frontendDirectory = args['frontend-dir'];
@@ -338,21 +380,24 @@ export async function releaseInputs(root, args) {
   artifact.gateway.telegramBotDisplayName = args['telegram-bot-display-name'];
   const egressDockerfile = await canonicalSourceFile(root, args['telegram-egress-dockerfile'], 'ops/telegram-egress/Dockerfile', '--telegram-egress-dockerfile');
   const egressDockerfileText = await readFile(egressDockerfile, 'utf8');
-  const base = /^FROM debian:bookworm-20260824-slim@(sha256:[0-9a-f]{64})$/m.exec(egressDockerfileText);
   const version = /^ARG CLOUDFLARE_WARP_VERSION=([0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+)$/m.exec(egressDockerfileText);
   const packageSha = /^ARG CLOUDFLARE_WARP_DEB_SHA256=([0-9a-f]{64})$/m.exec(egressDockerfileText);
-  if (!base || !version || !packageSha) throw new ContractError('Telegram egress Dockerfile package identity is invalid');
-  artifact.telegramEgress = {
-    image: imageRepository(args['telegram-egress-image'], '--telegram-egress-image'),
-    digest: imageDigest(args['telegram-egress-digest'], '--telegram-egress-digest'),
-    baseImageDigest: base[1],
+  if (!version || !packageSha) throw new ContractError('Telegram egress Dockerfile package identity is invalid');
+  const baseReference = egressBaseReference;
+  const { image: baseImage, digest: baseImageDigest } = telegramEgressBaseImage(egressDockerfileText, baseReference);
+  Object.assign(artifact.telegramEgress, {
+    baseImage, baseImageDigest,
     warpPackage: { version: version[1], sha256: packageSha[1] },
-  };
+  });
   const composeFile = await canonicalSourceFile(root, args['compose-file'], 'ops/compose/compose.preprod.yml', '--compose-file');
   const egressComposeFile = await canonicalSourceFile(root, args['telegram-egress-compose-file'], 'ops/compose/compose.preprod-telegram-egress.yml', '--telegram-egress-compose-file');
-  artifact.deployment = { composeDigest: sha256([await digestFile(composeFile), await digestFile(egressComposeFile)]) };
+  artifact.deployment = { composeDigest: await composeBundleDigest(composeFile, egressComposeFile) };
   const migration = await migrationCatalog(root);
   return { source, targetPlatform, artifact, migration };
+}
+
+export async function composeBundleDigest(composeFile, egressComposeFile) {
+  return sha256([await digestFile(composeFile), await digestFile(egressComposeFile)]);
 }
 
 export function createReleaseManifest({ source, targetPlatform, artifact, migration, rollbackCompatibleRelease = null }) {

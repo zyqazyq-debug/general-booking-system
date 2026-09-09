@@ -114,7 +114,7 @@ done
 [ "$execute" = 'true' ] || fail
 case "$entrypoint:$action" in
   manage-deploy-state:init|manage-deploy-state:acquire|manage-deploy-state:takeover|manage-deploy-state:renew|manage-deploy-state:transition) ;;
-  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-probe-candidate|execute-fenced-action:preprod-probe-active|execute-fenced-action:preprod-probe-observation|execute-fenced-action:preprod-probe-rollback|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
+  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-prepare-telegram-egress|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-probe-candidate|execute-fenced-action:preprod-probe-active|execute-fenced-action:preprod-probe-observation|execute-fenced-action:preprod-probe-rollback|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
   generate-database-backup-receipt:create)
     [ "$identity" = 'old' ] || fail
     [ "$release_id" = "$LEGACY_RELEASE" ] || fail

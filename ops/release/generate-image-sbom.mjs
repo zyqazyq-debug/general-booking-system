@@ -14,7 +14,7 @@ export const SYFT_VERSION = '1.51.1';
 export const SYFT_JSON_SCHEMA_MAJOR = 16;
 const SHA = /^[0-9a-f]{40}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const COMPONENTS = new Set(['backend', 'gateway']);
+const COMPONENTS = new Set(['backend', 'gateway', 'telegram-egress']);
 const ALLOWED_ARGS = new Set(['execute', 'component', 'git-sha', 'image', 'image-digest', 'native-output', 'output']);
 
 function exactObject(value, keys, label) {

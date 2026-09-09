@@ -7,10 +7,12 @@ import { createServer } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson, ContractError, EXIT, gateResult, parseArgs, readJsonFile, sha256, validateReleaseManifest } from './lib/contracts.mjs';
-import { digestFile, directoryDigest } from './lib/artifacts.mjs';
+import { composeBundleDigest, digestFile, directoryDigest } from './lib/artifacts.mjs';
 import { canonicalStatePath, withDeployStateLock } from './lib/deploy-state-store.mjs';
 import { acceptResourceEpoch, acquireResourceLocks, adoptPriorEpochPendingAction, completeResourceAction, inspectLockedResourceState, readCanonicalExecutorReceiptByDigest, readExecutorReceipt, readExecutorRecoveryReceiptByDigest, recoverResourceAction, releaseResourceLocks, supersedePriorEpochPendingAction, writeExecutorReceipt, writeExecutorRecoveryReceipt } from './lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
+import { validateRegistryAttestationReceipt } from './lib/registry-attestation.mjs';
+import { TELEGRAM_PROXY_URL, verifyTelegramEgressReceipt } from './verify-telegram-egress.mjs';
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -21,6 +23,7 @@ const ALLOWED_FIELDS = new Set([
 const ACTIONS = Object.freeze({
   'preprod-baseline-ledger': { phases: ['STAGED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'compose-baseline' },
   'preprod-expand-migrate': { phases: ['STAGED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'compose-migrate' },
+  'preprod-prepare-telegram-egress': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'telegram', resources: ['telegram'], kind: 'compose-egress' },
   'preprod-stage': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'edgeNetwork', resources: ['edgeNetwork'], kind: 'compose-stage' },
   'preprod-probe-candidate': { phases: ['CANDIDATE_STARTED'], primary: 'candidateProbe', resources: ['candidateProbe'], kind: 'release-probe' },
   'preprod-probe-active': { phases: ['CANDIDATE_READY'], primary: 'activeProbe', resources: ['activeProbe'], kind: 'release-probe', identity: 'active' },
@@ -112,7 +115,7 @@ async function trustedReleasePaths(state, releaseIdentity, runtime) {
     if (error instanceof ContractError) throw error;
     if (error?.code !== 'ENOENT') throw new ContractError('release-local .env status cannot be verified', EXIT.IDENTITY);
   }
-  let composeFile;
+  let composeFile; let egressComposeFile = null;
   const exactLegacy = releaseIdentity.releaseId === LEGACY_OLD_BINDING.releaseId && releaseIdentity.gitSha === LEGACY_OLD_BINDING.gitSha &&
     releaseIdentity.manifestDigest === LEGACY_OLD_BINDING.manifestRawDigest;
   if (exactLegacy) {
@@ -128,21 +131,24 @@ async function trustedReleasePaths(state, releaseIdentity, runtime) {
     await trustedDirectory(join(releaseDirectory, 'ops'), 'release ops directory', runtime);
     await trustedDirectory(join(releaseDirectory, 'ops', 'compose'), 'release compose directory', runtime);
     composeFile = await realpath(join(releaseDirectory, 'ops', 'compose', 'compose.preprod.yml')).catch(() => { throw new ContractError('candidate compose file cannot be resolved', EXIT.IDENTITY); });
+    egressComposeFile = await realpath(join(releaseDirectory, 'ops', 'compose', 'compose.preprod-telegram-egress.yml')).catch(() => { throw new ContractError('candidate Telegram egress Compose file cannot be resolved', EXIT.IDENTITY); });
     const composeContainment = relative(releaseDirectory, composeFile);
     if (!composeContainment || composeContainment.startsWith('..') || isAbsolute(composeContainment)) throw new ContractError('candidate compose file escapes immutable release directory', EXIT.IDENTITY);
+    const egressContainment = relative(releaseDirectory, egressComposeFile);
+    if (!egressContainment || egressContainment.startsWith('..') || isAbsolute(egressContainment)) throw new ContractError('candidate Telegram egress Compose file escapes immutable release directory', EXIT.IDENTITY);
   }
   const manifestFile = runtime.releaseManifest ? null : await realpath(join(releaseDirectory, 'release-manifest.json')).catch(() => { throw new ContractError('candidate release manifest cannot be resolved', EXIT.IDENTITY); });
   if (manifestFile) {
     const manifestContainment = relative(releaseDirectory, manifestFile);
     if (!manifestContainment || manifestContainment.startsWith('..') || isAbsolute(manifestContainment)) throw new ContractError('candidate release manifest escapes immutable release directory', EXIT.IDENTITY);
   }
-  for (const [label, path] of [['compose file', composeFile], ...(manifestFile ? [['release manifest', manifestFile]] : [])]) {
+  for (const [label, path] of [['compose file', composeFile], ...(egressComposeFile ? [['Telegram egress Compose file', egressComposeFile]] : []), ...(manifestFile ? [['release manifest', manifestFile]] : [])]) {
     const metadata = await stat(path);
     if (!metadata.isFile() || (process.platform !== 'win32' && (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0))) {
       throw new ContractError(`${label} must be root-owned and immutable`, EXIT.IDENTITY);
     }
   }
-  return { releaseDirectory, composeFile, manifestFile };
+  return { releaseDirectory, composeFile, egressComposeFile, manifestFile };
 }
 
 async function findExecutable(candidates) {
@@ -183,6 +189,54 @@ function verifyComposeServices(stdout, requiredServices) {
     if (!item || state !== 'running' || (health && health !== 'healthy')) throw new ContractError(`compose readback did not prove ${expected} running and healthy`, EXIT.READINESS);
   }
   return { serviceCount: services.length, requiredServices };
+}
+
+function composeNetworkKeys(service) {
+  if (Array.isArray(service?.networks)) return [...service.networks].sort();
+  if (service?.networks && typeof service.networks === 'object') return Object.keys(service.networks).sort();
+  return [];
+}
+
+export function verifyTelegramComposeConfig(stdout) {
+  let config;
+  try { config = JSON.parse(stdout); } catch { throw new ContractError('rendered Compose config is not JSON', EXIT.IDENTITY); }
+  const services = config?.services;
+  if (!services || typeof services !== 'object' || Array.isArray(services)) throw new ContractError('rendered Compose services are missing', EXIT.IDENTITY);
+  for (const slot of ['green', 'blue']) {
+    const backend = services[`backend-${slot}`];
+    if (JSON.stringify(composeNetworkKeys(backend)) !== JSON.stringify(['preprod-data', 'preprod-edge', 'preprod-telegram']) ||
+        backend?.environment?.BOOKING_TELEGRAM_EGRESS_REQUIRED !== 'true' || backend?.environment?.TELEGRAM_PROXY_URL !== TELEGRAM_PROXY_URL ||
+        !Object.hasOwn(backend?.depends_on || {}, 'telegram-egress')) {
+      throw new ContractError(`rendered backend-${slot} lost a required base or Telegram network binding`, EXIT.IDENTITY);
+    }
+    const worker = services[`order-worker-${slot}`];
+    const workerNetworks = composeNetworkKeys(worker);
+    if (JSON.stringify(workerNetworks) !== JSON.stringify(['preprod-data', 'preprod-telegram']) ||
+        worker?.environment?.BOOKING_TELEGRAM_EGRESS_REQUIRED !== 'true' || worker?.environment?.TELEGRAM_PROXY_URL !== TELEGRAM_PROXY_URL ||
+        !Object.hasOwn(worker?.depends_on || {}, 'telegram-egress')) {
+      throw new ContractError(`rendered order-worker-${slot} lost data or Telegram delivery binding`, EXIT.IDENTITY);
+    }
+  }
+  for (const serviceName of ['telegram-bot-identity', 'telegram-webhook-set', 'telegram-webhook-readback']) {
+    const service = services[serviceName];
+    if (!composeNetworkKeys(service).includes('preprod-telegram') || service?.environment?.TELEGRAM_PROXY_URL !== TELEGRAM_PROXY_URL ||
+        !Object.hasOwn(service?.depends_on || {}, 'telegram-egress')) {
+      throw new ContractError(`rendered ${serviceName} lost Telegram egress binding`, EXIT.IDENTITY);
+    }
+  }
+  const egress = services['telegram-egress'];
+  const egressNetworks = composeNetworkKeys(egress);
+  if (!egress || JSON.stringify(egressNetworks) !== JSON.stringify(['preprod-telegram', 'preprod-warp-uplink']) ||
+      egress.read_only !== true || JSON.stringify(egress.cap_drop) !== JSON.stringify(['ALL']) ||
+      !Array.isArray(egress.security_opt) || !egress.security_opt.includes('no-new-privileges:true') ||
+      egress.privileged === true || egress.network_mode || Object.hasOwn(egress, 'ports')) {
+    throw new ContractError('rendered Telegram egress service violates isolation contract', EXIT.IDENTITY);
+  }
+  if (config.networks?.['preprod-telegram']?.name !== 'booking-preprod-telegram' || config.networks?.['preprod-telegram']?.internal !== true ||
+      config.networks?.['preprod-warp-uplink']?.name !== 'booking-preprod-warp-uplink') {
+    throw new ContractError('rendered Telegram egress networks violate isolation contract', EXIT.IDENTITY);
+  }
+  return { backendNetworks: ['preprod-data', 'preprod-edge', 'preprod-telegram'], egressNetworks };
 }
 
 function parseLastJson(stdout, message, exitCode) {
@@ -315,7 +369,7 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
     throw new ContractError(`${component} candidate runtime isolation identity mismatch`, EXIT.IDENTITY);
   }
   const networkNames = networks && typeof networks === 'object' && !Array.isArray(networks) ? Object.keys(networks).sort() : [];
-  const expectedNetworks = component === 'backend' ? [state.resources.dataNetwork, state.resources.edgeNetwork].sort() : [state.resources.edgeNetwork];
+  const expectedNetworks = component === 'backend' ? [state.resources.dataNetwork, state.resources.edgeNetwork, 'booking-preprod-telegram'].sort() : [state.resources.edgeNetwork];
   if (JSON.stringify(networkNames) !== JSON.stringify(expectedNetworks)) throw new ContractError(`${component} candidate network isolation mismatch`, EXIT.IDENTITY);
   const normalizedMounts = Array.isArray(mounts) ? mounts.map((item) => ({ type: item.Type, source: item.Source || '', destination: item.Destination, rw: item.RW })).sort((a, b) => a.destination.localeCompare(b.destination)) : [];
   const secretRoot = `/volume1/homes/realzyq/${state.project}/.g4/secrets`;
@@ -342,6 +396,7 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
     BOOKING_RELEASE_ID: releaseIdentity.releaseId, BOOKING_GIT_SHA: releaseIdentity.gitSha, BOOKING_MANIFEST_DIGEST: releaseIdentity.manifestDigest,
     BOOKING_SLOT: releaseIdentity.slot, BOOKING_RUNTIME_ROLE: 'standby', BOOKING_WORKERS_ENABLED: 'false', ORDER_OUTBOX_DISPATCH_ENABLED: 'false',
     TELEGRAM_ENABLE_WEBHOOK: 'true', TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: 'false',
+    BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true', TELEGRAM_PROXY_URL: 'socks5h://telegram-egress:1080',
   } : { BOOKING_BACKEND_UPSTREAM: `backend-${releaseIdentity.slot}:3001`, NGINX_ENVSUBST_TEMPLATE_DIR: '/tmp/empty-nginx-templates' };
   if (Object.entries(expectedEnv).some(([key, value]) => env.get(key) !== value)) throw new ContractError(`${component} candidate critical environment mismatch`, EXIT.IDENTITY);
   if (component === 'gateway') {
@@ -353,6 +408,53 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
   }
   return { component, service, networks: networkNames, readOnlyRoot: true, mounts: expectedMounts.map((item) => item.destination),
     hostPort: component === 'gateway' ? `127.0.0.1:${candidatePort}` : null };
+}
+
+export function verifyTelegramEgressRuntime(stdout, state, releaseIdentity, manifest) {
+  const lines = stdout.trim().split(/\r?\n/);
+  if (lines.length !== 14) throw new ContractError('Telegram egress runtime inspect readback is malformed', EXIT.IDENTITY);
+  let labels; let envList; let mounts; let networks; let readOnly; let capDrop; let capAdd; let securityOpt; let portBindings;
+  let user; let privileged; let pidMode; let ipcMode; let devices;
+  try { [labels, envList, mounts, networks, readOnly, capDrop, capAdd, securityOpt, portBindings,
+    user, privileged, pidMode, ipcMode, devices] = lines.map((line) => JSON.parse(line)); }
+  catch { throw new ContractError('Telegram egress runtime inspect readback is malformed', EXIT.IDENTITY); }
+  const networkNames = networks && typeof networks === 'object' && !Array.isArray(networks) ? Object.keys(networks).sort() : [];
+  if (labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== 'telegram-egress' ||
+      labels?.['org.opencontainers.image.revision'] !== releaseIdentity.gitSha || labels?.['uk.happybooking.release-id'] !== releaseIdentity.releaseId ||
+      labels?.['uk.happybooking.component'] !== 'telegram-egress' ||
+      labels?.['uk.happybooking.base-image'] !== `${manifest.artifacts.telegramEgress.baseImage}@${manifest.artifacts.telegramEgress.baseImageDigest}` ||
+      labels?.['uk.happybooking.cloudflare-warp.version'] !== manifest.artifacts.telegramEgress.warpPackage.version ||
+      labels?.['uk.happybooking.cloudflare-warp.deb-sha256'] !== manifest.artifacts.telegramEgress.warpPackage.sha256 ||
+      JSON.stringify(networkNames) !== JSON.stringify(['booking-preprod-telegram', 'booking-preprod-warp-uplink']) || readOnly !== true ||
+      JSON.stringify(capDrop) !== JSON.stringify(['ALL']) || (Array.isArray(capAdd) && capAdd.length > 0) ||
+      !Array.isArray(securityOpt) || !securityOpt.includes('no-new-privileges:true') ||
+      (portBindings && Object.keys(portBindings).length > 0) || user !== '0:0' || privileged !== false || pidMode !== '' || ipcMode !== '' ||
+      !Array.isArray(devices) || devices.length !== 0) {
+    throw new ContractError('Telegram egress runtime isolation or image identity mismatch', EXIT.IDENTITY);
+  }
+  const normalizedMounts = Array.isArray(mounts) ? mounts.map((item) => ({ type: item.Type, source: item.Source || '', destination: item.Destination, rw: item.RW })).sort((a, b) => a.destination.localeCompare(b.destination)) : [];
+  const expectedMounts = [
+    { type: 'tmpfs', source: '', destination: '/run', rw: true },
+    { type: 'tmpfs', source: '', destination: '/tmp', rw: true },
+    { type: 'volume', source: 'booking-preprod-telegram-warp-state', destination: '/var/lib/cloudflare-warp', rw: true },
+    { type: 'tmpfs', source: '', destination: '/var/log/cloudflare-warp', rw: true },
+  ].sort((a, b) => a.destination.localeCompare(b.destination));
+  if (JSON.stringify(normalizedMounts) !== JSON.stringify(expectedMounts)) throw new ContractError('Telegram egress runtime mount identity mismatch', EXIT.IDENTITY);
+  const env = new Map();
+  if (!Array.isArray(envList)) throw new ContractError('Telegram egress runtime environment is malformed', EXIT.IDENTITY);
+  for (const item of envList) {
+    const index = typeof item === 'string' ? item.indexOf('=') : -1;
+    if (index < 1 || env.has(item.slice(0, index))) throw new ContractError('Telegram egress runtime environment is malformed', EXIT.IDENTITY);
+    env.set(item.slice(0, index), item.slice(index + 1));
+  }
+  const expectedEnv = { BOOKING_RELEASE_ID: releaseIdentity.releaseId, BOOKING_GIT_SHA: releaseIdentity.gitSha,
+    BOOKING_MANIFEST_DIGEST: releaseIdentity.manifestDigest, BOOKING_TELEGRAM_EGRESS_DIGEST: manifest.artifacts.telegramEgress.digest };
+  if (Object.entries(expectedEnv).some(([key, value]) => env.get(key) !== value) ||
+      [...env.keys()].some((key) => ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'TELEGRAM_BOT_TOKEN'].includes(key))) {
+    throw new ContractError('Telegram egress runtime environment identity mismatch', EXIT.IDENTITY);
+  }
+  return { service: 'telegram-egress', imageDigest: manifest.artifacts.telegramEgress.digest, networks: networkNames,
+    user, readOnlyRoot: true, capabilityDrop: ['ALL'], publishedPorts: 0 };
 }
 
 async function loadReleaseManifest(paths, releaseIdentity, runtime, allowLegacyRawDigest = false) {
@@ -453,6 +555,10 @@ function bindTrustedEnvironment(baseEnvironment, state, releaseIdentity, manifes
     BOOKING_BASELINE_OLD_GIT_SHA: state.active.gitSha,
     BOOKING_BASELINE_OLD_MANIFEST_DIGEST: state.active.manifestDigest,
   };
+  if (manifest.artifacts.telegramEgress) {
+    expected.BOOKING_TELEGRAM_EGRESS_IMAGE = manifest.artifacts.telegramEgress.image;
+    expected.BOOKING_TELEGRAM_EGRESS_DIGEST = manifest.artifacts.telegramEgress.digest;
+  }
   if (manifest.artifacts.gateway.telegramBotUsername) {
     expected.BOOKING_TELEGRAM_BOT_NAME = manifest.artifacts.gateway.telegramBotUsername;
     expected.BOOKING_TELEGRAM_BOT_DISPLAY_NAME = manifest.artifacts.gateway.telegramBotDisplayName;
@@ -532,13 +638,42 @@ async function buildPlan(state, args, runtime) {
   assertCandidateRollbackCompatibility(state, releaseIdentity, manifest);
   const exactLegacyCompose = releaseIdentity.releaseId === LEGACY_OLD_BINDING.releaseId &&
     releaseIdentity.gitSha === LEGACY_OLD_BINDING.gitSha && releaseIdentity.manifestDigest === LEGACY_OLD_BINDING.manifestRawDigest;
-  const actualComposeDigest = await digestFile(paths.composeFile);
+  const actualComposeDigest = exactLegacyCompose
+    ? await digestFile(paths.composeFile)
+    : await composeBundleDigest(paths.composeFile, paths.egressComposeFile);
   if ((!exactLegacyCompose && manifest.artifacts.deployment?.composeDigest !== actualComposeDigest) ||
       (exactLegacyCompose && actualComposeDigest !== LEGACY_OLD_BINDING.rollbackComposeDigest)) {
     throw new ContractError('compose file does not match immutable release manifest', EXIT.IDENTITY);
   }
   const runtimeEnvironment = await inspectTrustedRuntimeEnvironment(state, runtime);
   const trustedEnvironment = bindTrustedEnvironment(runtime.env, state, releaseIdentity, manifest, runtimeEnvironment);
+  const inspectRegistrySupplyChain = async () => {
+    if (exactLegacyCompose) return { legacy: true };
+    if (runtime.registryReceiptVerifier) return runtime.registryReceiptVerifier({ state, releaseIdentity, manifest });
+    if (runtime.releaseManifest && runtime.releaseRoot) return { injectedFixture: true };
+    const receiptRoot = `/volume1/homes/realzyq/${state.project}/.g4/supply-chain/${releaseIdentity.releaseId}`;
+    const evidence = {};
+    let publicKeyDigest = null;
+    for (const component of ['backend', 'gateway', 'telegram-egress']) {
+      const artifact = manifest.artifacts[component === 'telegram-egress' ? 'telegramEgress' : component];
+      const expectedPath = join(receiptRoot, component, `${component}.registry-attestation-receipt.json`);
+      const canonical = await realpath(expectedPath).catch(() => { throw new ContractError(`${component} registry attestation receipt is unavailable`, EXIT.IDENTITY); });
+      const metadata = await stat(canonical);
+      if (canonical !== expectedPath || !metadata.isFile() || (process.platform !== 'win32' && (metadata.uid !== 0 || (metadata.mode & 0o077) !== 0))) {
+        throw new ContractError(`${component} registry attestation receipt must be a root-only canonical file`, EXIT.IDENTITY);
+      }
+      const receipt = validateRegistryAttestationReceipt(await readJsonFile(canonical), { component, releaseId: releaseIdentity.releaseId,
+        gitSha: releaseIdentity.gitSha, manifestDigest: releaseIdentity.manifestDigest, image: artifact.image,
+        imageDigest: artifact.digest, sbomDigest: artifact.sbomDigest, provenanceDigest: artifact.provenanceDigest });
+      if (publicKeyDigest !== null && receipt.signer.publicKeyDigest !== publicKeyDigest) throw new ContractError('registry attestation receipts use different trust roots', EXIT.IDENTITY);
+      publicKeyDigest = receipt.signer.publicKeyDigest;
+      evidence[component] = { receiptDigest: await digestFile(canonical), publicKeyDigest,
+        signingMode: receipt.signer.signingMode, pullBackVerified: receipt.verification.pullBackVerified };
+    }
+    return evidence;
+  };
+  const registrySupplyChain = await inspectRegistrySupplyChain();
+  trustedEnvironment.environmentBinding.BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST = sha256(registrySupplyChain);
   const docker = runtime.dockerExecutable || await findExecutable(['/var/packages/ContainerManager/target/usr/bin/docker', '/usr/bin/docker']);
   const controlEnvFile = runtime.controlEnvFile || '/etc/happybooking/secrets/booking-preprod-control-plane.env';
   if (!isAbsolute(controlEnvFile)) throw new ContractError('trusted Compose env file must be absolute', EXIT.IDENTITY);
@@ -549,7 +684,8 @@ async function buildPlan(state, args, runtime) {
       throw new ContractError('trusted Compose env file must be a root-only canonical regular file', EXIT.IDENTITY);
     }
   }
-  const composePrefix = ['compose', '--env-file', controlEnvFile, '--project-name', state.project, '--file', paths.composeFile];
+  const composePrefix = ['compose', '--env-file', controlEnvFile, '--project-name', state.project, '--file', paths.composeFile,
+    ...(!exactLegacyCompose ? ['--file', paths.egressComposeFile] : [])];
   const evidenceRoot = `/volume1/homes/realzyq/${state.project}/.g4`;
   const expectedEvidenceBinding = { environment: state.environment, project: state.project, operationId: state.operationId,
     approvalId: state.approvalId, generation: state.generation, fencingEpoch: state.fencingEpoch, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
@@ -612,19 +748,21 @@ async function buildPlan(state, args, runtime) {
       pgRestoreListDigest: sha256(list.stdout), deploymentBinding: receipt.deploymentBinding };
   };
   const imageFormat = '{{json .Id}}|{{json .RepoDigests}}|{{json .RepoTags}}|{{json .Config.Labels}}';
-  const artifacts = { backend: manifest.artifacts.backend, gateway: manifest.artifacts.gateway,
+  const artifacts = { backend: manifest.artifacts.backend, gateway: manifest.artifacts.gateway, telegramEgress: manifest.artifacts.telegramEgress,
     deployment: { composeDigest: actualComposeDigest } };
   const inspectImages = (components) => async ({ runner, env, timeoutMs }) => {
     const evidence = {};
     for (const component of components) {
-      const legacy = ['rollback', 'active'].includes(spec.identity) && isExactLegacyBackend(component, artifacts[component], releaseIdentity);
-      const reference = legacy ? LEGACY_OLD_BINDING.uniqueTag : `${artifacts[component].image}:${releaseIdentity.releaseId}`;
+      const artifactKey = component === 'telegram-egress' ? 'telegramEgress' : component;
+      const artifact = artifacts[artifactKey];
+      const legacy = ['rollback', 'active'].includes(spec.identity) && isExactLegacyBackend(component, artifact, releaseIdentity);
+      const reference = legacy ? LEGACY_OLD_BINDING.uniqueTag : `${artifact.image}:${releaseIdentity.releaseId}`;
       const result = await runner(docker, ['image', 'inspect', '--format', imageFormat, reference], { cwd: paths.releaseDirectory, env, timeoutMs });
       assertResult(result, EXIT.IDENTITY);
       const inspected = parseSafeImageInspect(result.stdout, component);
-      evidence[component] = legacy
-        ? verifyLegacyDockerImageBinding(component, artifacts[component], releaseIdentity, inspected)
-        : verifyDockerImageBinding(component, artifacts[component], releaseIdentity, inspected);
+      evidence[artifactKey] = legacy
+        ? verifyLegacyDockerImageBinding(component, artifact, releaseIdentity, inspected)
+        : verifyDockerImageBinding(component, artifact, releaseIdentity, inspected);
     }
     return evidence;
   };
@@ -667,6 +805,41 @@ async function buildPlan(state, args, runtime) {
       );
     }
     return { images: imageEvidence, runtimeBindings };
+  };
+  const inspectComposeConfig = async ({ runner, env, timeoutMs }) => {
+    if (exactLegacyCompose) return { legacy: true };
+    if (runtime.releaseManifest && runtime.releaseRoot && !runtime.enforceTelegramEgressFixture) return { injectedFixture: true };
+    const rendered = await runner(docker, [...composePrefix, 'config', '--format', 'json'], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(rendered, EXIT.IDENTITY);
+    return verifyTelegramComposeConfig(rendered.stdout);
+  };
+  const inspectTelegramEgress = async ({ runner, env, timeoutMs }) => {
+    if (exactLegacyCompose) return { legacy: true };
+    if (runtime.releaseManifest && runtime.releaseRoot && !runtime.enforceTelegramEgressFixture) return { injectedFixture: true };
+    const compose = await inspectComposeConfig({ runner, env, timeoutMs });
+    const imageEvidence = await inspectImages(['telegram-egress'])({ runner, env, timeoutMs });
+    const idResult = await runner(docker, [...composePrefix, 'ps', '-q', 'telegram-egress'], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(idResult, EXIT.IDENTITY);
+    const containerId = idResult.stdout.trim();
+    if (!/^[0-9a-f]{12,64}$/.test(containerId)) throw new ContractError('Telegram egress container ID is invalid', EXIT.IDENTITY);
+    const imageResult = await runner(docker, ['container', 'inspect', '--format', '{{.Image}}', containerId], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(imageResult, EXIT.IDENTITY);
+    const containerImageId = parseContainerImage(imageResult.stdout, 'Telegram egress');
+    if (containerImageId !== imageEvidence.telegramEgress.imageId) throw new ContractError('Telegram egress container image drifted from the manifest-bound image', EXIT.IDENTITY);
+    const runtimeResult = await runner(docker, ['container', 'inspect', '--format', runtimeInspectFormat, containerId], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(runtimeResult, EXIT.IDENTITY);
+    const runtimeBinding = verifyTelegramEgressRuntime(runtimeResult.stdout, state, releaseIdentity, manifest);
+    const health = await runner(docker, [...composePrefix, 'ps', '--format', 'json', 'telegram-egress'], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(health, EXIT.READINESS);
+    const serviceHealth = verifyComposeServices(health.stdout, ['telegram-egress']);
+    const readback = await runner(docker, [...composePrefix, 'exec', '-T', 'telegram-egress', '/usr/local/bin/readback.sh',
+      state.operationId, containerId, containerImageId], { cwd: paths.releaseDirectory, env, timeoutMs });
+    assertResult(readback, EXIT.INGRESS);
+    const receipt = parseLastJson(readback.stdout, 'Telegram egress did not emit a live JSON receipt', EXIT.INGRESS);
+    const verifiedReceipt = verifyTelegramEgressReceipt(receipt, { operationId: state.operationId, releaseId: releaseIdentity.releaseId,
+      manifestDigest: releaseIdentity.manifestDigest, imageDigest: manifest.artifacts.telegramEgress.digest,
+      containerId, containerImageId, nowMs: (runtime.egressNow ? runtime.egressNow() : new Date()).getTime() });
+    return { compose, image: imageEvidence.telegramEgress, runtime: runtimeBinding, serviceHealth, receipt: verifiedReceipt };
   };
   const combineArtifactChecks = (...checks) => async (context) => {
     const evidence = {};
@@ -731,6 +904,18 @@ async function buildPlan(state, args, runtime) {
     }
     return { backend: imageEvidence.backend, containers };
   };
+  if (spec.kind === 'compose-egress') {
+    const preflightArtifacts = combineArtifactChecks(inspectComposeConfig, inspectImages(['telegram-egress']));
+    return { executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', 'telegram-egress'], cwd: paths.releaseDirectory,
+      env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
+      artifactBinding: { telegramEgress: { image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
+        sbomDigest: artifacts.telegramEgress.sbomDigest, provenanceDigest: artifacts.telegramEgress.provenanceDigest,
+        baseImage: artifacts.telegramEgress.baseImage, baseImageDigest: artifacts.telegramEgress.baseImageDigest, warpPackage: artifacts.telegramEgress.warpPackage } },
+      preflightArtifacts,
+      readback: { executable: docker, argv: [...composePrefix, 'ps', '--format', 'json', 'telegram-egress'],
+        verify: (value) => verifyComposeServices(value, ['telegram-egress']) },
+      verifyArtifacts: inspectTelegramEgress, replayPreflightArtifacts: inspectTelegramEgress, replayVerifyArtifacts: inspectTelegramEgress };
+  }
   if (spec.kind === 'singleton-transfer') {
     const sourceIdentity = singletonSourceIdentity(state, spec.identity === 'rollback');
     if (!sourceIdentity || sourceIdentity.slot === releaseIdentity.slot) throw new ContractError('singleton source and target identities are invalid', EXIT.SINGLETON);
@@ -740,6 +925,7 @@ async function buildPlan(state, args, runtime) {
     const singletonAction = spec.identity === 'rollback' ? 'rollback' : 'transfer';
     const identityName = `${oneShotName}-telegram-identity`;
     const helperArgs = ['--action', singletonAction, '--project', state.project, '--compose-file', paths.composeFile,
+      ...(!exactLegacyCompose ? ['--egress-compose-file', paths.egressComposeFile] : []),
       '--target-slot', releaseIdentity.slot, '--source-slot', sourceIdentity.slot, '--release-id', releaseIdentity.releaseId,
       '--git-sha', releaseIdentity.gitSha, '--manifest-digest', releaseIdentity.manifestDigest,
       '--backend-image', artifacts.backend.image, '--backend-digest', artifacts.backend.digest,
@@ -773,7 +959,7 @@ async function buildPlan(state, args, runtime) {
     };
     const singletonArtifacts = exactLegacyCompose
       ? backendImagePreflight
-      : combineArtifactChecks(backendImagePreflight, inspectReleaseRuntime);
+      : combineArtifactChecks(backendImagePreflight, inspectReleaseRuntime, inspectTelegramEgress);
     return { executable: process.execPath, argv: [helper, ...helperArgs], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest }, singletonAction,
@@ -817,7 +1003,7 @@ async function buildPlan(state, args, runtime) {
         '--migration-catalog-digest', manifest.contracts.migration.catalogDigest,
         '--telegram-bot-mode', 'webhook', '--telegram-webhook-enabled', 'true',
         '--telegram-webhook-url', 'https://booking-preprod.happybooking.uk/telegram/webhook'] : [])];
-    const probeRuntimeArtifacts = exactLegacyCompose ? null : inspectReleaseRuntime;
+    const probeRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
     return { executable: process.execPath, argv: probeArgs, cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { probe: { slot: releaseIdentity.slot, ...(publicProbe ? { origin: 'https://booking-preprod.happybooking.uk',
@@ -852,6 +1038,7 @@ async function buildPlan(state, args, runtime) {
     const inspectStageArtifacts = async (context) => ({
       ...(await inspectStageImages(context)),
       routeContract: await inspectImmutableRouteContract(paths, manifest, runtime),
+      telegramEgress: await inspectTelegramEgress(context),
     });
     const initialStagePreflight = async (context) => {
       if (state.phase !== 'ROLLED_BACK') await assertLoopbackPortAvailable(candidatePort, runtime);
@@ -996,12 +1183,12 @@ async function buildPlan(state, args, runtime) {
           backupReceiptDigest: expectedMigration.backupReceiptDigest, ledgerHead: expectedMigration.ledgerHead } },
       preflight: { executable: docker, argv: [...composePrefix, '--profile', 'migrate-readback', 'run', '--no-deps', '--name', ledgerReadbackName, 'schema-migration-readback'],
         verify: (value) => verifyMigrationReceipt(value, expectedMigration, 'verify') },
-      preflightArtifacts: backendImagePreflight,
+      preflightArtifacts: combineArtifactChecks(backendImagePreflight, inspectTelegramEgress),
       verifyExecution: (value) => verifyWebhookReceipt(value, expectedWebhook, 'set'),
       readback: { executable: docker, argv: [...composePrefix, '--profile', 'telegram-webhook-readback', 'run', '--no-deps', '--name', readbackName, 'telegram-webhook-readback'],
         verify: (value) => verifyWebhookReceipt(value, expectedWebhook, 'verify') },
-      verifyArtifacts: verifyOneShotArtifacts([ledgerReadbackName, oneShotName, readbackName]),
-      replayVerifyArtifacts: verifyOneShotArtifacts([ledgerReadbackName, readbackName]) };
+      verifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, oneShotName, readbackName]), inspectTelegramEgress),
+      replayVerifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, readbackName]), inspectTelegramEgress) };
   }
   const helper = runtime.ingressExecutable || await findTrustedRootExecutable(['/usr/local/libexec/happybooking/switch-preprod-ingress']);
   const hostname = 'booking-preprod.happybooking.uk';
@@ -1022,7 +1209,7 @@ async function buildPlan(state, args, runtime) {
     '--holder-id', state.lease.holderId, '--action-kind', actionKind, '--action-id', args['action-id'], '--sequence', String(sequence),
     '--fencing-epoch', String(state.fencingEpoch), '--rollback-upstream', rollbackUpstream, '--rollback-release', rollbackIdentity.releaseId,
     '--rollback-manifest-digest', rollbackIdentity.manifestDigest];
-  const ingressRuntimeArtifacts = exactLegacyCompose ? null : inspectReleaseRuntime;
+  const ingressRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
   return { executable: helper, argv: mutationArgs, cwd: paths.releaseDirectory,
     env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
     artifactBinding: { ingress: { hostname, upstream, releaseId: releaseIdentity.releaseId, manifestDigest: releaseIdentity.manifestDigest,

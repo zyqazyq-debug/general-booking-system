@@ -98,13 +98,17 @@ function validateImageArtifact(value, path, gateway = false, legacy = false) {
 }
 
 function validateTelegramEgressArtifact(value, path) {
-  exactKeys(value, ['image', 'digest', 'baseImageDigest', 'warpPackage'], ['image', 'digest', 'baseImageDigest', 'warpPackage'], path);
+  exactKeys(value, ['image', 'digest', 'sbomDigest', 'provenanceDigest', 'baseImage', 'baseImageDigest', 'warpPackage'], ['image', 'digest', 'sbomDigest', 'provenanceDigest', 'baseImage', 'baseImageDigest', 'warpPackage'], path);
   const image = requireString(value.image, `${path}.image`);
   const finalSegment = image.slice(image.lastIndexOf('/') + 1);
   if (image === 'latest' || image.endsWith(':latest') || image.includes('@') || finalSegment.includes(':')) {
     throw new ContractError(`${path}.image must be a repository without tag or digest`, EXIT.IDENTITY);
   }
   requireDigest(value.digest, `${path}.digest`);
+  requireDigest(value.sbomDigest, `${path}.sbomDigest`);
+  requireDigest(value.provenanceDigest, `${path}.provenanceDigest`);
+  const baseImage = requireString(value.baseImage, `${path}.baseImage`);
+  if (baseImage.includes('@') || baseImage === 'latest' || baseImage.endsWith(':latest')) throw new ContractError(`${path}.baseImage must be an immutable-digest repository name`, EXIT.IDENTITY);
   requireDigest(value.baseImageDigest, `${path}.baseImageDigest`);
   exactKeys(value.warpPackage, ['version', 'sha256'], ['version', 'sha256'], `${path}.warpPackage`);
   requireString(value.warpPackage.version, `${path}.warpPackage.version`, /^[0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+$/);
@@ -128,7 +132,7 @@ export function validateReleaseManifest(value, { expectedLegacyBinding = null, l
   requireString(value.source.gitSha, 'manifest.source.gitSha', GIT_SHA);
   if (value.source.treeState !== 'clean') throw new ContractError('manifest source tree must be clean', EXIT.IDENTITY);
 
-  const artifactKeys = legacyV1 ? ['backend', 'gateway'] : ['backend', 'gateway', 'deployment'];
+  const artifactKeys = legacyV1 ? ['backend', 'gateway'] : ['backend', 'gateway', 'telegramEgress', 'deployment'];
   exactKeys(value.artifacts, artifactKeys, ['backend', 'gateway', 'telegramEgress', 'deployment'], 'manifest.artifacts');
   validateImageArtifact(value.artifacts.backend, 'manifest.artifacts.backend');
   validateImageArtifact(value.artifacts.gateway, 'manifest.artifacts.gateway', true, legacyV1);

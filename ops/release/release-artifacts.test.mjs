@@ -18,6 +18,7 @@ import {
   validateBuildInputInventory,
   validateImageSbom,
   validateLocalProvenance,
+  telegramEgressBaseImage,
 } from './lib/artifacts.mjs';
 import { ContractError, validateReleaseManifest } from './lib/contracts.mjs';
 
@@ -26,6 +27,8 @@ const source = { gitSha: '1'.repeat(40), committedAt: '2026-09-08T01:02:03Z' };
 const artifacts = {
   backend: { image: 'registry.acme.test/booking/backend', digest: digest('2'), sbomDigest: digest('3'), provenanceDigest: digest('4') },
   gateway: { image: 'registry.acme.test/booking/gateway', digest: digest('5'), sbomDigest: digest('6'), provenanceDigest: digest('7'), frontendAssetDigest: digest('8'), routeContractDigest: digest('9'), telegramBotUsername: 'happybooking_preprod_bot', telegramBotDisplayName: 'HappyBooking Preprod' },
+  telegramEgress: { image: 'registry.acme.test/booking/telegram-egress', digest: digest('c'), sbomDigest: digest('d'), provenanceDigest: digest('e'),
+    baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: digest('f'), warpPackage: { version: '2026.7.1377.0', sha256: '0'.repeat(64) } },
   deployment: { composeDigest: digest('b') },
 };
 const migration = { expandFloor: '1774200000002-RemoveAgencyNodeUniqueIndex', catalogDigest: digest('a') };
@@ -83,6 +86,16 @@ test('gateway build definition copies the actual uni H5 output and has no mutabl
   assert.doesNotMatch(dockerfile, /COPY .*node_modules/i);
 });
 
+test('Telegram egress base image accepts only an explicit digest-preserving source or mirror', async () => {
+  const dockerfile = await readFile(fileURLToPath(new URL('../telegram-egress/Dockerfile', import.meta.url)), 'utf8');
+  const approvedDigest = 'sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867';
+  assert.equal(telegramEgressBaseImage(dockerfile, `debian:bookworm-20260824-slim@${approvedDigest}`).digest, approvedDigest);
+  assert.equal(telegramEgressBaseImage(dockerfile, `127.0.0.1:15001/booking-preprod/base/debian:bookworm-20260824-slim@${approvedDigest}`).image,
+    '127.0.0.1:15001/booking-preprod/base/debian:bookworm-20260824-slim');
+  assert.throws(() => telegramEgressBaseImage(dockerfile, 'debian:bookworm-20260824-slim'), /immutable/);
+  assert.throws(() => telegramEgressBaseImage(dockerfile, `debian:bookworm-20260824-slim@${digest('1')}`), /differs/);
+});
+
 test('build-input inventory is exact and cannot be presented as an image SBOM', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-build-inputs-'));
   try {
@@ -95,6 +108,43 @@ test('build-input inventory is exact and cannot be presented as an image SBOM', 
     assert.throws(() => validateImageSbom(inventory, { component: 'backend' }), /image SBOM/);
     inventory.files[0].path = 'backend/not-the-Dockerfile';
     assert.throws(() => validateBuildInputInventory(inventory), /exact expected inventory/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Telegram egress build inventory and provenance bind the actual digest-preserving base image', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-egress-build-inputs-'));
+  const baseImage = '127.0.0.1:15001/booking-preprod/base/debian:bookworm-20260824-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867';
+  try {
+    await mkdir(join(root, 'ops', 'telegram-egress'), { recursive: true });
+    for (const file of ['Dockerfile', 'entrypoint.sh', 'healthcheck.sh', 'readback.sh']) {
+      await writeFile(join(root, 'ops', 'telegram-egress', file), `${file}\n`);
+    }
+    const inventory = await createBuildInputInventory(root, 'telegram-egress', source.gitSha, { baseImage });
+    assert.equal(validateBuildInputInventory(inventory, {
+      component: 'telegram-egress', gitSha: source.gitSha, baseImage,
+    }), inventory);
+    assert.throws(() => validateBuildInputInventory(inventory, {
+      component: 'telegram-egress', gitSha: source.gitSha,
+      baseImage: `debian:bookworm-20260824-slim@${digest('1')}`,
+    }), /base image binding/);
+
+    const provenance = createLocalProvenance({
+      component: 'telegram-egress', gitSha: source.gitSha,
+      image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+    });
+    assert.equal(validateLocalProvenance(provenance, {
+      component: 'telegram-egress', gitSha: source.gitSha,
+      image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+    }), provenance);
+    const wrongBase = structuredClone(provenance);
+    wrongBase.predicate.materials[2].digest.sha256 = '1'.repeat(64);
+    assert.throws(() => validateLocalProvenance(wrongBase, {
+      component: 'telegram-egress', gitSha: source.gitSha,
+      image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
+      sbomDigest: artifacts.telegramEgress.sbomDigest, baseImage,
+    }), /selected base image/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

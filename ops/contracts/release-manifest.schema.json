@@ -20,17 +20,20 @@
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["backend", "gateway", "deployment"],
+      "required": ["backend", "gateway", "telegramEgress", "deployment"],
       "properties": {
         "backend": { "$ref": "#/$defs/backendArtifact" },
         "gateway": { "$ref": "#/$defs/gatewayArtifact" },
         "telegramEgress": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["image", "digest", "baseImageDigest", "warpPackage"],
+          "required": ["image", "digest", "sbomDigest", "provenanceDigest", "baseImage", "baseImageDigest", "warpPackage"],
           "properties": {
             "image": { "type": "string", "minLength": 1, "not": { "pattern": "(^|:)latest$" } },
             "digest": { "$ref": "#/$defs/digest" },
+            "sbomDigest": { "$ref": "#/$defs/digest" },
+            "provenanceDigest": { "$ref": "#/$defs/digest" },
+            "baseImage": { "type": "string", "minLength": 1, "not": { "pattern": "@|(^|:)latest$" } },
             "baseImageDigest": { "$ref": "#/$defs/digest" },
             "warpPackage": {
               "type": "object",

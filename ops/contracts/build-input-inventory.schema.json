@@ -7,12 +7,16 @@
   "required": ["schema", "component", "source", "files"],
   "properties": {
     "schema": { "const": "booking.build-input-inventory/v1" },
-    "component": { "enum": ["backend", "gateway"] },
+    "component": { "enum": ["backend", "gateway", "telegram-egress"] },
     "source": {
       "type": "object",
       "additionalProperties": false,
       "required": ["gitSha"],
       "properties": { "gitSha": { "$ref": "#/$defs/gitSha" } }
+    },
+    "parameters": {
+      "type": "object", "additionalProperties": false, "required": ["baseImage"],
+      "properties": { "baseImage": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$" } }
     },
     "files": { "type": "array", "minItems": 1 }
   },
@@ -30,6 +34,27 @@
               { "$ref": "#/$defs/backendDockerfile" },
               { "$ref": "#/$defs/backendPackage" },
               { "$ref": "#/$defs/backendLock" }
+            ],
+            "items": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "type": "object", "properties": { "component": { "const": "telegram-egress" } }, "required": ["component"] },
+      "then": {
+        "type": "object",
+        "required": ["parameters"],
+        "properties": {
+          "files": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "prefixItems": [
+              { "$ref": "#/$defs/telegramEgressDockerfile" },
+              { "$ref": "#/$defs/telegramEgressEntrypoint" },
+              { "$ref": "#/$defs/telegramEgressHealthcheck" },
+              { "$ref": "#/$defs/telegramEgressReadback" }
             ],
             "items": false
           }
@@ -74,6 +99,10 @@
     "frontendNginxTemplate": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "frontend/nginx.release.conf.template" } } }] },
     "frontendNginxPreprod": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "frontend/nginx.preprod.conf" } } }] },
     "frontendPackage": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "frontend/package.json" } } }] },
-    "frontendLock": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "frontend/package-lock.json" } } }] }
+    "frontendLock": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "frontend/package-lock.json" } } }] },
+    "telegramEgressDockerfile": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "ops/telegram-egress/Dockerfile" } } }] },
+    "telegramEgressEntrypoint": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "ops/telegram-egress/entrypoint.sh" } } }] },
+    "telegramEgressHealthcheck": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "ops/telegram-egress/healthcheck.sh" } } }] },
+    "telegramEgressReadback": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "properties": { "path": { "const": "ops/telegram-egress/readback.sh" } } }] }
   }
 }

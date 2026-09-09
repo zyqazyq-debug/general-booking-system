@@ -23,6 +23,9 @@ const manifest = (releaseId = 'booking-20260908T180317Z-af88755036e1', gitSha = 
     gateway: { image: 'booking/gateway', digest: `sha256:${'c'.repeat(64)}`, sbomDigest: `sha256:${'3'.repeat(64)}`,
       provenanceDigest: `sha256:${'4'.repeat(64)}`, frontendAssetDigest: `sha256:${'5'.repeat(64)}`, routeContractDigest: `sha256:${'6'.repeat(64)}`,
       telegramBotUsername: 'happybooking_preprod_bot', telegramBotDisplayName: 'HappyBooking Preprod' },
+    telegramEgress: { image: 'booking/telegram-egress', digest: `sha256:${'d'.repeat(64)}`, sbomDigest: `sha256:${'e'.repeat(64)}`,
+      provenanceDigest: `sha256:${'f'.repeat(64)}`, baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: `sha256:${'0'.repeat(64)}`,
+      warpPackage: { version: '2026.7.1377.0', sha256: '1'.repeat(64) } },
     deployment: { composeDigest: `sha256:${'8'.repeat(64)}` },
   },
   contracts: { configSchema: 'booking.config/v1', apiVersion: 'v1', frontendCompatibleApi: 'v1',
@@ -34,6 +37,7 @@ function legacyV1(value) {
   const result = structuredClone(value);
   result.schema = 'booking.release/v1';
   delete result.artifacts.deployment;
+  delete result.artifacts.telegramEgress;
   return result;
 }
 

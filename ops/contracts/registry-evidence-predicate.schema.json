@@ -8,7 +8,7 @@
   "properties": {
     "schema": { "const": "booking.registry-evidence-predicate/v1" },
     "kind": { "enum": ["image-sbom", "local-provenance"] },
-    "component": { "enum": ["backend", "gateway"] },
+    "component": { "enum": ["backend", "gateway", "telegram-egress"] },
     "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
     "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "manifestDigest": { "$ref": "#/$defs/digest" },

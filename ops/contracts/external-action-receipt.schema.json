@@ -9,7 +9,7 @@
     "schema": { "const": "booking.external-action-receipt/v1" },
     "environment": { "const": "preprod" },
     "project": { "const": "booking-preprod" },
-    "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-stage", "preprod-probe-candidate", "preprod-probe-active", "preprod-probe-observation", "preprod-probe-rollback", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-switch-ingress", "preprod-rollback-ingress", "preprod-rollback-singletons"] },
+    "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-prepare-telegram-egress", "preprod-stage", "preprod-probe-candidate", "preprod-probe-active", "preprod-probe-observation", "preprod-probe-rollback", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-switch-ingress", "preprod-rollback-ingress", "preprod-rollback-singletons"] },
     "actionId": { "$ref": "#/$defs/identifier" },
     "operationId": { "$ref": "#/$defs/identifier" },
     "approvalId": { "$ref": "#/$defs/identifier" },

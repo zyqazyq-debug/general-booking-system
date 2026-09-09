@@ -10,9 +10,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 try {
   const args = parseArgs(process.argv.slice(2));
   const component = args.component;
-  if (!['backend', 'gateway'].includes(component) || !args.output) throw new ContractError('--component (backend|gateway) and --output are required');
+  if (!['backend', 'gateway', 'telegram-egress'].includes(component) || !args.output) throw new ContractError('--component (backend|gateway|telegram-egress) and --output are required');
   const source = cleanGitSource(root);
-  const document = await createBuildInputInventory(root, component, source.gitSha);
+  const document = await createBuildInputInventory(root, component, source.gitSha, { baseImage: args['base-image'] || null });
   await writeFile(args.output, canonicalDocument(document), 'utf8');
   process.stdout.write(`${JSON.stringify(gateResult({ gate: 'build-input-inventory', checks: [{ name: component, status: 'pass', code: 'BUILD_INPUT_INVENTORY_GENERATED' }] }))}\n`);
 } catch (error) {

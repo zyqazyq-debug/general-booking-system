@@ -13,7 +13,7 @@ const SLOT = new Set(['blue', 'green']);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const IMAGE_INSPECT_FORMAT = '{{json .Id}}|{{json .RepoDigests}}|{{json .RepoTags}}|{{json .Config.Labels}}';
 const CONTAINER_INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"env":{{json .Config.Env}},"portBindings":{{json .HostConfig.PortBindings}},"ports":{{json .NetworkSettings.Ports}},"status":{{json .State.Status}},"health":{{json .State.Health}}}';
-const ALLOWED = new Set(['action', 'readback', 'project', 'compose-file', 'target-slot', 'source-slot', 'release-id', 'git-sha', 'manifest-digest', 'backend-image', 'backend-digest',
+const ALLOWED = new Set(['action', 'readback', 'project', 'compose-file', 'egress-compose-file', 'target-slot', 'source-slot', 'release-id', 'git-sha', 'manifest-digest', 'backend-image', 'backend-digest',
   'source-release-id', 'source-git-sha', 'source-manifest-digest', 'source-backend-image', 'source-backend-digest']);
 
 function defaultRunner(executable, argv, options = {}) {
@@ -68,6 +68,9 @@ function validateArgs(args) {
     throw new ContractError('singleton source identity is invalid', EXIT.IDENTITY);
   }
   if (args.readback !== undefined && args.readback !== 'true') throw new ContractError('--readback must be true when present', EXIT.SINGLETON);
+  if (args['release-id'] !== LEGACY_OLD_BINDING.releaseId && !args['egress-compose-file']) {
+    throw new ContractError('--egress-compose-file is required for a non-legacy singleton target', EXIT.IDENTITY);
+  }
 }
 
 function parseJsonLines(text, message) {
@@ -229,16 +232,34 @@ function verifyFinal(containers, args, targetSupported, imageId, sourceImageId) 
     BOOKING_RELEASE_ID: args['release-id'], BOOKING_GIT_SHA: args['git-sha'], BOOKING_MANIFEST_DIGEST: args['manifest-digest'],
     BOOKING_SLOT: args['target-slot'], BOOKING_RUNTIME_ROLE: 'worker', BOOKING_WORKERS_ENABLED: 'true', ORDER_OUTBOX_DISPATCH_ENABLED: 'true',
     TELEGRAM_BOT_MODE: 'polling', TELEGRAM_ENABLE_WEBHOOK: 'false', TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: 'false',
+    BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true', TELEGRAM_PROXY_URL: 'socks5h://telegram-egress:1080',
   });
   if (target.portBindings && Object.keys(target.portBindings).length > 0) throw new ContractError('singleton worker must not publish host ports', EXIT.IDENTITY);
   for (const bindings of Object.values(target.ports || {})) if (Array.isArray(bindings) && bindings.length > 0) throw new ContractError('singleton worker has a published port', EXIT.IDENTITY);
   return { targetService, workerContainerId: target.id, workerImageId: imageId, workerHealth: 'healthy' };
 }
 
-async function composeServices(docker, runner, options, composeFile, controlEnvFile) {
-  const result = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT, '--file', composeFile, 'config', '--services'], options);
+async function composeServices(docker, runner, options, composeFiles, controlEnvFile) {
+  const result = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT,
+    ...composeFiles.flatMap((file) => ['--file', file]), 'config', '--services'], options);
   assertResult(result, 'cannot read singleton compose services');
   return new Set(result.stdout.trim().split(/\r?\n/).filter(Boolean));
+}
+
+async function canonicalEgressComposePath(path, releaseId, runtime) {
+  if (releaseId === LEGACY_OLD_BINDING.releaseId) return null;
+  if (!isAbsolute(path)) throw new ContractError('singleton Telegram egress Compose file must be absolute', EXIT.IDENTITY);
+  const root = await realpath(runtime.releaseRoot || '/volume1/homes/realzyq/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
+  const file = await realpath(path).catch(() => { throw new ContractError('singleton Telegram egress Compose file cannot be resolved', EXIT.IDENTITY); });
+  const expected = await realpath(resolve(root, releaseId, 'ops', 'compose', 'compose.preprod-telegram-egress.yml')).catch(() => {
+    throw new ContractError('release-bound singleton Telegram egress Compose file cannot be resolved', EXIT.IDENTITY);
+  });
+  const containment = relative(root, file);
+  const metadata = await stat(file);
+  if (!containment || containment.startsWith('..') || isAbsolute(containment) || !metadata.isFile() || file !== expected) {
+    throw new ContractError('singleton Telegram egress Compose file is not release-bound', EXIT.IDENTITY);
+  }
+  return file;
 }
 
 async function canonicalComposePath(path, releaseId, runtime) {
@@ -269,6 +290,8 @@ async function canonicalComposePath(path, releaseId, runtime) {
 export async function runSingletonAction(args, runtime = {}) {
   validateArgs(args);
   const composeFile = await canonicalComposePath(args['compose-file'], args['release-id'], runtime);
+  const egressComposeFile = await canonicalEgressComposePath(args['egress-compose-file'], args['release-id'], runtime);
+  const composeFiles = [composeFile, ...(egressComposeFile ? [egressComposeFile] : [])];
   const docker = runtime.dockerExecutable || await executable(['/var/packages/ContainerManager/target/usr/bin/docker', '/usr/bin/docker']);
   const runner = runtime.commandRunner || defaultRunner;
   const controlEnvFile = runtime.controlEnvFile || '/etc/happybooking/secrets/booking-preprod-control-plane.env';
@@ -281,7 +304,7 @@ export async function runSingletonAction(args, runtime = {}) {
     }
   }
   const options = { cwd: dirname(composeFile), env: runtime.env || process.env, timeoutMs: runtime.timeoutMs || 120_000 };
-  const services = await composeServices(docker, runner, options, composeFile, controlEnvFile);
+  const services = await composeServices(docker, runner, options, composeFiles, controlEnvFile);
   const targetService = `order-worker-${args['target-slot']}`;
   const sourceService = `order-worker-${args['source-slot']}`;
   const targetSupported = services.has(targetService);
@@ -305,7 +328,8 @@ export async function runSingletonAction(args, runtime = {}) {
     if (residual && isRunning(residual)) throw new ContractError('source singleton worker remains running after stop', EXIT.SINGLETON);
     if (containers.some((item) => item.service?.startsWith('order-worker-') && isRunning(item))) throw new ContractError('a worker remained running before target activation', EXIT.SINGLETON);
     if (targetSupported) {
-      const started = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT, '--file', composeFile, 'up', '--no-build', '--no-deps', '--wait', targetService], options);
+      const started = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT,
+        ...composeFiles.flatMap((file) => ['--file', file]), 'up', '--no-build', '--no-deps', '--wait', targetService], options);
       assertResult(started, 'failed to start target singleton worker');
     }
   }

@@ -7,7 +7,7 @@
   "required": ["schema", "component", "registryTransport", "releaseId", "gitSha", "manifestDigest", "image", "evidence", "signer", "verification", "verifiedAt"],
   "properties": {
     "schema": { "const": "booking.registry-attestation-receipt/v1" },
-    "component": { "enum": ["backend", "gateway"] },
+    "component": { "enum": ["backend", "gateway", "telegram-egress"] },
     "registryTransport": { "enum": ["https", "loopback-http"] },
     "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
     "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },

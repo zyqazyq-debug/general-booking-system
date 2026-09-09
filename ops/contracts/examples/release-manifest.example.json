@@ -25,6 +25,9 @@
     "telegramEgress": {
       "image": "registry.acme.test/happybooking/telegram-egress",
       "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "sbomDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "provenanceDigest": "sha256:1313131313131313131313131313131313131313131313131313131313131313",
+      "baseImage": "debian:bookworm-20260824-slim",
       "baseImageDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "warpPackage": {
         "version": "2026.7.1377.0",

@@ -20,7 +20,7 @@
       "required": ["schema", "component", "buildType", "source", "materials"],
       "properties": {
         "schema": { "const": "booking.local-provenance-predicate/v1" },
-        "component": { "enum": ["backend", "gateway"] },
+        "component": { "enum": ["backend", "gateway", "telegram-egress"] },
         "buildType": { "const": "urn:booking:build:local-release:v1" },
         "source": {
           "type": "object",
@@ -31,8 +31,8 @@
         "materials": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 2,
-          "prefixItems": [{ "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }],
+          "maxItems": 3,
+          "prefixItems": [{ "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }, { "$ref": "#/$defs/material" }],
           "items": false
         }
       }

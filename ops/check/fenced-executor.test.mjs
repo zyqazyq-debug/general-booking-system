@@ -22,6 +22,7 @@ const ROUTE_CONTENT = 'server { listen 8080; location / { try_files $uri /index.
 const TELEGRAM_BOT_USERNAME = 'happybooking_preprod_bot';
 const TELEGRAM_BOT_DISPLAY_NAME = 'HappyBooking Preprod';
 const COMPOSE_CONTENT = 'services:\n  backend-blue: {}\n  gateway-blue: {}\n  schema-migrate: {}\n  schema-migration-readback: {}\n  schema-baseline-ledger: {}\n  schema-baseline-readback: {}\n  telegram-webhook-set: {}\n  telegram-webhook-readback: {}\n';
+const EGRESS_COMPOSE_CONTENT = 'services:\n  telegram-egress: {}\n';
 const MANIFEST = {
   schema: 'booking.release/v2', releaseId: 'booking-20260909T120000Z-bbbbbbbb', source: { gitSha: 'b'.repeat(40), treeState: 'clean' },
   artifacts: {
@@ -29,7 +30,10 @@ const MANIFEST = {
     gateway: { image: 'registry.test/booking/gateway', digest: GATEWAY_IMAGE_ID, sbomDigest: `sha256:${'3'.repeat(64)}`, provenanceDigest: `sha256:${'4'.repeat(64)}`,
       frontendAssetDigest: H5_DIGEST, routeContractDigest: sha256(ROUTE_CONTENT),
       telegramBotUsername: TELEGRAM_BOT_USERNAME, telegramBotDisplayName: TELEGRAM_BOT_DISPLAY_NAME },
-    deployment: { composeDigest: sha256(COMPOSE_CONTENT) },
+    telegramEgress: { image: 'registry.test/booking/telegram-egress', digest: `sha256:${'e'.repeat(64)}`,
+      sbomDigest: `sha256:${'a'.repeat(64)}`, provenanceDigest: `sha256:${'b'.repeat(64)}`,
+      baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: `sha256:${'c'.repeat(64)}`, warpPackage: { version: '2026.7.1377.0', sha256: 'd'.repeat(64) } },
+    deployment: { composeDigest: sha256([sha256(COMPOSE_CONTENT), sha256(EGRESS_COMPOSE_CONTENT)]) },
   },
   contracts: { configSchema: 'booking.config/v1', apiVersion: 'v1', frontendCompatibleApi: 'v1',
     migration: { expandFloor: '1788760000000-AddOrderCreatedConsumerIdempotency', catalogDigest: `sha256:${'6'.repeat(64)}`, compatibility: 'expand-contract' }, rollbackCompatibleRelease: ACTIVE.releaseId },
@@ -132,6 +136,7 @@ function candidateRuntimeInspect(component, releaseRoot, overrides = {}) {
     `BOOKING_RELEASE_ID=${CANDIDATE.releaseId}`, `BOOKING_GIT_SHA=${CANDIDATE.gitSha}`, `BOOKING_MANIFEST_DIGEST=${CANDIDATE.manifestDigest}`,
     'BOOKING_SLOT=blue', 'BOOKING_RUNTIME_ROLE=standby', 'BOOKING_WORKERS_ENABLED=false', 'ORDER_OUTBOX_DISPATCH_ENABLED=false',
     'TELEGRAM_ENABLE_WEBHOOK=true', 'TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP=false',
+    'BOOKING_TELEGRAM_EGRESS_REQUIRED=true', 'TELEGRAM_PROXY_URL=socks5h://telegram-egress:1080',
   ] : ['BOOKING_BACKEND_UPSTREAM=backend-blue:3001', 'NGINX_ENVSUBST_TEMPLATE_DIR=/tmp/empty-nginx-templates'];
   const secretRoot = '/volume1/homes/realzyq/booking-preprod/.g4/secrets';
   const mounts = backend ? [
@@ -143,7 +148,7 @@ function candidateRuntimeInspect(component, releaseRoot, overrides = {}) {
     { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
     { Type: 'bind', Source: join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), Destination: '/etc/nginx/conf.d/default.conf', RW: false },
   ];
-  const values = [labels, env, mounts, backend ? { 'booking-preprod-edge': {}, 'booking-preprod-data': {} } : { 'booking-preprod-edge': {} },
+  const values = [labels, env, mounts, backend ? { 'booking-preprod-edge': {}, 'booking-preprod-data': {}, 'booking-preprod-telegram': {} } : { 'booking-preprod-edge': {} },
     true, ['ALL'], backend ? [] : ['NET_BIND_SERVICE'], ['no-new-privileges:true'],
     backend ? {} : { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '18083' }] }, backend ? 'node' : '101', false, '', '', []];
   for (const [index, value] of Object.entries(overrides)) values[Number(index)] = value;
@@ -211,6 +216,7 @@ async function concreteReleaseRoot(baseDirectory = tmpdir()) {
   const composeDirectory = join(releaseRoot, CANDIDATE.releaseId, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(releaseRoot, CANDIDATE.releaseId, 'frontend'));
   await writeFile(join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   return releaseRoot;
@@ -425,6 +431,7 @@ test('concrete singleton transfer proves manifest-bound Telegram getMe identity 
     const sourceComposeDirectory = join(releaseRoot, sourceIdentity.releaseId, 'ops', 'compose');
     await mkdir(sourceComposeDirectory, { recursive: true });
     await writeFile(join(sourceComposeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+    await writeFile(join(sourceComposeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
     await writeFile(join(releaseRoot, sourceIdentity.releaseId, 'release-manifest.json'), `${JSON.stringify(sourceManifest)}\n`);
     let singletonRan = false;
     let isolationChecks = 0;
@@ -736,6 +743,7 @@ test('concrete rollback ingress rejects a non-legacy raw manifest identity', asy
   const directory = join(releaseRoot, legacy.releaseId);
   await mkdir(join(directory, 'ops', 'compose'), { recursive: true });
   await writeFile(join(directory, 'ops', 'compose', 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(directory, 'ops', 'compose', 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await writeFile(join(directory, 'release-manifest.json'), rawManifest);
   const invocations = [];
   const readback = { schema: 'booking.ingress-readback/v1', project: 'booking-preprod', hostname: 'booking-preprod.happybooking.uk',
@@ -808,6 +816,7 @@ test('concrete Synology plan stages only the inactive blue slot and leaves route
   const composeDirectory = join(releaseRoot, CANDIDATE.releaseId, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(releaseRoot, CANDIDATE.releaseId, 'frontend'));
   await writeFile(join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   const invocations = [];
@@ -1225,6 +1234,7 @@ test('candidate stage rejects a loopback port collision with the active slot bef
   const composeDirectory = join(releaseRoot, CANDIDATE.releaseId, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(releaseRoot, CANDIDATE.releaseId, 'frontend'));
   await writeFile(join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   let calls = 0;
@@ -1246,6 +1256,7 @@ test('candidate compose bytes and implicit release-local env are immutable trust
   const composeDirectory = join(directory, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), `${COMPOSE_CONTENT}# drift\n`);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(directory, 'frontend'));
   await writeFile(join(directory, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   let calls = 0;
@@ -1255,6 +1266,7 @@ test('candidate compose bytes and implicit release-local env are immutable trust
     await assert.rejects(runFencedAction(args(), runtime), /compose file does not match immutable release manifest/);
     assert.equal(calls, 0);
     await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+    await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
     await writeFile(join(directory, '.env'), 'BOOKING_BLUE_PORT=18081\n');
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-env-drift' }), runtime), /release-local \.env is forbidden/);
     assert.equal(calls, 0);
@@ -1434,7 +1446,7 @@ test('webhook action proves the exact migration ledger and cannot implicitly run
       },
     });
     assert.equal(receipt.verification.runtime.webhookUrl, WEBHOOK_ENV.BOOKING_TELEGRAM_WEBHOOK_URL);
-    assert.equal(receipt.verification.artifacts.containers.length, 3);
+    assert.equal(receipt.verification.artifacts.check1.containers.length, 3);
     assert.equal(invocations.some((argv) => argv.at(-1) === 'schema-migrate'), false);
     for (const argv of invocations.filter((item) => item.includes('telegram-webhook-set') || item.includes('telegram-webhook-readback'))) {
       assert.ok(argv.includes('--no-deps'));
@@ -1521,6 +1533,7 @@ test('a forged self-reported runtime identity cannot hide a wrong Docker image',
   const composeDirectory = join(releaseRoot, CANDIDATE.releaseId, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(releaseRoot, CANDIDATE.releaseId, 'frontend'));
   await writeFile(join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   let mutationRan = false;
@@ -1548,6 +1561,7 @@ test('a manifest-bound image is still rejected when its running gateway H5 direc
   const composeDirectory = join(releaseRoot, CANDIDATE.releaseId, 'ops', 'compose');
   await mkdir(composeDirectory, { recursive: true });
   await writeFile(join(composeDirectory, 'compose.preprod.yml'), COMPOSE_CONTENT);
+  await writeFile(join(composeDirectory, 'compose.preprod-telegram-egress.yml'), EGRESS_COMPOSE_CONTENT);
   await mkdir(join(releaseRoot, CANDIDATE.releaseId, 'frontend'));
   await writeFile(join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), ROUTE_CONTENT, { mode: 0o444 });
   try {

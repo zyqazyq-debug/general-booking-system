@@ -38,7 +38,7 @@ function digestSet(values, label) {
 
 export function evidencePredicate({ kind, component, releaseId, gitSha, manifestDigest, image, imageDigest, evidenceDigest, document }) {
   if (!Object.hasOwn(ATTESTATION_TYPES, kind)) throw new ContractError('registry evidence kind is unsupported');
-  if (!['backend', 'gateway'].includes(component) || !RELEASE.test(releaseId || '') || !SHA.test(gitSha || '')) {
+  if (!['backend', 'gateway', 'telegram-egress'].includes(component) || !RELEASE.test(releaseId || '') || !SHA.test(gitSha || '')) {
     throw new ContractError('registry evidence release identity is invalid');
   }
   digest(manifestDigest, 'registry evidence manifest digest');
@@ -144,7 +144,7 @@ export function verifyImageSignatureOutput(stdout, { image, imageDigest, annotat
 
 export function validateRegistryAttestationReceipt(value, expected = {}) {
   exactObject(value, ['schema', 'component', 'registryTransport', 'releaseId', 'gitSha', 'manifestDigest', 'image', 'evidence', 'signer', 'verification', 'verifiedAt'], 'registry attestation receipt');
-  if (value.schema !== 'booking.registry-attestation-receipt/v1' || !['backend', 'gateway'].includes(value.component) ||
+  if (value.schema !== 'booking.registry-attestation-receipt/v1' || !['backend', 'gateway', 'telegram-egress'].includes(value.component) ||
       !RELEASE.test(value.releaseId || '') || !SHA.test(value.gitSha || '')) throw new ContractError('registry attestation receipt identity is invalid');
   if (!['https', 'loopback-http'].includes(value.registryTransport)) throw new ContractError('receipt registry transport is invalid');
   digest(value.manifestDigest, 'receipt manifest digest');

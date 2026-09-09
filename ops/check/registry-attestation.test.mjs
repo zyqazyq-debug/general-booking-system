@@ -35,6 +35,8 @@ function manifest(sbomDigest, provenanceDigest, repository = image) {
       backend: { image: repository, digest: imageDigest, sbomDigest, provenanceDigest },
       gateway: { image: 'registry.acme.test/booking-preprod/gateway', digest: digest('2'), sbomDigest: digest('3'), provenanceDigest: digest('4'),
         frontendAssetDigest: digest('5'), routeContractDigest: digest('6'), telegramBotUsername: 'happybooking_preprod_bot', telegramBotDisplayName: 'HappyBooking Preprod' },
+      telegramEgress: { image: 'registry.acme.test/booking-preprod/telegram-egress', digest: digest('8'), sbomDigest: digest('9'),
+        provenanceDigest: digest('b'), baseImage: 'debian:bookworm-20260824-slim', baseImageDigest: digest('c'), warpPackage: { version: '2026.7.1377.0', sha256: 'e'.repeat(64) } },
       deployment: { composeDigest: digest('7') },
     },
     contracts: { configSchema: 'booking.config/v1', apiVersion: 'v1', frontendCompatibleApi: 'v1', migration: {
