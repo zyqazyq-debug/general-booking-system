@@ -97,6 +97,20 @@ function validateImageArtifact(value, path, gateway = false, legacy = false) {
   }
 }
 
+function validateTelegramEgressArtifact(value, path) {
+  exactKeys(value, ['image', 'digest', 'baseImageDigest', 'warpPackage'], ['image', 'digest', 'baseImageDigest', 'warpPackage'], path);
+  const image = requireString(value.image, `${path}.image`);
+  const finalSegment = image.slice(image.lastIndexOf('/') + 1);
+  if (image === 'latest' || image.endsWith(':latest') || image.includes('@') || finalSegment.includes(':')) {
+    throw new ContractError(`${path}.image must be a repository without tag or digest`, EXIT.IDENTITY);
+  }
+  requireDigest(value.digest, `${path}.digest`);
+  requireDigest(value.baseImageDigest, `${path}.baseImageDigest`);
+  exactKeys(value.warpPackage, ['version', 'sha256'], ['version', 'sha256'], `${path}.warpPackage`);
+  requireString(value.warpPackage.version, `${path}.warpPackage.version`, /^[0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+$/);
+  requireString(value.warpPackage.sha256, `${path}.warpPackage.sha256`, /^[0-9a-f]{64}$/);
+}
+
 export function validateReleaseManifest(value, { expectedLegacyBinding = null, legacyRawDigest = null } = {}) {
   rejectSecretFields(value);
   const rootKeys = ['schema', 'releaseId', 'source', 'artifacts', 'contracts', 'runtime', 'probes'];
@@ -115,9 +129,10 @@ export function validateReleaseManifest(value, { expectedLegacyBinding = null, l
   if (value.source.treeState !== 'clean') throw new ContractError('manifest source tree must be clean', EXIT.IDENTITY);
 
   const artifactKeys = legacyV1 ? ['backend', 'gateway'] : ['backend', 'gateway', 'deployment'];
-  exactKeys(value.artifacts, artifactKeys, ['backend', 'gateway', 'deployment'], 'manifest.artifacts');
+  exactKeys(value.artifacts, artifactKeys, ['backend', 'gateway', 'telegramEgress', 'deployment'], 'manifest.artifacts');
   validateImageArtifact(value.artifacts.backend, 'manifest.artifacts.backend');
   validateImageArtifact(value.artifacts.gateway, 'manifest.artifacts.gateway', true, legacyV1);
+  if (value.artifacts.telegramEgress) validateTelegramEgressArtifact(value.artifacts.telegramEgress, 'manifest.artifacts.telegramEgress');
   if (value.artifacts.deployment) {
     exactKeys(value.artifacts.deployment, ['composeDigest'], ['composeDigest'], 'manifest.artifacts.deployment');
     requireDigest(value.artifacts.deployment.composeDigest, 'manifest.artifacts.deployment.composeDigest');

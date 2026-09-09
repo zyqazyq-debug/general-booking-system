@@ -13,6 +13,7 @@ const WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
 const TELEGRAM_BOT_MODES = new Set(['polling', 'webhook']);
 const TELEGRAM_WEBHOOK_MIN_LEASE_MS = 120_000;
 const TELEGRAM_WEBHOOK_MAX_LEASE_MS = 900_000;
+const BOOKING_PREPROD_TELEGRAM_PROXY = 'socks5h://telegram-egress:1080';
 
 const requireWhen = (condition: boolean, key: string, env: EnvMap) => {
   if (condition && !readString(env, key)) {
@@ -85,6 +86,15 @@ export const validateEnv = (input: EnvMap): EnvMap => {
     'TELEGRAM_DATA_ENCRYPTION_SECRET',
     env,
   );
+  if (readBoolean(env, 'BOOKING_TELEGRAM_EGRESS_REQUIRED')) {
+    if (
+      readString(env, 'TELEGRAM_PROXY_URL') !== BOOKING_PREPROD_TELEGRAM_PROXY
+    ) {
+      throw new Error(
+        `TELEGRAM_PROXY_URL must be ${BOOKING_PREPROD_TELEGRAM_PROXY} when BOOKING_TELEGRAM_EGRESS_REQUIRED is true`,
+      );
+    }
+  }
   if (
     readString(env, 'TELEGRAM_DATA_ENCRYPTION_SECRET') &&
     readString(env, 'TELEGRAM_DATA_ENCRYPTION_SECRET').length < 32
@@ -94,10 +104,7 @@ export const validateEnv = (input: EnvMap): EnvMap => {
     );
   }
   if (isProd && readString(env, 'TELEGRAM_DATA_ENCRYPTION_SECRET')) {
-    const encryptionSecret = readString(
-      env,
-      'TELEGRAM_DATA_ENCRYPTION_SECRET',
-    );
+    const encryptionSecret = readString(env, 'TELEGRAM_DATA_ENCRYPTION_SECRET');
     const reused = [
       'TELEGRAM_BOT_TOKEN',
       'TELEGRAM_WEBHOOK_SECRET_TOKEN',

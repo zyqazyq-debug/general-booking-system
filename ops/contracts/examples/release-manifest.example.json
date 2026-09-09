@@ -22,6 +22,15 @@
       "telegramBotUsername": "happybooking_preprod_bot",
       "telegramBotDisplayName": "HappyBooking Preprod"
     },
+    "telegramEgress": {
+      "image": "registry.acme.test/happybooking/telegram-egress",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "baseImageDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "warpPackage": {
+        "version": "2026.7.1377.0",
+        "sha256": "95d33c2b4fc42f21c204981c51470a6a679d618fb0b78ee64bdd0db142230c55"
+      }
+    },
     "deployment": {
       "composeDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
     }

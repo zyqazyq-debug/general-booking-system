@@ -126,6 +126,23 @@ describe('validateEnv production database', () => {
     ).toMatchObject({ TELEGRAM_BOT_TOKEN: '12345:test-token' });
   });
 
+  it('fails closed when the preproduction Telegram egress URL is not the dedicated SOCKS endpoint', () => {
+    expect(() =>
+      validateEnv({
+        ...baseEnv(),
+        BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true',
+        TELEGRAM_PROXY_URL: 'http://192.168.3.5:7893',
+      }),
+    ).toThrow('TELEGRAM_PROXY_URL must be socks5h://telegram-egress:1080');
+    expect(() =>
+      validateEnv({
+        ...baseEnv(),
+        BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true',
+        TELEGRAM_PROXY_URL: 'socks5h://telegram-egress:1080',
+      }),
+    ).not.toThrow();
+  });
+
   it('requires a dedicated Telegram data encryption secret for active production delivery', () => {
     expect(() =>
       validateEnv({

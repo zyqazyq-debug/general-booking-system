@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/telegram-egress-receipt.schema.json",
+  "title": "HappyBooking preproduction Telegram egress receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "releaseId", "manifestDigest", "egress", "transport", "observedAt"],
+  "properties": {
+    "schema": { "const": "booking.telegram-egress-receipt/v1" },
+    "status": { "const": "pass" },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "manifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "egress": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imageDigest", "network", "proxyUrl"],
+      "properties": {
+        "imageDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "network": { "const": "booking-preprod-telegram" },
+        "proxyUrl": { "const": "socks5h://telegram-egress:1080" }
+      }
+    },
+    "transport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "tokenFree", "httpStatus"],
+      "properties": {
+        "target": { "const": "api.telegram.org" },
+        "tokenFree": { "const": true },
+        "httpStatus": { "type": "integer", "minimum": 400, "maximum": 499 }
+      }
+    },
+    "observedAt": { "type": "string", "format": "date-time" }
+  }
+}

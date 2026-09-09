@@ -336,8 +336,21 @@ export async function releaseInputs(root, args) {
   }
   artifact.gateway.telegramBotUsername = args['telegram-bot-username'];
   artifact.gateway.telegramBotDisplayName = args['telegram-bot-display-name'];
+  const egressDockerfile = await canonicalSourceFile(root, args['telegram-egress-dockerfile'], 'ops/telegram-egress/Dockerfile', '--telegram-egress-dockerfile');
+  const egressDockerfileText = await readFile(egressDockerfile, 'utf8');
+  const base = /^FROM debian:bookworm-20260824-slim@(sha256:[0-9a-f]{64})$/m.exec(egressDockerfileText);
+  const version = /^ARG CLOUDFLARE_WARP_VERSION=([0-9]{4}\.[0-9]+\.[0-9]+\.[0-9]+)$/m.exec(egressDockerfileText);
+  const packageSha = /^ARG CLOUDFLARE_WARP_DEB_SHA256=([0-9a-f]{64})$/m.exec(egressDockerfileText);
+  if (!base || !version || !packageSha) throw new ContractError('Telegram egress Dockerfile package identity is invalid');
+  artifact.telegramEgress = {
+    image: imageRepository(args['telegram-egress-image'], '--telegram-egress-image'),
+    digest: imageDigest(args['telegram-egress-digest'], '--telegram-egress-digest'),
+    baseImageDigest: base[1],
+    warpPackage: { version: version[1], sha256: packageSha[1] },
+  };
   const composeFile = await canonicalSourceFile(root, args['compose-file'], 'ops/compose/compose.preprod.yml', '--compose-file');
-  artifact.deployment = { composeDigest: await digestFile(composeFile) };
+  const egressComposeFile = await canonicalSourceFile(root, args['telegram-egress-compose-file'], 'ops/compose/compose.preprod-telegram-egress.yml', '--telegram-egress-compose-file');
+  artifact.deployment = { composeDigest: sha256([await digestFile(composeFile), await digestFile(egressComposeFile)]) };
   const migration = await migrationCatalog(root);
   return { source, targetPlatform, artifact, migration };
 }
@@ -347,7 +360,7 @@ export function createReleaseManifest({ source, targetPlatform, artifact, migrat
   const manifest = {
     schema: 'booking.release/v2', releaseId,
     source: { gitSha: source.gitSha, treeState: 'clean' },
-    artifacts: { backend: structuredClone(artifact.backend), gateway: structuredClone(artifact.gateway), deployment: structuredClone(artifact.deployment) },
+    artifacts: { backend: structuredClone(artifact.backend), gateway: structuredClone(artifact.gateway), telegramEgress: structuredClone(artifact.telegramEgress), deployment: structuredClone(artifact.deployment) },
     contracts: {
       configSchema: 'booking.config/v1', apiVersion: 'v1', frontendCompatibleApi: 'v1',
       migration: { ...migration, compatibility: 'expand-contract' }, rollbackCompatibleRelease,

@@ -1,0 +1,78 @@
+# Explicit Telegram-only overlay.  It is never selected for a generic
+# booking-preprod start; operator activation is a separately fenced action.
+services:
+  telegram-egress:
+    image: ${BOOKING_TELEGRAM_EGRESS_IMAGE:?set egress image repository}@${BOOKING_TELEGRAM_EGRESS_DIGEST:?set immutable egress image digest}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp, /run, /var/log/cloudflare-warp]
+    volumes:
+      - telegram-warp-state:/var/lib/cloudflare-warp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 0.50
+    networks: [preprod-telegram, preprod-warp-uplink]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+
+  backend-green:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  backend-blue:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  telegram-bot-identity:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  telegram-webhook-set:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+  telegram-webhook-readback:
+    environment:
+      BOOKING_TELEGRAM_EGRESS_REQUIRED: "true"
+      TELEGRAM_PROXY_URL: socks5h://telegram-egress:1080
+    networks: [preprod-telegram]
+    depends_on:
+      telegram-egress:
+        condition: service_healthy
+
+networks:
+  preprod-telegram:
+    name: booking-preprod-telegram
+    internal: true
+  preprod-warp-uplink:
+    name: booking-preprod-warp-uplink
+
+volumes:
+  telegram-warp-state:
+    name: booking-preprod-telegram-warp-state
