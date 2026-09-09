@@ -13,7 +13,7 @@ x-backend-common: &backend-common
     - telegram_webhook_secret
   networks: [prod-edge, prod-data]
   read_only: true
-  tmpfs: [/tmp]
+  tmpfs: [/tmp, /app/logs]
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
   healthcheck:
@@ -38,10 +38,92 @@ x-gateway-common: &gateway-common
     retries: 12
 
 services:
+  telegram-webhook-set:
+    <<: *backend-common
+    profiles: ["telegram-webhook-set"]
+    image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_MIGRATION_BACKEND_DIGEST:?set candidate backend digest}
+    restart: "no"
+    healthcheck:
+      disable: true
+    environment:
+      NODE_ENV: production
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+    command:
+      - node
+      - dist/src/scripts/set-telegram-webhook.js
+      - --action=set
+      - --environment=production
+      - --expected-bot-id=${BOOKING_TELEGRAM_EXPECTED_BOT_ID:-}
+      - --expected-bot-username=${BOOKING_TELEGRAM_EXPECTED_BOT_USERNAME:-}
+      - --url=${BOOKING_TELEGRAM_WEBHOOK_URL:?set exact production Telegram webhook URL}
+      - --ready-url=https://app.happybooking.uk/readyz
+      - --expected-release-id=${BOOKING_WEBHOOK_RELEASE_ID:?set active candidate release id}
+      - --expected-git-sha=${BOOKING_WEBHOOK_GIT_SHA:?set active candidate Git SHA}
+      - --expected-manifest-digest=${BOOKING_WEBHOOK_MANIFEST_DIGEST:?set active candidate manifest digest}
+      - --expected-config-schema=${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      - --expected-migration-floor=${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      - --expected-migration-catalog-digest=${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+    depends_on:
+      schema-migrate:
+        condition: service_completed_successfully
+
+  schema-migrate:
+    <<: *backend-common
+    profiles: ["migrate", "telegram-webhook-set"]
+    image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_MIGRATION_BACKEND_DIGEST:?set migration backend digest}
+    restart: "no"
+    healthcheck:
+      disable: true
+    environment:
+      NODE_ENV: production
+      BOOKING_SCHEMA_MIGRATE: "true"
+      BOOKING_MIGRATION_EXPECTED_DATABASE: ${POSTGRES_DB:?acknowledge migration database}
+      BOOKING_MIGRATION_ENVIRONMENT: production
+      BOOKING_MIGRATION_EXPECTED_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_MIGRATION_APPROVED_PENDING_JSON: ${BOOKING_MIGRATION_APPROVED_PENDING_JSON:?set exact approved pending migration JSON array}
+      BOOKING_MIGRATION_BACKUP_RECEIPT_FILE: /run/booking-evidence/backup-receipt.json
+      BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST: ${BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST:?set exact backup receipt digest}
+      BOOKING_MIGRATION_CATALOG_DIR: /app/migration-source
+      BOOKING_RELEASE_ID: ${BOOKING_WEBHOOK_RELEASE_ID:?set candidate release id}
+      BOOKING_GIT_SHA: ${BOOKING_WEBHOOK_GIT_SHA:?set candidate Git SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_WEBHOOK_MANIFEST_DIGEST:?set candidate manifest digest}
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      BOOKING_RUNTIME_ROLE: migration
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      JWT_SECRET1_FILE: /run/secrets/jwt_secret_1
+      JWT_SECRET2_FILE: /run/secrets/jwt_secret_2
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+    command: ["node", "dist/src/scripts/run-migrations.js"]
+    volumes:
+      - type: bind
+        source: ${BOOKING_MIGRATION_BACKUP_RECEIPT_HOST_FILE:?set verified backup receipt file}
+        target: /run/booking-evidence/backup-receipt.json
+        read_only: true
+
   backend-blue:
     <<: *backend-common
     profiles: ["blue"]
     image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_BLUE_BACKEND_DIGEST:?set blue backend digest}
+    secrets:
+      - postgres_password
+      - redis_password
+      - jwt_secret_1
+      - jwt_secret_2
+      - telegram_bot_token
+      - telegram_webhook_secret
+      - telegram_data_encryption_secret
     environment:
       BOOKING_RELEASE_ID: ${BOOKING_BLUE_RELEASE_ID:?set blue release id}
       BOOKING_GIT_SHA: ${BOOKING_BLUE_GIT_SHA:?set blue Git SHA}
@@ -49,14 +131,17 @@ services:
       BOOKING_MANIFEST_DIGEST: ${BOOKING_BLUE_MANIFEST_DIGEST:?set blue manifest digest}
       BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set config schema}
       BOOKING_MIGRATION_FLOOR: ${BOOKING_BLUE_MIGRATION_FLOOR:?set migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
       BOOKING_RUNTIME_ROLE: ${BOOKING_BLUE_RUNTIME_ROLE:-standby}
       BOOKING_WORKERS_ENABLED: ${BOOKING_BLUE_WORKERS_ENABLED:-false}
+      ORDER_OUTBOX_DISPATCH_ENABLED: ${BOOKING_BLUE_ORDER_OUTBOX_DISPATCH_ENABLED:-false}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET1_FILE: /run/secrets/jwt_secret_1
       JWT_SECRET2_FILE: /run/secrets/jwt_secret_2
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
 
   gateway-blue:
     <<: *gateway-common
@@ -75,6 +160,14 @@ services:
     <<: *backend-common
     profiles: ["green"]
     image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_GREEN_BACKEND_DIGEST:?set green backend digest}
+    secrets:
+      - postgres_password
+      - redis_password
+      - jwt_secret_1
+      - jwt_secret_2
+      - telegram_bot_token
+      - telegram_webhook_secret
+      - telegram_data_encryption_secret
     environment:
       BOOKING_RELEASE_ID: ${BOOKING_GREEN_RELEASE_ID:?set green release id}
       BOOKING_GIT_SHA: ${BOOKING_GREEN_GIT_SHA:?set green Git SHA}
@@ -82,14 +175,17 @@ services:
       BOOKING_MANIFEST_DIGEST: ${BOOKING_GREEN_MANIFEST_DIGEST:?set green manifest digest}
       BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set config schema}
       BOOKING_MIGRATION_FLOOR: ${BOOKING_GREEN_MIGRATION_FLOOR:?set migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
       BOOKING_RUNTIME_ROLE: ${BOOKING_GREEN_RUNTIME_ROLE:-standby}
       BOOKING_WORKERS_ENABLED: ${BOOKING_GREEN_WORKERS_ENABLED:-false}
+      ORDER_OUTBOX_DISPATCH_ENABLED: ${BOOKING_GREEN_ORDER_OUTBOX_DISPATCH_ENABLED:-false}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET1_FILE: /run/secrets/jwt_secret_1
       JWT_SECRET2_FILE: /run/secrets/jwt_secret_2
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
 
   gateway-green:
     <<: *gateway-common
@@ -117,6 +213,8 @@ secrets:
     file: ${BOOKING_SECRET_ROOT:?set protected secret root}/telegram-bot-token
   telegram_webhook_secret:
     file: ${BOOKING_SECRET_ROOT:?set protected secret root}/telegram-webhook-secret
+  telegram_data_encryption_secret:
+    file: ${BOOKING_SECRET_ROOT:?set protected secret root}/telegram-data-encryption-secret
 
 networks:
   prod-edge:

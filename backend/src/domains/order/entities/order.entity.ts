@@ -9,6 +9,7 @@ import {
   Index,
   Check,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 export enum OrderStatus {
   PENDING = 'PENDING',
@@ -42,12 +43,20 @@ export enum OrderStatus {
 ])
 @Index('idx_orders_owner_created_at', ['owner_id', 'created_at'])
 @Index('idx_orders_owner_start_time', ['owner_id', 'start_time'])
+@Index('uq_orders_source_idempotency_key', ['source_idempotency_key'], {
+  unique: true,
+  where: 'source_idempotency_key IS NOT NULL',
+})
 export class Order {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column({ unique: true })
   order_no: string;
+
+  @Column({ type: 'varchar', length: 191, nullable: true })
+  @Exclude()
+  source_idempotency_key: string | null;
 
   @Column()
   consumer_id: string;

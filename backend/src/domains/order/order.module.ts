@@ -21,9 +21,19 @@ import { OrderStatusNotifierService } from './services/order-status-notifier.ser
 import { OrderSourceResolverService } from './services/order-source-resolver.service';
 import { AuthOrderAdapter } from './adapters/auth-order.adapter';
 import { AdminOrderAdapter } from './adapters/admin-order.adapter';
+import { OrderOutboxEvent } from './outbox/order-outbox-event.entity';
+import { OrderOutboxService } from './outbox/order-outbox.service';
+import { OrderNotificationDelivery } from './outbox/order-notification-delivery.entity';
+import { OrderNotificationDeliveryService } from './outbox/order-notification-delivery.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order])],
+  imports: [
+    TypeOrmModule.forFeature([
+      Order,
+      OrderOutboxEvent,
+      OrderNotificationDelivery,
+    ]),
+  ],
   controllers: [OrderController],
   providers: [
     OrderService,
@@ -36,6 +46,8 @@ import { AdminOrderAdapter } from './adapters/admin-order.adapter';
     OrderQueryService,
     OrderLifecycleService,
     OrderCreationService,
+    OrderOutboxService,
+    OrderNotificationDeliveryService,
     OrderSourceResolverService,
     OrderManagementService,
     OrderContextQueryService,

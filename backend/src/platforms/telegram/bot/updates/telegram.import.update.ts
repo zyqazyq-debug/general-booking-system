@@ -17,6 +17,10 @@ import {
 } from '../services/telegram-session-state.service';
 import { TelegramCallbackService } from '../services/telegram-callback.service';
 import axios from 'axios';
+import {
+  TelegramMutationReplayBlockedError,
+  TELEGRAM_MUTATION_REPLAY_MESSAGE,
+} from '../../persistence/telegram-webhook-mutation-fence.service';
 
 type TelegramPhoto = { file_id: string };
 type ReplyMessage = { text?: string; caption?: string };
@@ -75,8 +79,8 @@ export class TelegramImportUpdate {
           '未识别到二维码，请发送清晰的图片。',
         );
       }
-    } catch (e) {
-      this.logger.error('Failed to process photo', e);
+    } catch {
+      this.logger.error('Failed to process photo.');
       await this.uiService.sendMainKeyboard(
         ctx,
         '图片处理失败，请确认图片是否清晰。',
@@ -115,9 +119,14 @@ export class TelegramImportUpdate {
             originalCardMsgId,
           ),
       });
-    } catch {
+    } catch (error: unknown) {
       this.logger.error('Telegram text handler failed.');
-      await this.uiService.sendMainKeyboard(ctx, '处理失败，请稍后重试。');
+      await this.uiService.sendMainKeyboard(
+        ctx,
+        error instanceof TelegramMutationReplayBlockedError
+          ? TELEGRAM_MUTATION_REPLAY_MESSAGE
+          : '处理失败，请稍后重试。',
+      );
     }
   }
 
@@ -179,9 +188,16 @@ export class TelegramImportUpdate {
       }
 
       await this.executeImportContent(ctx, content, source);
-    } catch (e: unknown) {
+    } catch (error: unknown) {
+      if (error instanceof TelegramMutationReplayBlockedError) {
+        await this.uiService.sendMainKeyboard(
+          ctx,
+          TELEGRAM_MUTATION_REPLAY_MESSAGE,
+        );
+        return;
+      }
       // Fallback to error handling in executeImportContent if check fails
-      this.logger.warn(`Pre-check failed, fallback to execute: ${String(e)}`);
+      this.logger.warn('Pre-check failed; falling back to import execution.');
       await this.executeImportContent(ctx, content, source);
     }
   }
@@ -234,6 +250,13 @@ export class TelegramImportUpdate {
       await this.uiService.sendCollectionCard(ctx, fullNode, text, isEdit);
       this.logger.log(`[TG_IMPORT_OK] source=${source} isNew=${isNew}`);
     } catch (e: unknown) {
+      if (e instanceof TelegramMutationReplayBlockedError) {
+        await this.uiService.sendMainKeyboard(
+          ctx,
+          TELEGRAM_MUTATION_REPLAY_MESSAGE,
+        );
+        return;
+      }
       const errorText = this.errorNormalizer.extractErrorText(e, '');
       const message = this.messageParser.buildImportFailureMessage({
         content,

@@ -4,6 +4,8 @@ import { TelegrafModule, TelegrafModuleOptions } from 'nestjs-telegraf';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import axios, { AxiosRequestConfig } from 'axios';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { TelegramBindingTicket } from './persistence/telegram-binding-ticket.entity';
 
 import { TelegramWebAppAuthService } from './auth/telegram-webapp-auth.service';
 import { TelegramService } from './bot/services/telegram.service';
@@ -18,6 +20,7 @@ const TELEGRAM_NOTIFICATION_CHANNEL = 'ITelegramNotificationChannel';
 @Module({
   imports: [
     ConfigModule,
+    TypeOrmModule.forFeature([TelegramBindingTicket]),
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {

@@ -6,6 +6,15 @@ import { TelegramErrorNormalizerService } from '../services/telegram-error-norma
 import { TelegramBookingApplicationService } from '../../application/telegram-booking.application.service';
 import { TelegramCallbackService } from '../services/telegram-callback.service';
 
+export function buildTelegramBookingIdempotencyKey(ctx: Context): string {
+  const botId = ctx.botInfo?.id;
+  const updateId = ctx.update?.update_id;
+  if (!Number.isSafeInteger(botId) || !Number.isSafeInteger(updateId)) {
+    throw new Error('Telegram booking update identity is unavailable');
+  }
+  return `telegram:${botId}:update:${updateId}:create_booking`;
+}
+
 @Update()
 export class TelegramBookingUpdate {
   private readonly logger = new Logger(TelegramBookingUpdate.name);
@@ -88,9 +97,7 @@ export class TelegramBookingUpdate {
       });
     } catch (e: unknown) {
       const errorText = this.errorNormalizer.extractErrorText(e, '未知错误');
-      this.logger.error(
-        `Failed to load slots for ${collectionId} on ${dateStr}: ${errorText}`,
-      );
+      this.logger.error('Failed to load booking slots.');
       await this.callbackService.answerCbQuerySafely(
         ctx,
         '加载失败',
@@ -114,6 +121,7 @@ export class TelegramBookingUpdate {
           collectionId,
           dateStr,
           timeStr,
+          sourceIdempotencyKey: buildTelegramBookingIdempotencyKey(ctx),
         });
 
       await this.callbackService.answerCbQuerySafely(
@@ -131,7 +139,7 @@ export class TelegramBookingUpdate {
         { parse_mode: 'Markdown' },
       );
     } catch (e: unknown) {
-      this.logger.error('Booking failed', e);
+      this.logger.error('Booking failed.');
       const errorText = this.errorNormalizer.extractErrorText(e, '预约失败');
       let msg = '预约失败';
       if (errorText.includes('Credit')) msg = '信用分不足，请充值';

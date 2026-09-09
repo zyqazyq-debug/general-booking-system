@@ -1,26 +1,28 @@
 import type { PlatformAdapter, AuthData } from '../adapter.interface';
+import { detectRuntimeEnv } from '@/utils/runtime-env';
 
 export class WechatAdapter implements PlatformAdapter {
   name = 'wechat';
 
   isCurrentRuntime(): boolean {
-    // @ts-ignore
-    return typeof wx !== 'undefined' && typeof wx.login === 'function';
+    // Uni's H5 runtime can expose a compatibility `wx` global. Runtime
+    // selection must use the platform contract, not global-name presence.
+    return detectRuntimeEnv() === 'wechat_mini_program';
   }
 
   async login(): Promise<AuthData | null> {
     return new Promise((resolve) => {
-        // @ts-ignore
-        wx.login({
-            success: (res: any) => {
-                if (res.code) {
-                    resolve({ user: null, platform_token: res.code });
-                } else {
-                    resolve(null);
-                }
-            },
-            fail: () => resolve(null)
-        });
+      // @ts-ignore
+      wx.login({
+        success: (res: any) => {
+          if (res.code) {
+            resolve({ user: null, platform_token: res.code });
+          } else {
+            resolve(null);
+          }
+        },
+        fail: () => resolve(null),
+      });
     });
   }
 
@@ -32,12 +34,12 @@ export class WechatAdapter implements PlatformAdapter {
   async pay(options?: any): Promise<void> {
     // @ts-ignore
     return new Promise((resolve, reject) => {
-        // @ts-ignore
-        wx.requestPayment({
-            ...options,
-            success: resolve,
-            fail: reject
-        });
+      // @ts-ignore
+      wx.requestPayment({
+        ...options,
+        success: resolve,
+        fail: reject,
+      });
     });
   }
 

@@ -16,7 +16,7 @@ function createGateInvocation(
 ) {
   const options = {
     cwd: repoRoot,
-    env: process.env,
+    env: { ...process.env, ...(gate.env || {}) },
     stdio: 'inherit',
     shell: false,
   };
@@ -47,6 +47,14 @@ const targetedBackendTestGroups = [
       'src/domains/order/services/order-context-query.service.spec.ts',
       'src/domains/order/services/order-lifecycle.service.spec.ts',
       'src/domains/order/services/order-financial.service.spec.ts',
+      'src/domains/order/services/order-creation.service.spec.ts',
+      'src/domains/order/order-idempotency-migration.contract.spec.ts',
+      'src/domains/order/order-outbox-migration.contract.spec.ts',
+      'src/domains/order/order-created-consumer-migration.contract.spec.ts',
+      'src/domains/order/outbox/order-outbox.service.spec.ts',
+      'src/domains/order/outbox/order-notification-delivery.service.spec.ts',
+      'src/domains/order/listeners/order-created-notification.listener.spec.ts',
+      'src/domains/agency/listeners/agency-order-commission.listener.spec.ts',
     ],
   },
   {
@@ -64,8 +72,17 @@ const targetedBackendTestGroups = [
     name: 'backend telegram and env R1 tests',
     files: [
       'src/config/env.validation.spec.ts',
+      'src/config/file-secrets.spec.ts',
+      'src/scripts/run-migrations.spec.ts',
+      'src/shared/health/ops-status.controller.spec.ts',
       'src/platforms/telegram/telegram-webhook.controller.spec.ts',
-      'src/shared/common/setup-telegram.spec.ts',
+      'src/platforms/telegram/telegram-webhook.ingress-audit.spec.ts',
+      'src/platforms/telegram/persistence/telegram-webhook-inbox.service.spec.ts',
+      'src/platforms/telegram/persistence/telegram-webhook-mutation-fence.service.spec.ts',
+      'src/platforms/telegram/persistence/telegram-webhook-migration.contract.spec.ts',
+      'src/platforms/telegram/application/telegram-booking.application.service.spec.ts',
+      'src/platforms/telegram/bot/updates/telegram.booking.update.spec.ts',
+      'src/scripts/set-telegram-webhook.spec.ts',
     ],
   },
 ];
@@ -124,9 +141,20 @@ const gates = [
     args: ['--prefix', 'frontend', 'run', 'depcruise'],
   },
   {
-    name: 'frontend build',
+    name: 'frontend auditable build',
     command: npmCommand,
     args: ['--prefix', 'frontend', 'run', 'build:h5'],
+    env: { BOOKING_BUNDLE_AUDIT: 'true' },
+  },
+  {
+    name: 'frontend bundled dependency audit',
+    command: npmCommand,
+    args: ['--prefix', 'frontend', 'run', 'audit:h5-bundle'],
+  },
+  {
+    name: 'frontend source map stripping',
+    command: npmCommand,
+    args: ['--prefix', 'frontend', 'run', 'strip:h5-source-maps'],
   },
   {
     name: 'generated API is current and non-empty',

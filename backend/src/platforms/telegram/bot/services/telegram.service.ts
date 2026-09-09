@@ -4,6 +4,7 @@ import { Context, Telegraf } from 'telegraf';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ITelegramNotificationChannel } from '../../../../domains/notification';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class TelegramService implements ITelegramNotificationChannel {
@@ -14,7 +15,10 @@ export class TelegramService implements ITelegramNotificationChannel {
     'telegram-traffic.log',
   );
 
-  constructor(@InjectBot() private bot: Telegraf<Context>) {
+  constructor(
+    @InjectBot() private bot: Telegraf<Context>,
+    private readonly configService: ConfigService,
+  ) {
     const logDir = path.dirname(this.logPath);
     if (!fs.existsSync(logDir)) {
       fs.mkdirSync(logDir, { recursive: true });
@@ -45,7 +49,7 @@ export class TelegramService implements ITelegramNotificationChannel {
     message: string,
     extra?: any,
   ): Promise<boolean> {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (
       process.env.NODE_ENV === 'test' ||
       !token ||
@@ -70,7 +74,7 @@ export class TelegramService implements ITelegramNotificationChannel {
   }
 
   async getBotInfo() {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (
       process.env.NODE_ENV === 'test' ||
       !token ||

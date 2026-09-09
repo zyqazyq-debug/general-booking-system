@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/external-action-receipt.schema.json",
+  "title": "HappyBooking fenced external action receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "project", "action", "actionId", "operationId", "approvalId", "generation", "fencingEpoch", "leaseId", "holderId", "manifestDigest", "releaseIdentity", "resourceIds", "commandDigest", "requestDigest", "startedAt", "completedAt", "status", "executionOutputDigest", "readbackOutputDigest", "verification", "resources", "receiptDigest"],
+  "properties": {
+    "schema": { "const": "booking.external-action-receipt/v1" },
+    "environment": { "const": "preprod" },
+    "project": { "const": "booking-preprod" },
+    "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-stage", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-switch-ingress", "preprod-rollback-ingress", "preprod-rollback-singletons"] },
+    "actionId": { "$ref": "#/$defs/identifier" },
+    "operationId": { "$ref": "#/$defs/identifier" },
+    "approvalId": { "$ref": "#/$defs/identifier" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "fencingEpoch": { "type": "integer", "minimum": 1 },
+    "leaseId": { "$ref": "#/$defs/identifier" },
+    "holderId": { "$ref": "#/$defs/identifier" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "releaseIdentity": { "$ref": "deploy-state.schema.json#/$defs/releaseIdentity" },
+    "resourceIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "commandDigest": { "$ref": "#/$defs/digest" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["pass", "fail"] },
+    "executionOutputDigest": { "$ref": "#/$defs/digest" },
+    "readbackOutputDigest": { "$ref": "#/$defs/digest" },
+    "verification": { "type": "object" },
+    "resources": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["resourceId", "highestAcceptedFencingEpoch", "previousReceiptDigest"],
+        "properties": {
+          "resourceId": { "type": "string", "minLength": 1 },
+          "highestAcceptedFencingEpoch": { "type": "integer", "minimum": 1 },
+          "previousReceiptDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+        }
+      }
+    },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

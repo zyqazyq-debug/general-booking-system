@@ -59,8 +59,8 @@ export class TelegramImportActionService {
         'import_action_edit',
       );
       await this.uiService.sendEditPrompt(ctx, { id });
-    } catch (e) {
-      this.logger.error('Edit action failed', e);
+    } catch {
+      this.logger.error('Edit action failed.');
       await ctx.reply('编辑入口暂时不可用，请稍后重试。');
     }
   }
@@ -82,8 +82,8 @@ export class TelegramImportActionService {
         return;
       }
       await this.uiService.sendPromoteLink(ctx, node);
-    } catch (e) {
-      this.logger.error('Promote action failed', e);
+    } catch {
+      this.logger.error('Promote action failed.');
       await ctx.reply('推广链接生成失败，请稍后重试。');
     }
   }
@@ -130,8 +130,8 @@ export class TelegramImportActionService {
           originalCardMessageId: ctx.callbackQuery?.message?.message_id,
         });
       }
-    } catch (e) {
-      this.logger.error('Markup action failed', e);
+    } catch {
+      this.logger.error('Markup action failed.');
       await ctx.reply('加价入口暂时不可用，请检查。');
     }
   }
@@ -153,8 +153,8 @@ export class TelegramImportActionService {
         return;
       }
       await this.uiService.sendBookingPrompt(ctx, node);
-    } catch (e) {
-      this.logger.error('Book action failed', e);
+    } catch {
+      this.logger.error('Book action failed.');
       await ctx.reply('下单入口暂时不可用，请稍后重试。');
     }
   }
@@ -239,7 +239,7 @@ export class TelegramImportActionService {
         await ctx.reply('更新成功，但无法获取最新信息。');
       }
     } catch (e) {
-      this.logger.error('Update price failed', e);
+      this.logger.error('Update price failed.');
       await ctx.reply(
         `更新失败: ${this.errorNormalizer.extractErrorText(e, '请稍后重试')}`,
       );

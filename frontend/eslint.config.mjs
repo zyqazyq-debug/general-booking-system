@@ -15,7 +15,10 @@ const domainNames = fs
 
 const domainImportGuards = domainNames.map((domain) => {
   const otherDomains = domainNames.filter((d) => d !== domain);
-  const patterns = otherDomains.flatMap((d) => [`@/domains/${d}/*`, `@/domains/${d}/**`]);
+  const patterns = otherDomains.flatMap((d) => [
+    `@/domains/${d}/*`,
+    `@/domains/${d}/**`,
+  ]);
   return {
     files: [`src/domains/${domain}/**/*.{js,ts,vue}`],
     rules: {
@@ -86,7 +89,7 @@ export default [
     },
   },
   {
-    files: ['**/*.{js,ts,vue}'],
+    files: ['**/*.{js,mjs,ts,vue}'],
     rules: {
       'no-console': 'off',
       'no-undef': 'off',

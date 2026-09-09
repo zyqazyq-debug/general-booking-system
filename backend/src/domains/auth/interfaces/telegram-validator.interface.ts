@@ -26,11 +26,11 @@ export interface ITelegramValidator {
     photoUrl?: string;
   };
   validateBotData(authData: TelegramAuthData): void; // Throws if invalid
-  generateLoginToken(userId?: string): string;
+  generateLoginToken(userId?: string): Promise<string>;
   getBotDeepLink(token: string): Promise<string>;
   getBotInfo(): Promise<{ username: string; first_name: string }>;
-  getTokenStatus(token: string): {
+  getTokenStatus(token: string): Promise<{
     status: 'pending' | 'success' | 'expired' | 'not_found';
     result?: unknown;
-  };
+  }>;
 }

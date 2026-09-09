@@ -25,6 +25,7 @@ import { LinkAgencyAdapter } from './adapters/link-agency.adapter';
 import { ServicesAgencyAdapter } from './adapters/services-agency.adapter';
 import { AdminAgencyAdapter } from './adapters/admin-agency.adapter';
 import { AgencyOnboardingFacade } from './services/agency-onboarding.facade';
+import { AgencyOrderEventConsumption } from './entities/agency-order-event-consumption.entity';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { AgencyOnboardingFacade } from './services/agency-onboarding.facade';
       CommissionRecord,
       CollectionQuotaSubscription,
       CollectionQuotaBill,
+      AgencyOrderEventConsumption,
     ]),
   ],
   providers: [

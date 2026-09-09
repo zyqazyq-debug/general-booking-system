@@ -1,0 +1,206 @@
+#!/bin/sh
+set -eu
+PATH='/usr/sbin:/usr/bin:/sbin:/bin'
+IFS=' '
+export PATH
+
+IMAGE='node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5'
+HOST_DOCKER='/var/packages/ContainerManager/target/usr/bin/docker'
+HOST_COMPOSE='/var/packages/ContainerManager/target/usr/bin/docker-compose'
+STATE_ROOT='/var/lib/happybooking'
+PREPROD_ROOT='/volume1/homes/realzyq/booking-preprod'
+CONTROL_ROOT='/usr/local/libexec/happybooking/control-plane'
+CONTROL_ENV='/etc/happybooking/secrets/booking-preprod-control-plane.env'
+TOKEN_FILE='/etc/happybooking/secrets/cloudflare-preprod-api-token'
+EVIDENCE_ROOT='/volume1/homes/realzyq/booking-preprod/.g4'
+LEGACY_RELEASE='booking-20260908T202714Z-317be4dec675'
+
+fail() {
+  printf '%s\n' "booking-preprod control-plane launcher rejected the request" >&2
+  exit 64
+}
+
+valid_release_id() {
+  candidate=$1
+  case "$candidate" in booking-*) ;; *) return 1 ;; esac
+  tail=${candidate#booking-}
+  date_part=${tail%%T*}
+  rest=${tail#*T}
+  time_part=${rest%%Z-*}
+  sha_part=${rest#*Z-}
+  [ "$candidate" = "booking-${date_part}T${time_part}Z-${sha_part}" ] || return 1
+  [ "${#date_part}" -eq 8 ] && [ "${#time_part}" -eq 6 ] || return 1
+  [ "${#sha_part}" -ge 7 ] && [ "${#sha_part}" -le 12 ] || return 1
+  case "$date_part$time_part" in *[!0-9]*) return 1 ;; esac
+  case "$sha_part" in *[!0-9a-f]*) return 1 ;; esac
+  return 0
+}
+
+[ "$#" -ge 1 ] || fail
+entrypoint=$1
+shift
+
+case "$entrypoint" in
+  manage-deploy-state)
+    script='/usr/local/libexec/happybooking/control-plane/ops/release/manage-deploy-state.mjs'
+    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest active-slot active-release active-git-sha active-manifest-digest candidate-slot candidate-release candidate-git-sha candidate-manifest-digest edge-network data-network database-ref ingress-ref operation-id lease-id holder-id lease-duration-ms to candidate-probe-digest rollback-pre-switch-probe-digest singleton-transfer-receipt-digest switch-receipt-digest observation-receipt-digest rollback-receipt-digest rollback-singleton-transfer-receipt-digest rolled-back-probe-digest '
+    ;;
+  execute-fenced-action)
+    script='/usr/local/libexec/happybooking/control-plane/ops/release/execute-fenced-action.mjs'
+    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest operation-id lease-id holder-id resource-id action-id '
+    ;;
+  generate-database-backup-receipt)
+    script='/usr/local/libexec/happybooking/control-plane/ops/release/generate-database-backup-receipt.mjs'
+    allowed=' action execute environment project identity release-id operation-id expected-backup-digest '
+    ;;
+  generate-schema-diff-receipt)
+    script='/usr/local/libexec/happybooking/control-plane/ops/release/generate-schema-diff-receipt.mjs'
+    allowed=' action execute environment project operation-id '
+    ;;
+  *) fail ;;
+esac
+
+seen=' '
+environment=''
+project=''
+execute=''
+action=''
+identity=''
+release_id=''
+operation_id=''
+expected_backup_digest=''
+forwarded=''
+while [ "$#" -gt 0 ]; do
+  option=$1
+  shift
+  case "$option" in --*) key=${option#--} ;; *) fail ;; esac
+  case "$allowed" in *" $key "*) ;; *) fail ;; esac
+  case "$seen" in *" $key "*) fail ;; esac
+  [ "$#" -gt 0 ] || fail
+  value=$1
+  shift
+  [ -n "$value" ] || fail
+  case "$value" in --*|*[!A-Za-z0-9._:@-]*) fail ;; esac
+  seen="$seen$key "
+  case "$key" in
+    environment) environment=$value ;;
+    project) project=$value ;;
+    execute) execute=$value ;;
+    action) action=$value ;;
+    identity) identity=$value ;;
+    release-id) release_id=$value ;;
+    operation-id) operation_id=$value ;;
+    expected-backup-digest) expected_backup_digest=$value ;;
+  esac
+  # Values have already been restricted to a shell-inert alphabet. This string
+  # only preserves validated pairs until the final positional vector is rebuilt.
+  forwarded="$forwarded $option $value"
+done
+
+[ "$environment" = 'preprod' ] || fail
+[ "$project" = 'booking-preprod' ] || fail
+[ "$execute" = 'true' ] || fail
+case "$entrypoint:$action" in
+  manage-deploy-state:init|manage-deploy-state:acquire|manage-deploy-state:takeover|manage-deploy-state:renew|manage-deploy-state:transition) ;;
+  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
+  generate-database-backup-receipt:create)
+    [ "$identity" = 'old' ] || fail
+    [ "$release_id" = "$LEGACY_RELEASE" ] || fail
+    [ -n "$operation_id" ] && [ -z "$expected_backup_digest" ] || fail
+    forwarded=" --action create --execute true --identity old --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-backup.json"
+    ;;
+  generate-database-backup-receipt:bind-existing)
+    [ "$identity" = 'candidate' ] || fail
+    valid_release_id "$release_id" && [ "$release_id" != "$LEGACY_RELEASE" ] && [ -n "$operation_id" ] || fail
+    case "$expected_backup_digest" in sha256:*) ;; *) fail ;; esac
+    digest_hex=${expected_backup_digest#sha256:}
+    [ "${#digest_hex}" -eq 64 ] || fail
+    case "$digest_hex" in *[!0-9a-f]*) fail ;; esac
+    forwarded=" --action bind-existing --execute true --identity candidate --manifest $PREPROD_ROOT/releases/$release_id/release-manifest.json --backup-path $EVIDENCE_ROOT/backups/$operation_id.dump --expected-backup-digest $expected_backup_digest --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-candidate-backup.json"
+    ;;
+  generate-schema-diff-receipt:generate)
+    [ -n "$operation_id" ] || fail
+    forwarded=" --execute true --identity old --slot green --manifest $PREPROD_ROOT/releases/$LEGACY_RELEASE/release-manifest.json --receipt-path $EVIDENCE_ROOT/receipts/$operation_id-old-zero-diff.json"
+    ;;
+  *) fail ;;
+esac
+
+ingress_mounts=''
+evidence_mounts=''
+case "$entrypoint:$action" in
+  execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollback-ingress)
+  ingress_mounts=' --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress,dst=/usr/local/libexec/happybooking/switch-preprod-ingress,readonly --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly --mount type=bind,src=/etc/happybooking/secrets/cloudflare-preprod-api-token,dst=/etc/happybooking/secrets/cloudflare-preprod-api-token,readonly'
+  ;;
+esac
+case "$entrypoint" in
+  generate-database-backup-receipt)
+    evidence_mounts=' --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/backups,dst=/volume1/homes/realzyq/booking-preprod/.g4/backups --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts'
+    ;;
+  generate-schema-diff-receipt)
+    evidence_mounts=' --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts'
+    ;;
+esac
+
+# Rebuild positional parameters from the validated, whitespace-free alphabet.
+# No caller-provided executable or path reaches this vector.
+set -- $forwarded
+set -- \
+  run --rm --pull never --name booking-preprod-control-plane \
+  --network host --user 0:0 --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --pids-limit 256 --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+  --env-file "$CONTROL_ENV" \
+  --env BOOKING_DEPLOY_STATE_ROOT=/var/lib/happybooking/deploy-state \
+  --env HOME=/root \
+  --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \
+  --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+  --mount type=bind,src=/var/lib/happybooking,dst=/var/lib/happybooking \
+  --mount type=bind,src=/volume1/homes/realzyq/booking-preprod,dst=/volume1/homes/realzyq/booking-preprod,readonly \
+  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+  --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly \
+  --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly \
+  --mount type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly \
+  $ingress_mounts \
+  $evidence_mounts \
+  --workdir "$CONTROL_ROOT" --entrypoint /usr/local/bin/node \
+  "$IMAGE" "$script" "$@"
+
+case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
+  true)
+    printf '%s\n' "$HOST_DOCKER" "$@"
+    exit 0
+    ;;
+  '') ;;
+  *) fail ;;
+esac
+
+[ "$(id -u)" = '0' ] || fail
+[ -x "$HOST_DOCKER" ] || fail
+[ -f "$HOST_COMPOSE" ] && [ -r "$HOST_COMPOSE" ] || fail
+[ -d "$STATE_ROOT" ] || fail
+[ -d "$PREPROD_ROOT" ] || fail
+[ -S /var/run/docker.sock ] || fail
+[ -d "$CONTROL_ROOT" ] || fail
+[ -f "$CONTROL_ENV" ] && [ -r "$CONTROL_ENV" ] || fail
+[ -f "$CONTROL_ROOT/ops/release/manage-deploy-state.mjs" ] || fail
+[ -f "$CONTROL_ROOT/ops/release/execute-fenced-action.mjs" ] || fail
+case "$entrypoint" in
+generate-database-backup-receipt)
+  [ -d "$EVIDENCE_ROOT/backups" ] && [ -d "$EVIDENCE_ROOT/receipts" ] || fail
+  [ -f "$CONTROL_ROOT/ops/release/generate-database-backup-receipt.mjs" ] || fail
+  ;;
+generate-schema-diff-receipt)
+  [ -d "$EVIDENCE_ROOT/receipts" ] || fail
+  [ -f "$CONTROL_ROOT/ops/release/generate-schema-diff-receipt.mjs" ] || fail
+  ;;
+esac
+case "$entrypoint:$action" in
+execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollback-ingress)
+  [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ] || fail
+  [ -f /usr/local/libexec/happybooking/switch-preprod-ingress ] || fail
+  [ -f /usr/local/libexec/happybooking/switch-preprod-ingress.mjs ] || fail
+  ;;
+esac
+
+exec "$HOST_DOCKER" "$@"

@@ -2,12 +2,12 @@ name: booking-preprod
 
 services:
   postgres:
-    image: postgres:16.4-alpine
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
     restart: unless-stopped
-    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
       POSTGRES_DB: booking_preprod
       POSTGRES_USER: booking_preprod
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set isolated PostgreSQL password}
     volumes:
       - ${BOOKING_PREPROD_DATA_ROOT:?set isolated data root}/postgres:/var/lib/postgresql/data
     networks: [preprod-data]
@@ -19,9 +19,10 @@ services:
       start_period: 20s
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:7.2-alpine@sha256:ccd6aa8d45ff3f033d6fa15b8cc1a50579f65c89f38cf9bb607a954c4f2128ed
     restart: unless-stopped
-    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set isolated Redis password}
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set isolated Redis password}"]
     volumes:
       - ${BOOKING_PREPROD_DATA_ROOT:?set isolated data root}/redis:/data
@@ -54,11 +55,261 @@ services:
       postgres:
         condition: service_healthy
 
+  schema-baseline-ledger:
+    profiles: [baseline-ledger]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_SCHEMA_BASELINE: "true"
+      BOOKING_BASELINE_EXPECTED_DATABASE: booking_preprod
+      BOOKING_BASELINE_OLD_RELEASE_ID: ${BOOKING_BASELINE_OLD_RELEASE_ID:?set old release id}
+      BOOKING_BASELINE_OLD_GIT_SHA: ${BOOKING_BASELINE_OLD_GIT_SHA:?set old full Git SHA}
+      BOOKING_BASELINE_OLD_MANIFEST_DIGEST: ${BOOKING_BASELINE_OLD_MANIFEST_DIGEST:?set old manifest digest}
+      BOOKING_BASELINE_OLD_CATALOG_DIGEST: ${BOOKING_BASELINE_OLD_CATALOG_DIGEST:?set old migration catalog digest}
+      BOOKING_BASELINE_OLD_FLOOR: ${BOOKING_BASELINE_OLD_FLOOR:?set old migration floor}
+      BOOKING_BASELINE_APPROVED_HISTORY_JSON: ${BOOKING_BASELINE_APPROVED_HISTORY_JSON:?set exact historical migration ledger JSON}
+      BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_FILE: /run/booking-evidence/schema-diff-receipt.json
+      BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST: ${BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST:?set schema diff receipt digest}
+      BOOKING_BASELINE_BACKUP_RECEIPT_FILE: /run/booking-evidence/backup-receipt.json
+      BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST: ${BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST:?set backup receipt digest}
+      BOOKING_MIGRATION_CATALOG_DIR: /app/migration-source
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      BOOKING_RUNTIME_ROLE: migration
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+    command: ["node", "dist/src/scripts/baseline-preprod-migration-ledger.js", "--action=apply"]
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: ${BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_HOST_FILE:?set schema diff receipt file}
+        target: /run/booking-evidence/schema-diff-receipt.json
+        read_only: true
+      - type: bind
+        source: ${BOOKING_BASELINE_BACKUP_RECEIPT_HOST_FILE:?set verified backup receipt file}
+        target: /run/booking-evidence/backup-receipt.json
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  schema-baseline-readback:
+    profiles: [baseline-readback]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_SCHEMA_BASELINE: "true"
+      BOOKING_BASELINE_EXPECTED_DATABASE: booking_preprod
+      BOOKING_BASELINE_OLD_RELEASE_ID: ${BOOKING_BASELINE_OLD_RELEASE_ID:?set old release id}
+      BOOKING_BASELINE_OLD_GIT_SHA: ${BOOKING_BASELINE_OLD_GIT_SHA:?set old full Git SHA}
+      BOOKING_BASELINE_OLD_MANIFEST_DIGEST: ${BOOKING_BASELINE_OLD_MANIFEST_DIGEST:?set old manifest digest}
+      BOOKING_BASELINE_OLD_CATALOG_DIGEST: ${BOOKING_BASELINE_OLD_CATALOG_DIGEST:?set old migration catalog digest}
+      BOOKING_BASELINE_OLD_FLOOR: ${BOOKING_BASELINE_OLD_FLOOR:?set old migration floor}
+      BOOKING_BASELINE_APPROVED_HISTORY_JSON: ${BOOKING_BASELINE_APPROVED_HISTORY_JSON:?set exact historical migration ledger JSON}
+      BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_FILE: /run/booking-evidence/schema-diff-receipt.json
+      BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST: ${BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST:?set schema diff receipt digest}
+      BOOKING_BASELINE_BACKUP_RECEIPT_FILE: /run/booking-evidence/backup-receipt.json
+      BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST: ${BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST:?set backup receipt digest}
+      BOOKING_MIGRATION_CATALOG_DIR: /app/migration-source
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      BOOKING_RUNTIME_ROLE: migration
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+    command: ["node", "dist/src/scripts/baseline-preprod-migration-ledger.js", "--action=verify"]
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  schema-migrate:
+    profiles: [migrate]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_SCHEMA_MIGRATE: "true"
+      BOOKING_MIGRATION_EXPECTED_DATABASE: booking_preprod
+      BOOKING_MIGRATION_ENVIRONMENT: preproduction
+      BOOKING_MIGRATION_EXPECTED_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_MIGRATION_APPROVED_PENDING_JSON: ${BOOKING_MIGRATION_APPROVED_PENDING_JSON:?set exact approved pending migration JSON array}
+      BOOKING_MIGRATION_BACKUP_RECEIPT_FILE: /run/booking-evidence/backup-receipt.json
+      BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST: ${BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST:?set exact backup receipt digest}
+      BOOKING_MIGRATION_CATALOG_DIR: /app/migration-source
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST:?set release manifest digest}
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      BOOKING_RUNTIME_ROLE: migration
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+    command: ["node", "dist/src/scripts/run-migrations.js"]
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: ${BOOKING_MIGRATION_BACKUP_RECEIPT_HOST_FILE:?set verified backup receipt file}
+        target: /run/booking-evidence/backup-receipt.json
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  schema-migration-readback:
+    profiles: [migrate-readback]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_SCHEMA_MIGRATE: "true"
+      BOOKING_MIGRATION_EXPECTED_DATABASE: booking_preprod
+      BOOKING_MIGRATION_ENVIRONMENT: preproduction
+      BOOKING_MIGRATION_EXPECTED_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_MIGRATION_APPROVED_PENDING_JSON: ${BOOKING_MIGRATION_APPROVED_PENDING_JSON:?set exact approved pending migration JSON array}
+      BOOKING_MIGRATION_BACKUP_RECEIPT_FILE: /run/booking-evidence/backup-receipt.json
+      BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST: ${BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST:?set exact backup receipt digest}
+      BOOKING_MIGRATION_CATALOG_DIR: /app/migration-source
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST:?set release manifest digest}
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      BOOKING_RUNTIME_ROLE: migration
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+    command: ["node", "dist/src/scripts/run-migrations.js", "--action=verify"]
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: ${BOOKING_MIGRATION_BACKUP_RECEIPT_HOST_FILE:?set verified backup receipt file}
+        target: /run/booking-evidence/backup-receipt.json
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  telegram-webhook-set:
+    profiles: [telegram-webhook-set]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+    command:
+      - node
+      - dist/src/scripts/set-telegram-webhook.js
+      - --action=set
+      - --environment=preproduction
+      - --expected-bot-id=${BOOKING_TELEGRAM_EXPECTED_BOT_ID:-}
+      - --expected-bot-username=${BOOKING_TELEGRAM_EXPECTED_BOT_USERNAME:-}
+      - --url=${BOOKING_TELEGRAM_WEBHOOK_URL:?set exact preprod Telegram webhook URL}
+      - --ready-url=https://booking-preprod.happybooking.uk/readyz
+      - --expected-release-id=${BOOKING_RELEASE_ID}
+      - --expected-git-sha=${BOOKING_GIT_SHA:?set release Git SHA}
+      - --expected-manifest-digest=${BOOKING_MANIFEST_DIGEST:?set release manifest digest}
+      - --expected-config-schema=${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      - --expected-migration-floor=${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      - --expected-migration-catalog-digest=${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        target: /run/secrets/telegram_webhook_secret
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-edge]
+
+  telegram-webhook-readback:
+    profiles: [telegram-webhook-readback]
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: preproduction
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+    command:
+      - node
+      - dist/src/scripts/set-telegram-webhook.js
+      - --action=verify
+      - --environment=preproduction
+      - --expected-bot-id=${BOOKING_TELEGRAM_EXPECTED_BOT_ID:-}
+      - --expected-bot-username=${BOOKING_TELEGRAM_EXPECTED_BOT_USERNAME:-}
+      - --url=${BOOKING_TELEGRAM_WEBHOOK_URL:?set exact preprod Telegram webhook URL}
+      - --ready-url=https://booking-preprod.happybooking.uk/readyz
+      - --expected-release-id=${BOOKING_RELEASE_ID}
+      - --expected-git-sha=${BOOKING_GIT_SHA:?set release Git SHA}
+      - --expected-manifest-digest=${BOOKING_MANIFEST_DIGEST:?set release manifest digest}
+      - --expected-config-schema=${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      - --expected-migration-floor=${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      - --expected-migration-catalog-digest=${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        target: /run/secrets/telegram_webhook_secret
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-edge]
+
   backend-green:
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
     build:
       context: ../../backend
       dockerfile: Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
     restart: unless-stopped
     env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
@@ -78,19 +329,97 @@ services:
       BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
       BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
       BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
       BOOKING_SLOT: green
       BOOKING_RUNTIME_ROLE: standby
       BOOKING_WORKERS_ENABLED: "false"
-      TELEGRAM_BOT_MODE: polling
-      TELEGRAM_ENABLE_WEBHOOK: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_BOT_MODE: ${BOOKING_TELEGRAM_BOT_MODE:?set webhook for staged candidate}
+      TELEGRAM_ENABLE_WEBHOOK: ${BOOKING_TELEGRAM_ENABLE_WEBHOOK:?set true for staged candidate}
+      TELEGRAM_WEBHOOK_URL: ${BOOKING_TELEGRAM_WEBHOOK_URL:?set exact staged webhook URL}
       TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
     read_only: true
     # The backend's optional Telegram traffic logger needs a writable path.
     # Keep it ephemeral so the candidate root filesystem remains read-only.
     tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        target: /run/secrets/telegram_data_encryption_secret
+        read_only: true
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        target: /run/secrets/telegram_webhook_secret
+        read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     networks: [preprod-edge, preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # Singleton work is isolated from the two API slots. The fenced executor is
+  # the only supported way to move this service between release identities.
+  order-worker-green:
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      H5_URL: ${BOOKING_PREPROD_H5_URL:?set isolated preprod H5 URL}
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_SLOT: green
+      BOOKING_RUNTIME_ROLE: worker
+      BOOKING_WORKERS_ENABLED: "true"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "true"
+      # No host port or gateway route is attached to this process. Polling is
+      # also disabled because delete-on-startup remains false.
+      TELEGRAM_BOT_MODE: polling
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        target: /run/secrets/telegram_data_encryption_secret
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,9 +437,14 @@ services:
     build:
       context: ../..
       dockerfile: frontend/Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+        VITE_TELEGRAM_BOT_NAME: ${BOOKING_TELEGRAM_BOT_NAME:?set isolated preprod bot username}
+        VITE_TELEGRAM_BOT_DISPLAY_NAME: ${BOOKING_TELEGRAM_BOT_DISPLAY_NAME:?set isolated preprod bot display name}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${BOOKING_CANDIDATE_PORT:?set candidate port}:8080"
+      - "127.0.0.1:${BOOKING_GREEN_PORT:-18081}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-green:3001
       # The NAS Docker runtime discards tmpfs mode options. Avoid rendering a
@@ -139,6 +473,174 @@ services:
         aliases: [gateway-green]
     depends_on:
       backend-green:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # The two slots are deliberately separate services. Starting blue must not
+  # recreate green, which remains the externally routed rollback target until
+  # the separately fenced ingress action completes.
+  backend-blue:
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      H5_URL: ${BOOKING_PREPROD_H5_URL:?set isolated preprod H5 URL}
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_SLOT: blue
+      BOOKING_RUNTIME_ROLE: standby
+      BOOKING_WORKERS_ENABLED: "false"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "false"
+      TELEGRAM_BOT_MODE: ${BOOKING_TELEGRAM_BOT_MODE:?set webhook for staged candidate}
+      TELEGRAM_ENABLE_WEBHOOK: ${BOOKING_TELEGRAM_ENABLE_WEBHOOK:?set true for staged candidate}
+      TELEGRAM_WEBHOOK_URL: ${BOOKING_TELEGRAM_WEBHOOK_URL:?set exact staged webhook URL}
+      TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
+      TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: /run/secrets/telegram_webhook_secret
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        target: /run/secrets/telegram_data_encryption_secret
+        read_only: true
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        target: /run/secrets/telegram_webhook_secret
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-edge, preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  order-worker-blue:
+    image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+    restart: unless-stopped
+    env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      USE_POSTGRES: "true"
+      TYPEORM_SYNCHRONIZE: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: booking_preprod
+      POSTGRES_DB: booking_preprod
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      H5_URL: ${BOOKING_PREPROD_H5_URL:?set isolated preprod H5 URL}
+      BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID}
+      BOOKING_GIT_SHA: ${BOOKING_GIT_SHA}
+      BOOKING_MANIFEST_DIGEST: ${BOOKING_MANIFEST_DIGEST}
+      BOOKING_CONFIG_SCHEMA_VERSION: ${BOOKING_CONFIG_SCHEMA_VERSION:?set release config schema}
+      BOOKING_MIGRATION_FLOOR: ${BOOKING_MIGRATION_FLOOR:?set manifest migration floor}
+      BOOKING_MIGRATION_CATALOG_DIGEST: ${BOOKING_MIGRATION_CATALOG_DIGEST:?set manifest migration catalog digest}
+      BOOKING_SLOT: blue
+      BOOKING_RUNTIME_ROLE: worker
+      BOOKING_WORKERS_ENABLED: "true"
+      ORDER_OUTBOX_DISPATCH_ENABLED: "true"
+      TELEGRAM_BOT_MODE: polling
+      TELEGRAM_ENABLE_WEBHOOK: "false"
+      TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: "false"
+      TELEGRAM_DATA_ENCRYPTION_SECRET_FILE: /run/secrets/telegram_data_encryption_secret
+    read_only: true
+    tmpfs: [/tmp, /app/logs]
+    volumes:
+      - type: bind
+        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        target: /run/secrets/telegram_data_encryption_secret
+        read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [preprod-data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  gateway-blue:
+    image: ${BOOKING_GATEWAY_IMAGE:?set local gateway image}:${BOOKING_RELEASE_ID:?set release id}
+    build:
+      context: ../..
+      dockerfile: frontend/Dockerfile
+      args:
+        BOOKING_GIT_SHA: ${BOOKING_GIT_SHA:?set release Git SHA}
+        BOOKING_RELEASE_ID: ${BOOKING_RELEASE_ID:?set release id}
+        VITE_TELEGRAM_BOT_NAME: ${BOOKING_TELEGRAM_BOT_NAME:?set isolated preprod bot username}
+        VITE_TELEGRAM_BOT_DISPLAY_NAME: ${BOOKING_TELEGRAM_BOT_DISPLAY_NAME:?set isolated preprod bot display name}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BOOKING_BLUE_PORT:-18082}:8080"
+    environment:
+      BOOKING_BACKEND_UPSTREAM: backend-blue:3001
+      NGINX_ENVSUBST_TEMPLATE_DIR: /tmp/empty-nginx-templates
+    read_only: true
+    volumes:
+      - type: tmpfs
+        target: /var/cache/nginx
+      - type: tmpfs
+        target: /var/run
+      - type: tmpfs
+        target: /tmp
+      - type: bind
+        source: ../../frontend/nginx.preprod.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      preprod-edge:
+        aliases: [gateway-blue]
+    depends_on:
+      backend-blue:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]

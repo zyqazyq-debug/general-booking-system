@@ -1,10 +1,10 @@
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { config } from 'dotenv';
-import { join } from 'path';
+import { extname, join } from 'path';
 
-config();
+config({ quiet: true });
 
-const migrationGlobs = __dirname.endsWith('\\dist')
+const migrationGlobs = extname(__filename) === '.js'
   ? [join(__dirname, 'src/migrations/*.js')]
   : [join(__dirname, 'src/migrations/*.ts')];
 

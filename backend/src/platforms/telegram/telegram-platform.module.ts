@@ -33,9 +33,17 @@ import { TelegramCoreModule } from './telegram-core.module';
 import { HealthTelegramAdapter } from './bot/adapters/health-telegram.adapter';
 import { HEALTH_TELEGRAM_PORT } from '../../shared/health/ports/tokens';
 import { TelegramWebhookController } from './telegram-webhook.controller';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { TelegramWebhookUpdate } from './persistence/telegram-webhook-update.entity';
+import { TelegramWebhookInboxService } from './persistence/telegram-webhook-inbox.service';
+import { TelegramWebhookOperation } from './persistence/telegram-webhook-operation.entity';
+import { TelegramWebhookMutationFenceService } from './persistence/telegram-webhook-mutation-fence.service';
 
 @Module({
-  imports: [TelegramCoreModule],
+  imports: [
+    TelegramCoreModule,
+    TypeOrmModule.forFeature([TelegramWebhookUpdate, TelegramWebhookOperation]),
+  ],
   controllers: [TelegramWebhookController],
   providers: [
     TelegramMenuUpdate,
@@ -57,11 +65,16 @@ import { TelegramWebhookController } from './telegram-webhook.controller';
     TelegramImportApplicationService,
     TelegramPricingApplicationService,
     CommandParserService,
+    TelegramWebhookInboxService,
+    TelegramWebhookMutationFenceService,
     HealthTelegramAdapter,
     {
       provide: HEALTH_TELEGRAM_PORT,
-      useFactory: (adapter: HealthTelegramAdapter) => {
-        const token = process.env.TELEGRAM_BOT_TOKEN;
+      useFactory: (
+        adapter: HealthTelegramAdapter,
+        configService: ConfigService,
+      ) => {
+        const token = configService.get<string>('TELEGRAM_BOT_TOKEN');
         if (
           process.env.NODE_ENV === 'test' ||
           !token ||
@@ -72,7 +85,7 @@ import { TelegramWebhookController } from './telegram-webhook.controller';
         }
         return adapter;
       },
-      inject: [HealthTelegramAdapter],
+      inject: [HealthTelegramAdapter, ConfigService],
     },
   ],
   exports: [TelegramCoreModule, HEALTH_TELEGRAM_PORT],

@@ -2385,6 +2385,17 @@ export interface components {
              * @enum {string}
              */
             slot: "blue" | "green" | "unbound";
+            /** @example booking.config/v1 */
+            configSchema: string;
+            /** @example 1788740000000-AddOrderSourceIdempotencyKey */
+            migrationFloor: string;
+            /** @example sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef */
+            migrationCatalogDigest: string;
+            /** @enum {string} */
+            telegramBotMode: "webhook" | "polling" | "disabled";
+            telegramWebhookEnabled: boolean;
+            /** @example https://app.example/telegram/webhook */
+            telegramWebhookUrl: string;
             /**
              * @example up
              * @enum {string}
@@ -2403,6 +2414,17 @@ export interface components {
              * @enum {string}
              */
             slot: "blue" | "green" | "unbound";
+            /** @example booking.config/v1 */
+            configSchema: string;
+            /** @example 1788740000000-AddOrderSourceIdempotencyKey */
+            migrationFloor: string;
+            /** @example sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef */
+            migrationCatalogDigest: string;
+            /** @enum {string} */
+            telegramBotMode: "webhook" | "polling" | "disabled";
+            telegramWebhookEnabled: boolean;
+            /** @example https://app.example/telegram/webhook */
+            telegramWebhookUrl: string;
             /**
              * @example ready
              * @enum {string}

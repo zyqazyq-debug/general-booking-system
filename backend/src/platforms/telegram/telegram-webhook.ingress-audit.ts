@@ -6,7 +6,7 @@
 export const TELEGRAM_WEBHOOK_INGRESS_AUDIT = {
   endpoint: 'POST /telegram/webhook',
   owner: 'platforms/telegram',
-  externalAdapter: 'Telegram Bot API -> Telegraf webhookCallback',
+  externalAdapter: 'Telegram Bot API -> durable inbox -> Telegraf handleUpdate',
   sdkExposure: 'excluded: external adapter ingress, not a public API client',
   reviewDueOn: '2026-12-07',
   verificationResponsibilities: {
@@ -15,6 +15,8 @@ export const TELEGRAM_WEBHOOK_INGRESS_AUDIT = {
       'controller validates X-Telegram-Bot-Api-Secret-Token before Telegraf',
     schema:
       'controller does not model Telegram Update as a public DTO or SDK input',
+    idempotency:
+      'at-least-once: update_id is durably claimed and lease-renewed before completion; external Telegram effects are not exactly-once',
     operations:
       'Telegram deployment operations verify the root path and secret separately',
   },

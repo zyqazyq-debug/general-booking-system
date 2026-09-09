@@ -62,7 +62,7 @@ export class TelegramValidatorService implements ITelegramValidator {
     }
   }
 
-  generateLoginToken(userId?: string): string {
+  generateLoginToken(userId?: string): Promise<string> {
     if (userId) {
       return this.bindingService.generateToken(userId);
     }
@@ -77,10 +77,10 @@ export class TelegramValidatorService implements ITelegramValidator {
     return this.bindingService.getBotInfo();
   }
 
-  getTokenStatus(token: string): {
+  getTokenStatus(token: string): Promise<{
     status: 'pending' | 'success' | 'expired' | 'not_found';
     result?: unknown;
-  } {
+  }> {
     return this.bindingService.getTokenStatus(token);
   }
 }

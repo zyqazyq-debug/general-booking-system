@@ -16,6 +16,27 @@ class ReleaseIdentityResponseDto {
 
   @ApiProperty({ enum: ['blue', 'green', 'unbound'], example: 'green' })
   slot: string;
+
+  @ApiProperty({ example: 'booking.config/v1' })
+  configSchema: string;
+
+  @ApiProperty({ example: '1788740000000-AddOrderSourceIdempotencyKey' })
+  migrationFloor: string;
+
+  @ApiProperty({
+    example:
+      'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  })
+  migrationCatalogDigest: string;
+
+  @ApiProperty({ enum: ['webhook', 'polling', 'disabled'] })
+  telegramBotMode: string;
+
+  @ApiProperty({ type: Boolean })
+  telegramWebhookEnabled: boolean;
+
+  @ApiProperty({ example: 'https://app.example/telegram/webhook' })
+  telegramWebhookUrl: string;
 }
 
 export class OpsLivenessResponseDto extends ReleaseIdentityResponseDto {

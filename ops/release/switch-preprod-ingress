@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec /usr/bin/env node /usr/local/libexec/happybooking/switch-preprod-ingress.mjs "$@"

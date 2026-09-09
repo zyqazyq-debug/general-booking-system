@@ -1,8 +1,13 @@
-import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  Inject,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import type { DeepPartial } from 'typeorm';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Order, OrderStatus } from '../entities/order.entity';
 import type { CreateOrderCommand } from '../dto/create-order.dto';
 import { ORDER_SERVICES_PORT } from '../ports/tokens';
@@ -11,6 +16,7 @@ import { OrderValidator } from '../utils/order-validator';
 import { OrderFinancialService } from './order-financial.service';
 import { OrderSourceResolverService } from './order-source-resolver.service';
 import type { OrderCreatedEvent } from '../events/order-created.event';
+import { OrderOutboxService } from '../outbox/order-outbox.service';
 
 @Injectable()
 export class OrderCreationService {
@@ -21,11 +27,25 @@ export class OrderCreationService {
     private readonly servicesPort: OrderServicesPort,
     private readonly orderSourceResolverService: OrderSourceResolverService,
     private readonly dataSource: DataSource,
-    private readonly eventEmitter: EventEmitter2,
+    private readonly orderOutbox: OrderOutboxService,
     private readonly orderFinancialService: OrderFinancialService,
   ) {}
 
   async create(createOrderDto: CreateOrderCommand): Promise<Order> {
+    const sourceIdempotencyKey = this.normalizeSourceIdempotencyKey(
+      createOrderDto.source_idempotency_key,
+    );
+    if (sourceIdempotencyKey) {
+      const existing = await this.orderRepository.findOne({
+        where: { source_idempotency_key: sourceIdempotencyKey },
+      });
+      if (existing) {
+        this.assertIdempotencyReplayMatches(existing, createOrderDto);
+        await this.orderOutbox.dispatchOrderCreatedBestEffort(existing.id);
+        return existing;
+      }
+    }
+
     const service = await this.servicesPort.findServiceById(
       createOrderDto.service_id,
     );
@@ -56,10 +76,30 @@ export class OrderCreationService {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
+    let newlyCreatedOrder!: Order;
 
     try {
       const isPostgres = this.dataSource.options.type === 'postgres';
       const isSqlite = this.dataSource.options.type === 'sqlite';
+
+      if (sourceIdempotencyKey) {
+        if (isPostgres) {
+          await queryRunner.query(
+            `SELECT pg_advisory_xact_lock(hashtext($1))`,
+            [`order_idempotency:${sourceIdempotencyKey}`],
+          );
+        }
+
+        const existing = await queryRunner.manager.findOne(Order, {
+          where: { source_idempotency_key: sourceIdempotencyKey },
+        });
+        if (existing) {
+          this.assertIdempotencyReplayMatches(existing, createOrderDto);
+          await queryRunner.commitTransaction();
+          await this.orderOutbox.dispatchOrderCreatedBestEffort(existing.id);
+          return existing;
+        }
+      }
 
       if (isPostgres) {
         const lockKeys = this.buildProviderDateBucketKeys(
@@ -97,6 +137,7 @@ export class OrderCreationService {
       const orderNo = await this.generateOrderNo(queryRunner.manager);
       const orderDraft: DeepPartial<Order> = {
         order_no: orderNo,
+        source_idempotency_key: sourceIdempotencyKey,
         consumer_id: consumerId,
         service_id: service.id,
         owner_id: service.owner_id,
@@ -121,27 +162,74 @@ export class OrderCreationService {
       const order = this.orderRepository.create(orderDraft);
 
       const savedOrder = await queryRunner.manager.save(Order, order);
+      await this.orderOutbox.enqueueOrderCreated(
+        queryRunner.manager,
+        this.buildCreatedEvent(savedOrder),
+      );
       await queryRunner.commitTransaction();
-      const createdEvent: OrderCreatedEvent = {
-        orderId: savedOrder.id,
-        orderNo: savedOrder.order_no,
-        serviceId: savedOrder.service_id,
-        agencyNodeId: savedOrder.agency_node_id,
-        customerId: savedOrder.consumer_id,
-        providerId: savedOrder.owner_id,
-        priceSnapshot: {
-          basePrice: Number(savedOrder.service_snapshot?.base_price ?? 0),
-          displayPrice: Number(savedOrder.display_price_snapshot ?? 0),
-        },
-      };
-      await this.eventEmitter.emitAsync('order.created', createdEvent);
-
-      return savedOrder;
+      newlyCreatedOrder = savedOrder;
     } catch (err) {
-      await queryRunner.rollbackTransaction();
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      if (sourceIdempotencyKey) {
+        const existing = await this.orderRepository.findOne({
+          where: { source_idempotency_key: sourceIdempotencyKey },
+        });
+        if (existing) {
+          this.assertIdempotencyReplayMatches(existing, createOrderDto);
+          await this.orderOutbox.dispatchOrderCreatedBestEffort(existing.id);
+          return existing;
+        }
+      }
       throw err;
     } finally {
       await queryRunner.release();
+    }
+
+    await this.orderOutbox.dispatchOrderCreatedBestEffort(newlyCreatedOrder.id);
+    return newlyCreatedOrder;
+  }
+
+  private buildCreatedEvent(savedOrder: Order): OrderCreatedEvent {
+    return {
+      orderId: savedOrder.id,
+      orderNo: savedOrder.order_no,
+      serviceId: savedOrder.service_id,
+      agencyNodeId: savedOrder.agency_node_id,
+      customerId: savedOrder.consumer_id,
+      providerId: savedOrder.owner_id,
+      priceSnapshot: {
+        basePrice: Number(savedOrder.service_snapshot?.base_price ?? 0),
+        displayPrice: Number(savedOrder.display_price_snapshot ?? 0),
+      },
+    };
+  }
+
+  private normalizeSourceIdempotencyKey(value?: string): string | null {
+    if (value === undefined) return null;
+    if (value.length === 0 || value !== value.trim() || value.length > 191) {
+      throw new BadRequestException('Invalid source idempotency key');
+    }
+    return value;
+  }
+
+  private assertIdempotencyReplayMatches(
+    existing: Order,
+    command: CreateOrderCommand,
+  ): void {
+    const sameFingerprint =
+      existing.consumer_id === command.consumer_id &&
+      existing.service_id === command.service_id &&
+      (existing.agency_node_id ?? null) === (command.agency_node_id ?? null) &&
+      existing.start_time.getTime() ===
+        new Date(command.start_time).getTime() &&
+      existing.end_time.getTime() === new Date(command.end_time).getTime();
+
+    if (!sameFingerprint) {
+      throw new ConflictException(
+        'Source idempotency key was already used for a different order request',
+      );
     }
   }
 

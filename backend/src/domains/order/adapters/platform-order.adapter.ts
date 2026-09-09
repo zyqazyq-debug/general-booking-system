@@ -42,6 +42,7 @@ export class PlatformOrderAdapter {
     start_time: string;
     end_time: string;
     agency_node_id?: string;
+    source_idempotency_key?: string;
   }): Promise<PlatformOrderDto> {
     const dto: CreateOrderCommand = {
       consumer_id: params.consumer_id,
@@ -49,6 +50,7 @@ export class PlatformOrderAdapter {
       start_time: params.start_time,
       end_time: params.end_time,
       agency_node_id: params.agency_node_id,
+      source_idempotency_key: params.source_idempotency_key,
     };
     const order = await this.orderService.create(dto);
     return this.mapOrder(order);

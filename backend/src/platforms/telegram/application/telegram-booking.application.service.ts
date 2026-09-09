@@ -59,6 +59,7 @@ export class TelegramBookingApplicationService {
     collectionId: string;
     dateStr: string;
     timeStr: string;
+    sourceIdempotencyKey: string;
   }): Promise<{
     order: PlatformOrderDto;
     collection: PlatformAgencyNodeDto;
@@ -84,6 +85,7 @@ export class TelegramBookingApplicationService {
       start_time: startDateTime.toISOString(),
       end_time: endDateTime.toISOString(),
       agency_node_id: collection.id,
+      source_idempotency_key: params.sourceIdempotencyKey,
     });
 
     return { order, collection, endDateTime };

@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  Inject,
+  Optional,
+} from '@nestjs/common';
 import { User } from 'telegraf/types';
 import { TelegramImportService } from '../bot/services/telegram-import.service';
 import { TelegramAuthService } from '../bot/services/telegram-auth.service';
@@ -6,6 +11,7 @@ import type { AuthenticatedUser } from '../../../shared/common/types/auth-reques
 import type { PlatformAgencyPort } from '../../platform-ports';
 import { PLATFORM_AGENCY_PORT } from '../../platform-ports';
 import type { PlatformAgencyNodeDto } from '../../platform-ports';
+import { TelegramWebhookMutationFenceService } from '../persistence/telegram-webhook-mutation-fence.service';
 
 @Injectable()
 export class TelegramImportApplicationService {
@@ -14,6 +20,8 @@ export class TelegramImportApplicationService {
     private readonly agencyPort: PlatformAgencyPort,
     private readonly importService: TelegramImportService,
     private readonly authService: TelegramAuthService,
+    @Optional()
+    private readonly mutationFence?: TelegramWebhookMutationFenceService,
   ) {}
 
   async importContent(params: {
@@ -32,15 +40,23 @@ export class TelegramImportApplicationService {
       params.telegramUser,
     );
 
-    const result = await this.importService.importCollection(
-      params.chatId.toString(),
-      user,
-      params.content,
-      {
-        forceRecreateOnExisting: params.forceRecreateOnExisting,
-        importAsChild: params.importAsChild,
-      },
-    );
+    const importCollection = () =>
+      this.importService.importCollection(
+        params.chatId.toString(),
+        user,
+        params.content,
+        {
+          forceRecreateOnExisting: params.forceRecreateOnExisting,
+          importAsChild: params.importAsChild,
+        },
+      );
+    const result = this.mutationFence
+      ? await this.mutationFence.executeOnce(
+          'import_collection',
+          `${user.id}:${params.content}:${params.forceRecreateOnExisting === true}:${params.importAsChild === true}`,
+          importCollection,
+        )
+      : await importCollection();
 
     const fullNode = await this.agencyPort.findOne(result.collectionNode.id);
     if (!fullNode) {
@@ -107,9 +123,17 @@ export class TelegramImportApplicationService {
       params.chatId,
       params.telegramUser,
     );
-    return this.agencyPort.updateCollection(user.id, params.collectionId, {
-      markup_type: params.markupType,
-      markup_value: params.markupValue,
-    });
+    const updateMarkup = () =>
+      this.agencyPort.updateCollection(user.id, params.collectionId, {
+        markup_type: params.markupType,
+        markup_value: params.markupValue,
+      });
+    return this.mutationFence
+      ? this.mutationFence.executeOnce(
+          'update_markup',
+          `${user.id}:${params.collectionId}:${params.markupType}:${params.markupValue}`,
+          updateMarkup,
+        )
+      : updateMarkup();
   }
 }

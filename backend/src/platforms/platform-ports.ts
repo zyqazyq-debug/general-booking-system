@@ -130,6 +130,7 @@ export interface PlatformOrderPort {
     start_time: string;
     end_time: string;
     agency_node_id?: string;
+    source_idempotency_key?: string;
   }): Promise<PlatformOrderDto>;
 }
 

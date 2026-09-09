@@ -63,6 +63,22 @@ export async function validateComposeContracts(paths) {
   requirePattern(edge, /BOOKING_TRUSTED_PROXY_CIDR:\?/, 'trusted proxy CIDR must be explicit');
   requirePattern(release, /BOOKING_WORKERS_ENABLED:\s*\$\{BOOKING_(BLUE|GREEN)_WORKERS_ENABLED:-false\}/, 'candidate workers must default to disabled');
   requirePattern(release, /TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE/, 'webhook secret file handoff is missing');
+  const backendCommon = /x-backend-common:[\s\S]*?(?=\nx-gateway-common:)/.exec(release)?.[0] || '';
+  rejectPattern(backendCommon, /telegram_data_encryption_secret|TELEGRAM_DATA_ENCRYPTION_SECRET_FILE/, 'Telegram data secret must not be granted by the production common anchor');
+  for (const service of ['backend-blue', 'backend-green']) {
+    const block = new RegExp(`^  ${service}:[\\s\\S]*?(?=^  [a-z][a-z0-9-]+:|^secrets:)`, 'm').exec(release)?.[0] || '';
+    requirePattern(block, /- telegram_data_encryption_secret/, `${service} is missing its dedicated Telegram data secret grant`);
+    requirePattern(block, /TELEGRAM_DATA_ENCRYPTION_SECRET_FILE:\s*\/run\/secrets\/telegram_data_encryption_secret/, `${service} is missing its Telegram data secret file binding`);
+  }
+  for (const service of ['schema-migrate', 'telegram-webhook-set']) {
+    const block = new RegExp(`^  ${service}:[\\s\\S]*?(?=^  [a-z][a-z0-9-]+:|^secrets:)`, 'm').exec(release)?.[0] || '';
+    rejectPattern(block, /telegram_data_encryption_secret|TELEGRAM_DATA_ENCRYPTION_SECRET_FILE/, `${service} must not receive the Telegram data secret`);
+  }
+  requirePattern(release, /BOOKING_MIGRATION_APPROVED_PENDING_JSON:\s*\$\{BOOKING_MIGRATION_APPROVED_PENDING_JSON:\?/, 'exact migration allowlist is missing');
+  requirePattern(release, /BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST:\s*\$\{BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST:\?/, 'bound backup receipt digest is missing');
+  requirePattern(release, /profiles:\s*\["migrate",\s*"telegram-webhook-set"\]/, 'webhook profile must include migration operation');
+  requirePattern(release, /schema-migrate:\s*\n\s*condition:\s*service_completed_successfully/, 'webhook setter must depend on successful migration');
+  requirePattern(release, /--ready-url=https:\/\/app\.happybooking\.uk\/readyz/, 'webhook setter readiness probe is missing');
   requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-blue:3001/, 'blue gateway backend upstream is missing');
   requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-green:3001/, 'green gateway backend upstream is missing');
 

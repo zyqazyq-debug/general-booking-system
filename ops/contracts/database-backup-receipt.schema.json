@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/database-backup-receipt.schema.json",
+  "title": "HappyBooking verified pre-migration database backup receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "environment",
+    "database",
+    "databaseUser",
+    "releaseId",
+    "gitSha",
+    "manifestDigest",
+    "manifestDigestMode",
+    "migrationCatalogDigest",
+    "backupDigest",
+    "verifiedAt",
+    "verification"
+  ],
+  "properties": {
+    "schema": { "const": "booking.database-backup-receipt/v1" },
+    "environment": { "enum": ["preproduction", "production"] },
+    "database": { "type": "string", "pattern": "^booking_[a-z0-9_]+$" },
+    "databaseUser": { "type": "string", "pattern": "^booking_[a-z0-9_]+$" },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "manifestDigestMode": { "enum": ["canonical-json", "raw-bytes"] },
+    "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+    "backupDigest": { "$ref": "#/$defs/digest" },
+    "verifiedAt": { "type": "string", "format": "date-time" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pgRestoreList"],
+      "properties": { "pgRestoreList": { "const": true } }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

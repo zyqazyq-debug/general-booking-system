@@ -85,7 +85,7 @@ export class AuthTelegramLoginService {
     provider: ScanIdentityProvider,
   ) {
     if (provider === 'telegram') {
-      const token = this.telegramValidator.generateLoginToken(userId);
+      const token = await this.telegramValidator.generateLoginToken(userId);
       const link = await this.telegramValidator.getBotDeepLink(token);
       const botInfo = await this.telegramValidator.getBotInfo();
       return {
@@ -115,7 +115,7 @@ export class AuthTelegramLoginService {
   }
 
   async generateTelegramLoginTicket() {
-    const token = this.telegramValidator.generateLoginToken();
+    const token = await this.telegramValidator.generateLoginToken();
     const botDeepLink = await this.telegramValidator.getBotDeepLink(token);
     return {
       ticket_id: token,
@@ -144,9 +144,11 @@ export class AuthTelegramLoginService {
     return this.authTokenService.login(user);
   }
 
-  checkIdentityScanBindingStatus(ticketId: string): BindingStatusResponse {
+  async checkIdentityScanBindingStatus(
+    ticketId: string,
+  ): Promise<BindingStatusResponse> {
     if (ticketId.startsWith('bt_') || ticketId.startsWith('lt_')) {
-      const res = this.telegramValidator.getTokenStatus(ticketId);
+      const res = await this.telegramValidator.getTokenStatus(ticketId);
       if (res.status === 'success') {
         return {
           status: 'success',

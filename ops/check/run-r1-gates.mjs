@@ -29,19 +29,15 @@ const gates = [
     ],
   },
   {
-    name: 'candidate transition',
-    args: [
-      resolve(root, 'ops/release/validate-transition.mjs'),
-      '--state', resolve(root, 'ops/contracts/examples/deploy-state.example.json'),
-      '--to', 'SINGLETON_TRANSFERRED',
-      '--expected-generation', '18',
-    ],
-  },
-  {
     name: 'R1 tests',
     args: [
       '--test',
       resolve(root, 'ops/check/r1-contracts.test.mjs'),
+      resolve(root, 'ops/check/deploy-state-cas.test.mjs'),
+      resolve(root, 'ops/check/fenced-executor.test.mjs'),
+      resolve(root, 'ops/check/preprod-singletons.test.mjs'),
+      resolve(root, 'ops/check/switch-preprod-ingress.test.mjs'),
+      resolve(root, 'ops/check/preprod-control-plane-launcher.test.mjs'),
       resolve(root, 'ops/check/legacy-production-entrypoints.test.mjs'),
     ],
   },

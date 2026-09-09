@@ -49,9 +49,10 @@ export const telegrafLoggerMiddleware = async (
     const ms = Date.now() - start;
     logger.log(`✅ [${updateType}] processed in ${ms}ms`);
   } catch (e: unknown) {
-    const error = e instanceof Error ? e : new Error(String(e));
     const ms = Date.now() - start;
-    const errMsg = `❌ [IN][${updateType}] failed in ${ms}ms | Error: ${error.message}`;
+    // Error text can include Telegram payloads, callback/deep-link tokens or
+    // file URLs. Traffic logs retain only controlled operational metadata.
+    const errMsg = `❌ [IN][${updateType}] failed in ${ms}ms | error_type=${e instanceof Error ? 'Error' : 'UnknownError'}`;
     logger.error(errMsg);
     writeTrafficLog(errMsg);
     throw e;

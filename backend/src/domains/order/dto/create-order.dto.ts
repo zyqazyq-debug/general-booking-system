@@ -48,6 +48,12 @@ export type CreateOrderCommand = {
   consumer_id: string;
   service_id: string;
   agency_node_id?: string;
+  /**
+   * Stable key supplied by a trusted source adapter. It is deliberately not
+   * part of CreateOrderDto, so public HTTP callers cannot choose another
+   * platform's replay identity.
+   */
+  source_idempotency_key?: string;
   start_time: string;
   end_time: string;
 };

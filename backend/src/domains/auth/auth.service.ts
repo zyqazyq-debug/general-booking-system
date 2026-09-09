@@ -256,7 +256,9 @@ export class AuthService {
     return this.authTelegramLoginService.loginByChatId(chatId, telegramUser);
   }
 
-  checkIdentityScanBindingStatus(ticketId: string): BindingStatusResponse {
+  async checkIdentityScanBindingStatus(
+    ticketId: string,
+  ): Promise<BindingStatusResponse> {
     return this.authTelegramLoginService.checkIdentityScanBindingStatus(
       ticketId,
     );

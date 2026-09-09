@@ -1,5 +1,5 @@
 import { Update, Ctx, Start, Command, Hears, Action } from 'nestjs-telegraf';
-import { Logger, Inject } from '@nestjs/common';
+import { Logger, Inject, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Context } from 'telegraf';
 import { TelegramBindingApplicationService } from '../../application/telegram-binding.application.service';
@@ -9,6 +9,11 @@ import { TelegramErrorNormalizerService } from '../services/telegram-error-norma
 import { TelegramMessageParserService } from '../services/telegram-message-parser.service';
 import { TelegramAuthService } from '../services/telegram-auth.service';
 import { TelegramCallbackService } from '../services/telegram-callback.service';
+import {
+  TelegramMutationReplayBlockedError,
+  TELEGRAM_MUTATION_REPLAY_MESSAGE,
+  TelegramWebhookMutationFenceService,
+} from '../../persistence/telegram-webhook-mutation-fence.service';
 
 import type {
   PlatformSystemConfigPort,
@@ -41,6 +46,8 @@ export class TelegramMenuUpdate {
     private readonly usersPort: PlatformUsersPort,
     private readonly uiService: TelegramUiService,
     private readonly callbackService: TelegramCallbackService,
+    @Optional()
+    private readonly mutationFence?: TelegramWebhookMutationFenceService,
   ) {}
 
   @Start()
@@ -88,8 +95,8 @@ export class TelegramMenuUpdate {
       );
 
       await this.uiService.sendMainKeyboard(ctx, finalMessage);
-    } catch (e: unknown) {
-      this.logger.error(`Failed to handle /start: ${String(e)}`);
+    } catch {
+      this.logger.error('Failed to handle /start.');
     }
   }
 
@@ -234,9 +241,13 @@ export class TelegramMenuUpdate {
         ctx,
         '✅ 登录成功！你现在可以返回网页，系统将自动跳转首页。',
       );
-    } catch (e: unknown) {
-      this.logger.error(`Login via deep link failed: ${String(e)}`);
-      await ctx.reply('❌ 登录失败，请重试。');
+    } catch (error: unknown) {
+      this.logger.error('Login via deep link failed.');
+      await ctx.reply(
+        error instanceof TelegramMutationReplayBlockedError
+          ? TELEGRAM_MUTATION_REPLAY_MESSAGE
+          : '❌ 登录失败，请重试。',
+      );
     }
   }
 
@@ -308,15 +319,28 @@ export class TelegramMenuUpdate {
 
       if (referrer && user.id !== referrer.id && !user.referrer_id) {
         user.referrer_id = referrer.id;
-        await this.usersPort.save(user);
+        const saveReferral = () => this.usersPort.save(user);
+        if (this.mutationFence) {
+          await this.mutationFence.executeOnce(
+            'bind_referral',
+            `${user.id}:${referrer.id}`,
+            saveReferral,
+          );
+        } else {
+          await saveReferral();
+        }
         this.logger.log('[TG_REFERRAL_BOUND]');
       } else {
         this.logger.log(
           `[TG_REFERRAL_SKIP] reason=${referrer ? 'already_bound_or_self' : 'invalid_code'}`,
         );
       }
-    } catch {
+    } catch (error: unknown) {
       this.logger.error('[TG_REFERRAL_FAIL]');
+      if (error instanceof TelegramMutationReplayBlockedError) {
+        await ctx.reply(TELEGRAM_MUTATION_REPLAY_MESSAGE);
+        return;
+      }
     }
 
     const firstName = ctx.from?.first_name || '朋友';
@@ -367,9 +391,13 @@ export class TelegramMenuUpdate {
         ctx,
         '✅ 你的 Telegram 账号已成功绑定到系统。现在可以返回小程序继续操作。',
       );
-    } catch (e: unknown) {
-      this.logger.error(`Binding failed: ${String(e)}`);
-      await ctx.reply('❌ 绑定失败，请重试。');
+    } catch (error: unknown) {
+      this.logger.error('Binding failed.');
+      await ctx.reply(
+        error instanceof TelegramMutationReplayBlockedError
+          ? TELEGRAM_MUTATION_REPLAY_MESSAGE
+          : '❌ 绑定失败，请重试。',
+      );
     }
   }
 
@@ -407,11 +435,13 @@ export class TelegramMenuUpdate {
         return;
       }
       await ctx.editMessageText('⚠️ 未找到可合并账号。');
-    } catch (e: unknown) {
-      this.logger.error(`Merge failed: ${String(e)}`);
+    } catch (error: unknown) {
+      this.logger.error('Merge failed.');
       await this.callbackService.answerCbQuerySafely(
         ctx,
-        '❌ 合并失败',
+        error instanceof TelegramMutationReplayBlockedError
+          ? '结果待确认，请在网页检查'
+          : '❌ 合并失败',
         'menu_confirm_merge',
       );
     }
@@ -426,8 +456,8 @@ export class TelegramMenuUpdate {
         'menu_main_menu',
       );
       await this.uiService.sendMainKeyboard(ctx, '请选择下方功能：');
-    } catch (e: unknown) {
-      this.logger.error(`Failed to go back to main menu: ${String(e)}`);
+    } catch {
+      this.logger.error('Failed to go back to main menu.');
     }
   }
 
@@ -443,8 +473,8 @@ export class TelegramMenuUpdate {
         ctx,
         '功能已迁移至小程序，体验更佳！',
       );
-    } catch (e: unknown) {
-      this.logger.error(`Failed to show my orders: ${String(e)}`);
+    } catch {
+      this.logger.error('Failed to show my orders.');
     }
   }
 
@@ -493,8 +523,8 @@ export class TelegramMenuUpdate {
         'menu_distribution_reg',
       );
       await ctx.editMessageText('✅ 申请已提交，请等待审核。');
-    } catch (e: unknown) {
-      this.logger.error(`Failed to register distribution: ${String(e)}`);
+    } catch {
+      this.logger.error('Failed to register distribution.');
     }
   }
 
@@ -518,8 +548,8 @@ export class TelegramMenuUpdate {
       await ctx.editMessageText(
         `👤 分销信息 (ID: ${distributionId})\n\n暂无更多详情。`,
       );
-    } catch (e: unknown) {
-      this.logger.error(`Failed to get distribution info: ${String(e)}`);
+    } catch {
+      this.logger.error('Failed to get distribution info.');
     }
   }
 

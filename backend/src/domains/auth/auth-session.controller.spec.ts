@@ -11,9 +11,9 @@ describe('AuthSessionController logout ownership', () => {
       user: { id: 'actor-1', username: 'alice', roles: ['CONSUMER'] },
     } as AuthenticatedRequest;
 
-    await expect(controller.logout(request, 'refresh-token')).resolves.toEqual({
-      success: true,
-    });
+    await expect(
+      controller.logout(request, { refresh_token: 'refresh-token' }),
+    ).resolves.toEqual({ success: true });
     expect(authService.logout).toHaveBeenCalledWith('actor-1', 'refresh-token');
   });
 });

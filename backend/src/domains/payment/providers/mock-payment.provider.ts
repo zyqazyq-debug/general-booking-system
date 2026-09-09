@@ -39,10 +39,10 @@ export class MockPaymentProvider implements PaymentProvider {
     }
   }
 
-  createPrepay(dto: CreatePrepayDto): Promise<PrepayResponse> {
+  async createPrepay(dto: CreatePrepayDto): Promise<PrepayResponse> {
     this.assertRuntimeEnabled();
     this.logger.log(`Creating mock prepay for channel ${dto.channel}`);
-    return Promise.resolve({
+    return {
       success: true,
       prepay_id: `mock_prepay_${Date.now()}`,
       qr_code: `mock_qr_for_${dto.order_no}`,
@@ -50,7 +50,7 @@ export class MockPaymentProvider implements PaymentProvider {
         mock: true,
         channel: dto.channel,
       },
-    });
+    };
   }
 
   verifyNotification(
@@ -115,12 +115,12 @@ export class MockPaymentProvider implements PaymentProvider {
     });
   }
 
-  queryStatus(orderNo: string): Promise<QueryStatusResult> {
+  async queryStatus(orderNo: string): Promise<QueryStatusResult> {
     this.assertRuntimeEnabled();
     this.logger.log(`Querying mock status for ${orderNo}`);
-    return Promise.resolve({
+    return {
       status: 'success',
       trade_no: `mock_trade_${Date.now()}`,
-    });
+    };
   }
 }

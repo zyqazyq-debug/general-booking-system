@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/schema-diff-receipt.schema.json",
+  "title": "HappyBooking preproduction zero schema-diff receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "database", "databaseUser", "releaseId", "gitSha", "slot", "manifestDigest", "legacyManifestDigestMode", "migrationCatalogDigest", "migrationFloor", "backendImage", "backendImageDigest", "backendImageId", "legacyImageBinding", "schemaLogDigest", "schemaDiff", "observedAt", "verification"],
+  "properties": {
+    "schema": { "const": "booking.schema-diff-receipt/v1" },
+    "environment": { "const": "preproduction" },
+    "database": { "const": "booking_preprod" },
+    "databaseUser": { "const": "booking_preprod" },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "slot": { "const": "green" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "legacyManifestDigestMode": { "const": "raw-bytes" },
+    "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+    "migrationFloor": { "type": "string", "pattern": "^[0-9]{10,}-[A-Za-z0-9][A-Za-z0-9-]*$" },
+    "backendImage": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*:booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "backendImageDigest": { "$ref": "#/$defs/digest" },
+    "backendImageId": { "$ref": "#/$defs/digest" },
+    "legacyImageBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "manifestRepository", "uniqueTag", "ociLabelsAbsent", "currentGreenContainerId", "currentGreenContainerImageBound"],
+      "properties": {
+        "scope": { "const": "preproduction-old-green-only" },
+        "manifestRepository": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*$" },
+        "uniqueTag": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*:booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+        "ociLabelsAbsent": { "const": true },
+        "currentGreenContainerId": { "type": "string", "pattern": "^[0-9a-f]{12,64}$" },
+        "currentGreenContainerImageBound": { "const": true }
+      }
+    },
+    "schemaLogDigest": { "$ref": "#/$defs/digest" },
+    "schemaDiff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upCount", "downCount"],
+      "properties": {
+        "upCount": { "const": 0 },
+        "downCount": { "const": 0 }
+      }
+    },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imageBound", "containerImageBound", "exactReadback"],
+      "properties": {
+        "imageBound": { "const": true },
+        "containerImageBound": { "const": true },
+        "exactReadback": { "const": true }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

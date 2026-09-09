@@ -1,14 +1,39 @@
 {
-  "schema": "booking.deploy-state/v1",
+  "schema": "booking.deploy-state/v2",
+  "environment": "preprod",
+  "project": "booking-preprod",
+  "resources": {
+    "edgeNetwork": "booking-preprod-edge",
+    "dataNetwork": "booking-preprod-data",
+    "databaseRef": "database:booking-preprod",
+    "ingressRef": "ingress:booking-preprod"
+  },
   "generation": 18,
-  "activeSlot": "blue",
-  "activeRelease": "booking-20260907T150000Z-abcdef0",
-  "candidateSlot": "green",
-  "candidateRelease": "booking-20260907T160000Z-0123456",
-  "previousSlot": null,
-  "previousRelease": null,
+  "fencingEpoch": 42,
   "phase": "CANDIDATE_READY",
-  "manifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
   "operationId": "release-20260907-001",
-  "contractMigrationApplied": false
+  "approvalId": "approval-g4-20260907-001",
+  "lease": {
+    "leaseId": "lease-g4-001",
+    "holderId": "booking-preprod-release-owner",
+    "fencingEpoch": 42,
+    "acquiredAt": "2026-09-07T15:55:00.000Z",
+    "expiresAt": "2026-09-07T16:25:00.000Z"
+  },
+  "active": { "slot": "blue", "releaseId": "booking-20260907T150000Z-abcdef0", "gitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "manifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666" },
+  "candidate": { "slot": "green", "releaseId": "booking-20260907T160000Z-0123456", "gitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "manifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" },
+  "rollback": { "slot": "blue", "releaseId": "booking-20260907T150000Z-abcdef0", "gitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "manifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666" },
+  "evidence": {
+    "candidateProbeDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "rollbackPreSwitchProbeDigest": null,
+    "singletonTransferReceiptDigest": null,
+    "switchReceiptDigest": null,
+    "observationReceiptDigest": null,
+    "rollbackReceiptDigest": null,
+    "rollbackSingletonTransferReceiptDigest": null,
+    "rolledBackProbeDigest": null
+  },
+  "receiptChainHead": null,
+  "contractMigrationApplied": false,
+  "updatedAt": "2026-09-07T16:00:00.000Z"
 }

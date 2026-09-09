@@ -4,34 +4,76 @@
   "title": "HappyBooking deployment state",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema", "generation", "activeSlot", "activeRelease", "candidateSlot", "candidateRelease",
-    "previousSlot", "previousRelease", "phase", "manifestDigest", "operationId", "contractMigrationApplied"
-  ],
+  "required": ["schema", "environment", "project", "resources", "generation", "fencingEpoch", "phase", "operationId", "approvalId", "lease", "active", "candidate", "rollback", "evidence", "receiptChainHead", "contractMigrationApplied", "updatedAt"],
   "properties": {
-    "schema": { "const": "booking.deploy-state/v1" },
+    "schema": { "const": "booking.deploy-state/v2" },
+    "environment": { "enum": ["preprod", "production"] },
+    "project": { "enum": ["booking-preprod", "booking-prod"] },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["edgeNetwork", "dataNetwork", "databaseRef", "ingressRef"],
+      "properties": {
+        "edgeNetwork": { "type": "string", "pattern": "^booking-(preprod|prod)-edge$" },
+        "dataNetwork": { "type": "string", "pattern": "^booking-(preprod|prod)-data$" },
+        "databaseRef": { "type": "string", "pattern": "^database:booking-(preprod|prod)$" },
+        "ingressRef": { "type": "string", "pattern": "^ingress:booking-(preprod|prod)$" }
+      }
+    },
     "generation": { "type": "integer", "minimum": 0 },
-    "activeSlot": { "enum": ["blue", "green"] },
-    "activeRelease": { "type": "string", "minLength": 1 },
-    "candidateSlot": { "enum": ["blue", "green", null] },
-    "candidateRelease": { "type": ["string", "null"] },
-    "previousSlot": { "enum": ["blue", "green", null] },
-    "previousRelease": { "type": ["string", "null"] },
-    "phase": {
-      "enum": [
-        "IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED",
-        "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED",
-        "SWITCHED", "OBSERVING", "COMMITTED", "ABORT_CANDIDATE",
-        "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"
-      ]
-    },
-    "manifestDigest": {
+    "fencingEpoch": { "type": "integer", "minimum": 0 },
+    "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ABORT_CANDIDATE", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
+    "operationId": { "type": ["string", "null"], "minLength": 1 },
+    "approvalId": { "type": ["string", "null"], "minLength": 1 },
+    "lease": {
       "oneOf": [
-        { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-        { "type": "null" }
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["leaseId", "holderId", "fencingEpoch", "acquiredAt", "expiresAt"],
+          "properties": {
+            "leaseId": { "type": "string", "minLength": 1 },
+            "holderId": { "type": "string", "minLength": 1 },
+            "fencingEpoch": { "type": "integer", "minimum": 1 },
+            "acquiredAt": { "type": "string", "format": "date-time" },
+            "expiresAt": { "type": "string", "format": "date-time" }
+          }
+        }
       ]
     },
-    "operationId": { "type": ["string", "null"] },
-    "contractMigrationApplied": { "type": "boolean" }
+    "active": { "$ref": "#/$defs/releaseIdentity" },
+    "candidate": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/releaseIdentity" }] },
+    "rollback": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/releaseIdentity" }] },
+    "evidence": { "$ref": "#/$defs/evidence" },
+    "receiptChainHead": { "$ref": "#/$defs/nullableDigest" },
+    "contractMigrationApplied": { "type": "boolean" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "releaseIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slot", "releaseId", "gitSha", "manifestDigest"],
+      "properties": {
+        "slot": { "enum": ["blue", "green"] },
+        "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+        "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "manifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "nullableDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
+      "properties": {
+        "candidateProbeDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackPreSwitchProbeDigest": { "$ref": "#/$defs/nullableDigest" },
+        "singletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "switchReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "observationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackSingletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rolledBackProbeDigest": { "$ref": "#/$defs/nullableDigest" }
+      }
+    }
   }
 }

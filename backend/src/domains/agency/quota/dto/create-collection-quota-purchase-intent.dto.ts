@@ -5,7 +5,7 @@ import { PaymentChannel } from '../../../payment';
 
 export class CreateCollectionQuotaPurchaseIntentDto {
   @ApiProperty({
-    type: Number,
+    type: 'integer',
     format: 'int32',
     minimum: 1,
     example: 10,
@@ -17,7 +17,7 @@ export class CreateCollectionQuotaPurchaseIntentDto {
   extra_slots: number;
 
   @ApiPropertyOptional({
-    type: Number,
+    type: 'integer',
     format: 'int32',
     minimum: 1,
     default: 1,
