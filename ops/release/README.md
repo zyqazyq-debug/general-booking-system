@@ -1,6 +1,6 @@
 # Immutable release contract
 
-This directory contains read-only R1 validators. It does not stage, switch, restart, or roll back production.
+This directory contains immutable contract validators plus explicitly armed, scoped release operations. It does not stage, switch, restart, or roll back production.
 
 Exit codes:
 
@@ -112,10 +112,32 @@ Closing G4 requires this executable chain, all pinned to the same immutable `rep
    ```
 
    The generator resolves Docker only from Synology Container Manager's fixed binary path or `/usr/bin/docker`, and Syft only from `/usr/local/bin/syft`. It resolves symlinks and requires each target to be a root-owned regular file with no group/other write permission; executable paths cannot be overridden from the CLI. Both output parents must be root-owned mode-0700 directories, and existing evidence is never overwritten. Run it from a root-controlled release checkout. A test dependency may inject executables and insecure temporary paths only through the exported library API.
-4. Generate and validate the local provenance binding, then attach the native SBOM and provenance to the same OCI image digest with a pinned signing/attestation tool.
+4. Generate and validate the local provenance binding, then attach the normalized image SBOM and local provenance to the same OCI image digest with the pinned signing/attestation tool. The normalized SBOM transitively binds the preserved native Syft report.
 5. Pull both attestations back from the registry, verify signatures against the approved identity, and compare the retrieved subject, SBOM digest, provenance materials, image digest, and manifest bindings before recording G4 as passed.
 
-Steps 2 and 3 are implemented locally and covered by `node --test ops/check/syft-image-sbom.test.mjs`. Registry attachment/signing and independent pull-back verification in steps 4 and 5 are intentionally not implemented: no registry trust root, approved signing identity, immutable referrer policy, or credential boundary is defined in this repository. Until those inputs exist and both retrieved attestations are independently verified, G4 remains unmet; local generation must not be reported as registry attestation.
+Steps 2 and 3 are implemented locally and covered by `node --test ops/check/syft-image-sbom.test.mjs`. Steps 4 and 5 are implemented by `attest-registry-evidence.mjs` and covered with an isolated Cosign registry simulator by `node --test ops/check/registry-attestation.test.mjs`. The tool signs the exact `repository@sha256` image and attaches exactly two custom in-toto predicates: `https://happybooking.uk/attestations/image-sbom/v2` and `https://happybooking.uk/attestations/local-provenance/v1`. Each predicate follows `ops/contracts/registry-evidence-predicate.schema.json`, embeds the complete canonical evidence document, and binds its SHA-256, component, release ID, Git SHA, canonical manifest digest, image repository, and image digest. It then performs fresh `cosign verify` and `cosign verify-attestation` reads, decodes the returned DSSE statements, and compares their exact subjects and predicates before atomically creating an immutable `booking.registry-attestation-receipt/v1` receipt matching `ops/contracts/registry-attestation-receipt.schema.json`.
+
+Install Cosign 3.1.2 only at `/usr/local/bin/cosign` and verify the official standalone binary before installation. The approved binary SHA-256 values are `f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf` for Linux amd64 and `90e7ae0b5dfd60f20816b52c012addf7fc055ebcc7bea4ce81c428ca8518c302` for Linux arm64. The executable is resolved from this fixed path, required to be root-owned and not group/other writable, and checked against the architecture-specific digest before use. Generate a dedicated encrypted Cosign keypair, keep the private key root-owned mode 0600 outside the worktree, approve and preserve the public-key digest out of band, pass that exact digest through `--public-key-digest`, and supply the private-key password only through `COSIGN_PASSWORD`. Registry authentication is supplied through the host's standard Docker credential configuration; it is not accepted as a command-line argument. Ambient `COSIGN_*` settings, including `COSIGN_REPOSITORY`, are removed so a caller cannot redirect signatures or verification. The password is passed only to `sign` and `attest`, never to version or pull-back verification subprocesses.
+
+For each component, after its manifest, native Syft report, normalized SBOM and local provenance have been finalized, run from a root-controlled checkout with absolute evidence paths:
+
+```text
+COSIGN_PASSWORD='<from secret provider>' node ops/release/attest-registry-evidence.mjs \
+  --execute true --component <backend|gateway> \
+  --manifest <evidence>/release-manifest.json \
+  --manifest-digest sha256:<64-hex> \
+  --native-sbom <evidence>/<component>.syft.json \
+  --sbom <evidence>/<component>.image-sbom.json \
+  --provenance <evidence>/<component>.provenance.json \
+  --private-key <secrets>/cosign.key \
+  --public-key <trust>/cosign.pub \
+  --public-key-digest sha256:<64-hex> \
+  --receipt <evidence>/<component>.registry-attestation-receipt.json
+```
+
+All input files must be regular, non-symbolic trusted files; the receipt directory must be root-owned mode 0700. The signing key must be mode 0600. An existing receipt is never overwritten: a rerun becomes read-only and repeats every registry signature and attestation verification, then requires the newly observed verification set to match the immutable receipt. A registry failure, missing signature or predicate, wrong key, malformed output, wrong subject/type, annotation drift, evidence drift, or receipt drift fails closed. If a process dies after a registry write but before the receipt is committed, a retry can create duplicate cryptographically identical signatures or attestations; verification canonicalizes duplicate statement payloads, but registry garbage collection remains an operator responsibility.
+
+This implementation deliberately uses a self-managed encrypted key, disables transparency-log upload, and makes the corresponding Cosign verification policy explicit with `--insecure-ignore-tlog`. That Cosign flag name is a warning about the deliberately absent transparency-log guarantee; it does not disable public-key signature or claim verification. Therefore the receipt proves verification against the supplied public key and exact retrieved registry payloads; it does not prove a transparency-log identity, hosted builder, registry retention policy, or successful live G4 execution. The repository contains no production private key or registry credential. G4 remains unmet until both real component digests are scanned, signed, attached, pulled back from the target registry, independently verified with the approved public key, and their receipts admitted by the release gate.
 
 `generate-provenance.mjs` requires both `--native-sbom` and `--sbom`, recomputes the native report digest recorded in the normalized document, and validates the image SBOM before emitting the exact `ops/contracts/local-provenance.schema.json` statement. Release generation similarly requires `--backend-native-sbom` and `--gateway-native-sbom` in addition to the normalized SBOM inputs. The provenance predicate and build type are deliberately local Booking URNs, and its two materials bind the normalized SBOM document digest and the same image repository/digest as its sole subject. The normalized SBOM transitively binds the preserved native Syft report. This is local provenance evidence only: it is not SLSA provenance, a registry attestation, or proof of a hosted builder.
 
