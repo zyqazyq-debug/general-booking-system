@@ -23,8 +23,10 @@ function nativeDocument() {
     ],
     artifactRelationships: [],
     files: [
-      { id: 'two', location: { path: '/usr/lib/libz.so' }, digests: [{ algorithm: 'sha256', value: hex('e') }] },
-      { id: 'one', location: { path: '/app/package.json' }, digests: [{ algorithm: 'sha1', value: 'f'.repeat(40) }, { algorithm: 'sha256', value: hex('d') }] },
+      { id: 'two', location: { path: '/usr/lib/libz.so' }, metadata: { type: 'RegularFile' }, digests: [{ algorithm: 'sha256', value: hex('e') }] },
+      { id: 'one', location: { path: '/app/package.json' }, metadata: { type: 'RegularFile' }, digests: [{ algorithm: 'sha256', value: hex('d') }] },
+      { id: 'link', location: { path: '/bin/sh' }, metadata: { type: 'SymbolicLink', linkDestination: '/bin/busybox' }, digests: [] },
+      { id: 'directory', location: { path: '/app' }, metadata: { type: 'Directory' }, digests: null },
     ],
     source: { id: hex('f'), name: image, version: imageDigest, type: 'image', metadata: {
       userInput: imageRef, imageID: digest('9'), manifestDigest: digest('f'), repoDigests: [imageRef], tags: [],
@@ -74,6 +76,9 @@ test('rejects Syft reports that do not prove exact image source, scanner, packag
     [(value) => { value.artifacts[0].purl = ''; }, /purl/],
     [(value) => { value.artifacts.push({ ...structuredClone(value.artifacts[0]), version: '' }); }, /version/],
     [(value) => { value.files[0].digests = []; }, /exactly one lowercase SHA-256/],
+    [(value) => { value.files[0].digests.push({ algorithm: 'sha1', value: 'f'.repeat(40) }); }, /additional digest algorithms/],
+    [(value) => { value.files[2].digests = [{ algorithm: 'sha256', value: hex('f') }]; }, /non-regular entry/],
+    [(value) => { value.files[0].metadata.type = 'Other'; }, /unsupported file type/],
     [(value) => { value.files[1].location.path = value.files[0].location.path; }, /duplicated/],
   ];
   for (const [mutate, expected] of cases) {

@@ -239,18 +239,29 @@ export function normalizeSyftImageSbom(native, { component, gitSha, image, diges
 
   if (!Array.isArray(native.files) || native.files.length === 0) throw new ContractError('Syft file inventory must not be empty');
   const filePaths = new Set();
-  const files = native.files.map((entry, index) => {
+  const files = [];
+  native.files.forEach((entry, index) => {
     const path = entry?.location?.path;
     if (typeof path !== 'string' || !path.startsWith('/') || filePaths.has(path)) {
       throw new ContractError(`Syft files[${index}] path is non-absolute or duplicated`);
     }
     filePaths.add(path);
-    const matches = Array.isArray(entry.digests) ? entry.digests.filter((item) => item?.algorithm?.toLowerCase() === 'sha256') : [];
+    const digests = Array.isArray(entry.digests) ? entry.digests : [];
+    const type = entry?.metadata?.type;
+    if (type === 'Directory' || type === 'SymbolicLink') {
+      if (digests.length !== 0) throw new ContractError(`Syft files[${index}] non-regular entry unexpectedly has a content digest`);
+      return;
+    }
+    if (type !== 'RegularFile') throw new ContractError(`Syft files[${index}] has an unsupported file type`);
+    const matches = digests.filter((item) => item?.algorithm?.toLowerCase() === 'sha256');
     if (matches.length !== 1 || !SHA256_HEX.test(matches[0]?.value || '')) {
       throw new ContractError(`Syft files[${index}] must have exactly one lowercase SHA-256 digest`);
     }
-    return { path, digest: `sha256:${matches[0].value}` };
-  }).sort((left, right) => compareText(left.path, right.path));
+    if (digests.length !== 1) throw new ContractError(`Syft files[${index}] must not contain additional digest algorithms`);
+    files.push({ path, digest: `sha256:${matches[0].value}` });
+  });
+  files.sort((left, right) => compareText(left.path, right.path));
+  if (files.length === 0) throw new ContractError('Syft regular-file inventory must not be empty');
 
   const document = {
     schema: 'booking.image-sbom/v2', component,
