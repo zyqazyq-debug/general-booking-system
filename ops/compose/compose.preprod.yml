@@ -58,6 +58,10 @@ services:
   schema-baseline-ledger:
     profiles: [baseline-ledger]
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    # The immutable backup/schema receipts are root:root 0600 on the host.
+    # This one-shot reader therefore runs as their owner, but retains a
+    # read-only root, no Linux capabilities, and no-new-privileges below.
+    user: "0:0"
     env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
       NODE_ENV: preproduction
@@ -143,6 +147,9 @@ services:
   schema-migrate:
     profiles: [migrate]
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    # The candidate backup receipt is root:root 0600 and is verified before
+    # the bounded migration transaction starts.
+    user: "0:0"
     env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
       NODE_ENV: preproduction
@@ -186,6 +193,8 @@ services:
   schema-migration-readback:
     profiles: [migrate-readback]
     image: ${BOOKING_BACKEND_IMAGE:?set local backend image}:${BOOKING_RELEASE_ID:?set release id}
+    # Readback repeats verification of the same root-only backup receipt.
+    user: "0:0"
     env_file: ${BOOKING_RUNTIME_ENV_FILE:?set isolated runtime environment file}
     environment:
       NODE_ENV: preproduction

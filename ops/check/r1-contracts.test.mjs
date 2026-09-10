@@ -159,8 +159,32 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
   assert.match(compose, /schema-baseline-readback:\s*\n\s*profiles:\s*\[baseline-readback\]/);
   assert.match(compose, /BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST:\s*\$\{BOOKING_BASELINE_SCHEMA_DIFF_RECEIPT_DIGEST:\?/);
   assert.match(compose, /BOOKING_BASELINE_APPROVED_HISTORY_JSON:\s*\$\{BOOKING_BASELINE_APPROVED_HISTORY_JSON:\?/);
+  const rootOnlyEvidenceReaders = [
+    'schema-baseline-ledger',
+    'schema-migrate',
+    'schema-migration-readback',
+  ];
+  for (const service of rootOnlyEvidenceReaders) {
+    const block = new RegExp(`${service}:[\\s\\S]*?(?=\\n  [a-z][a-z0-9-]+:|$)`).exec(compose)?.[0] || '';
+    assert.match(block, /user:\s*"0:0"/, `${service} must own the root-only receipt read`);
+    assert.match(block, /read_only:\s*true/, `${service} must keep a read-only root filesystem`);
+    assert.match(block, /cap_drop:\s*\["ALL"\]/, `${service} must drop every Linux capability`);
+    assert.match(block, /security_opt:\s*\["no-new-privileges:true"\]/, `${service} must forbid privilege escalation`);
+  }
+  for (const service of [
+    'schema-baseline-readback',
+    'telegram-webhook-set',
+    'telegram-webhook-readback',
+    'telegram-bot-identity',
+  ]) {
+    const block = new RegExp(`${service}:[\\s\\S]*?(?=\\n  [a-z][a-z0-9-]+:|$)`).exec(compose)?.[0] || '';
+    assert.doesNotMatch(block, /user:\s*"0:0"/, `${service} must not inherit the receipt-reader exception`);
+  }
   const releaseCompose = await readFile(resolve(root, 'ops/compose/compose.release.yml'), 'utf8');
   assert.doesNotMatch(releaseCompose, /schema-baseline-ledger|BOOKING_SCHEMA_BASELINE/);
+  const productionMigration = /^  schema-migrate:[\s\S]*?(?=\n  [a-z][a-z0-9-]+:|(?![\s\S]))/m.exec(releaseCompose)?.[0] || '';
+  assert.match(productionMigration, /user:\s*"0:0"/, 'production migration must own its root-only backup receipt');
+  assert.match(productionMigration, /<<:\s*\*backend-common/, 'production migration must retain the hardened backend anchor');
 });
 
 async function withProbeServer(manifest, callback) {

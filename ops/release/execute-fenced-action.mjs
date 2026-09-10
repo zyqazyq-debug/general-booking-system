@@ -201,6 +201,22 @@ function composeNetworkKeys(service) {
   return [];
 }
 
+function verifyReceiptReaderComposeService(services, serviceName, expectedMountTargets) {
+  const service = services[serviceName];
+  const networks = composeNetworkKeys(service);
+  const mounts = Array.isArray(service?.volumes) ? service.volumes : [];
+  const mountTargets = mounts.map((mount) => typeof mount === 'string' ? '' : mount?.target).sort();
+  const allMountsReadOnly = mounts.every((mount) => typeof mount !== 'string' && mount?.type === 'bind' && mount?.read_only === true);
+  if (!service || String(service.user) !== '0:0' || service.read_only !== true ||
+      JSON.stringify(service.cap_drop) !== JSON.stringify(['ALL']) ||
+      !Array.isArray(service.security_opt) || !service.security_opt.includes('no-new-privileges:true') ||
+      service.privileged === true || service.network_mode || Object.hasOwn(service, 'ports') ||
+      JSON.stringify(networks) !== JSON.stringify(['preprod-data']) || !allMountsReadOnly ||
+      JSON.stringify(mountTargets) !== JSON.stringify([...expectedMountTargets].sort())) {
+    throw new ContractError(`rendered ${serviceName} violates the root-only receipt-reader isolation contract`, EXIT.IDENTITY);
+  }
+}
+
 export function verifyTelegramComposeConfig(stdout) {
   let config;
   try { config = JSON.parse(stdout); } catch { throw new ContractError('rendered Compose config is not JSON', EXIT.IDENTITY); }
@@ -226,6 +242,17 @@ export function verifyTelegramComposeConfig(stdout) {
     if (!composeNetworkKeys(service).includes('preprod-telegram') || service?.environment?.TELEGRAM_PROXY_URL !== TELEGRAM_PROXY_URL ||
         !Object.hasOwn(service?.depends_on || {}, 'telegram-egress')) {
       throw new ContractError(`rendered ${serviceName} lost Telegram egress binding`, EXIT.IDENTITY);
+    }
+  }
+  verifyReceiptReaderComposeService(services, 'schema-baseline-ledger', [
+    '/run/booking-evidence/backup-receipt.json',
+    '/run/booking-evidence/schema-diff-receipt.json',
+  ]);
+  verifyReceiptReaderComposeService(services, 'schema-migrate', ['/run/booking-evidence/backup-receipt.json']);
+  verifyReceiptReaderComposeService(services, 'schema-migration-readback', ['/run/booking-evidence/backup-receipt.json']);
+  for (const serviceName of ['schema-baseline-readback', 'telegram-bot-identity', 'telegram-webhook-set', 'telegram-webhook-readback']) {
+    if (String(services[serviceName]?.user || '') === '0:0') {
+      throw new ContractError(`rendered ${serviceName} exceeded the receipt-reader root allowlist`, EXIT.IDENTITY);
     }
   }
   const egress = services['telegram-egress'];
@@ -1118,7 +1145,7 @@ async function buildPlan(state, args, runtime) {
       backupReceiptDigest: trustedEnvironment.env.BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST, approvedPending,
       ledgerHead: `${floorParts.slice(1).join('')}${floorParts[0]}` };
     const migrationBackupPreflight = verifyBackupObject('BOOKING_MIGRATION_BACKUP_RECEIPT_DIGEST', 'BOOKING_MIGRATION_BACKUP_RECEIPT_HOST_FILE', 'candidate');
-    const migrationArtifacts = async (context) => ({ ...(await backendImagePreflight(context)), dataPlane: await inspectDataPlane(context),
+    const migrationArtifacts = async (context) => ({ ...(await backendImagePreflight(context)), compose: await inspectComposeConfig(context), dataPlane: await inspectDataPlane(context),
       backup: await migrationBackupPreflight(context) });
     const verifyMigrationArtifacts = async (context) => ({ ...(await verifyOneShotArtifacts([oneShotName, readbackName])(context)),
       dataPlane: await inspectDataPlane(context), backup: await migrationBackupPreflight(context) });
@@ -1151,7 +1178,7 @@ async function buildPlan(state, args, runtime) {
       backupReceiptDigest: trustedEnvironment.env.BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST,
       historyDigest: sha256(JSON.stringify(approvedHistory)) };
     const baselineBackupPreflight = verifyBackupObject('BOOKING_BASELINE_BACKUP_RECEIPT_DIGEST', 'BOOKING_BASELINE_BACKUP_RECEIPT_HOST_FILE', 'old', true);
-    const baselineArtifacts = async (context) => ({ ...(await backendImagePreflight(context)), dataPlane: await inspectDataPlane(context),
+    const baselineArtifacts = async (context) => ({ ...(await backendImagePreflight(context)), compose: await inspectComposeConfig(context), dataPlane: await inspectDataPlane(context),
       backup: await baselineBackupPreflight(context) });
     const verifyBaselineArtifacts = async (context) => ({ ...(await verifyOneShotArtifacts([oneShotName, readbackName])(context)),
       dataPlane: await inspectDataPlane(context), backup: await baselineBackupPreflight(context) });

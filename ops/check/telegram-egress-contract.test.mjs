@@ -81,6 +81,21 @@ test('actual base plus overlay Compose merge preserves app/data/Telegram network
   const broken = structuredClone(config);
   broken.services['backend-blue'].networks = broken.services['backend-blue'].networks.filter((network) => network !== 'preprod-data');
   assert.throws(() => verifyTelegramComposeConfig(JSON.stringify(broken)), /lost a required base/);
+  for (const mutate of [
+    (value) => { value.services['schema-migrate'].user = 'node'; },
+    (value) => { value.services['schema-baseline-ledger'].read_only = false; },
+    (value) => { value.services['schema-migration-readback'].cap_drop = []; },
+    (value) => { value.services['schema-migrate'].security_opt = []; },
+    (value) => { value.services['schema-migrate'].privileged = true; },
+    (value) => { value.services['schema-migrate'].ports = ['127.0.0.1:19999:3001']; },
+    (value) => { value.services['schema-migrate'].networks = ['preprod-edge']; },
+    (value) => { value.services['schema-migrate'].volumes[0].read_only = false; },
+    (value) => { value.services['schema-baseline-readback'].user = '0:0'; },
+  ]) {
+    const drifted = structuredClone(config);
+    mutate(drifted);
+    assert.throws(() => verifyTelegramComposeConfig(JSON.stringify(drifted)), ContractError);
+  }
 });
 
 test('runtime readback binds exact egress image labels, container isolation, networks, mounts, and environment', () => {

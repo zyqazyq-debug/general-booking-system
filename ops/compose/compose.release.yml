@@ -76,6 +76,10 @@ services:
     <<: *backend-common
     profiles: ["migrate", "telegram-webhook-set"]
     image: ${BOOKING_BACKEND_IMAGE:?set immutable backend image repository}@${BOOKING_MIGRATION_BACKEND_DIGEST:?set migration backend digest}
+    # The immutable backup receipt is root:root 0600 on the host. Limit the
+    # root exception to this receipt-reading one-shot; the shared hardening
+    # anchor still removes capabilities and keeps the root filesystem read-only.
+    user: "0:0"
     restart: "no"
     healthcheck:
       disable: true
