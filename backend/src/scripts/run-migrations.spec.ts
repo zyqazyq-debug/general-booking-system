@@ -20,6 +20,8 @@ const deploymentBinding = {
   leaseId: 'lease-1',
   holderId: 'owner-1',
   currentManifestDigest: digest,
+  phase: 'STAGED',
+  runtimeEnvDigest: digest,
 };
 const valid = () => ({
   BOOKING_SCHEMA_MIGRATE: 'true',
@@ -114,6 +116,23 @@ describe('migration runtime guard', () => {
         expected,
       ),
     ).toThrow('binding is invalid');
+    for (const deploymentBindingOverride of [
+      { ...deploymentBinding, phase: '' },
+      { ...deploymentBinding, runtimeEnvDigest: 'not-a-digest' },
+      Object.fromEntries(
+        Object.entries(deploymentBinding).filter(
+          ([key]) => key !== 'runtimeEnvDigest',
+        ),
+      ),
+      { ...deploymentBinding, unexpected: true },
+    ]) {
+      expect(() =>
+        validateBackupReceipt(
+          { ...receipt, deploymentBinding: deploymentBindingOverride },
+          expected,
+        ),
+      ).toThrow('binding is invalid');
+    }
   });
 
   it('rejects unknown, unapproved and destructive pending migrations', () => {

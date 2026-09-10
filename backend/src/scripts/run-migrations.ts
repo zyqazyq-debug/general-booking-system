@@ -205,11 +205,16 @@ export function validateBackupReceipt(
           'holderId',
           'leaseId',
           'operationId',
+          'phase',
           'project',
+          'runtimeEnvDigest',
         ].sort(),
       ) ||
     receipt.deploymentBinding.environment !== 'preprod' ||
     receipt.deploymentBinding.project !== 'booking-preprod' ||
+    typeof receipt.deploymentBinding.phase !== 'string' ||
+    receipt.deploymentBinding.phase.length === 0 ||
+    !DIGEST.test(String(receipt.deploymentBinding.runtimeEnvDigest || '')) ||
     !Number.isInteger(receipt.deploymentBinding.generation) ||
     Number(receipt.deploymentBinding.generation) < 1 ||
     !Number.isInteger(receipt.deploymentBinding.fencingEpoch) ||
