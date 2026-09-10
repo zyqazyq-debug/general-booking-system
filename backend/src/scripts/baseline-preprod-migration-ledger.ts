@@ -204,14 +204,16 @@ export function validateSchemaDiffReceipt(
     receipt.schema !== 'booking.schema-diff-receipt/v1' ||
     !deployment ||
     Object.keys(deployment).sort().join(',') !==
-      'approvalId,currentManifestDigest,environment,fencingEpoch,generation,holderId,leaseId,operationId,project' ||
+      'approvalId,currentManifestDigest,environment,fencingEpoch,generation,holderId,leaseId,operationId,phase,project,runtimeEnvDigest' ||
     deployment.environment !== 'preprod' ||
     deployment.project !== 'booking-preprod' ||
+    deployment.phase !== 'STAGED' ||
     !Number.isInteger(deployment.generation) ||
     Number(deployment.generation) < 1 ||
     !Number.isInteger(deployment.fencingEpoch) ||
     Number(deployment.fencingEpoch) < 1 ||
     !DIGEST.test(String(deployment.currentManifestDigest || '')) ||
+    !DIGEST.test(String(deployment.runtimeEnvDigest || '')) ||
     ['operationId', 'approvalId', 'leaseId', 'holderId'].some(
       (key) =>
         !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(

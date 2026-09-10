@@ -61,6 +61,8 @@ describe('preproduction migration ledger baseline', () => {
         fencingEpoch: 1,
         leaseId: 'lease-1',
         holderId: 'owner-1',
+        phase: 'STAGED',
+        runtimeEnvDigest: `sha256:${'b'.repeat(64)}`,
         currentManifestDigest: `sha256:${'a'.repeat(64)}`,
       },
       releaseId: guard.releaseId,
@@ -106,6 +108,52 @@ describe('preproduction migration ledger baseline', () => {
         {
           ...receipt,
           deploymentBinding: { ...receipt.deploymentBinding, generation: 0 },
+        },
+        guard,
+      ),
+    ).toThrow('binding is invalid');
+    expect(() =>
+      validateSchemaDiffReceipt(
+        {
+          ...receipt,
+          deploymentBinding: {
+            ...receipt.deploymentBinding,
+            phase: 'MANIFEST_VERIFIED',
+          },
+        },
+        guard,
+      ),
+    ).toThrow('binding is invalid');
+    expect(() =>
+      validateSchemaDiffReceipt(
+        {
+          ...receipt,
+          deploymentBinding: {
+            ...receipt.deploymentBinding,
+            runtimeEnvDigest: 'sha256:invalid',
+          },
+        },
+        guard,
+      ),
+    ).toThrow('binding is invalid');
+    for (const key of ['phase', 'runtimeEnvDigest'] as const) {
+      const deploymentBinding = { ...receipt.deploymentBinding };
+      delete deploymentBinding[key];
+      expect(() =>
+        validateSchemaDiffReceipt(
+          { ...receipt, deploymentBinding },
+          guard,
+        ),
+      ).toThrow('binding is invalid');
+    }
+    expect(() =>
+      validateSchemaDiffReceipt(
+        {
+          ...receipt,
+          deploymentBinding: {
+            ...receipt.deploymentBinding,
+            unexpected: 'value',
+          },
         },
         guard,
       ),
