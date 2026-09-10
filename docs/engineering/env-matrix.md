@@ -13,10 +13,10 @@
 | 后端端口（服务监听） | `3001`（Nest） | `3001`（容器内，不映射宿主机） | `3001`（容器内，不映射宿主机） |
 | API 路径 | `/api/*` 由 Vite 代理到 `localhost:3001` | `/api/*` 由 Nginx 反代至 `backend:3001/api/` | `/api/*` 由 Nginx 反代至 `backend:3001/api/` |
 | 健康检查 | `http://localhost:3001/livez` 或经 Vite 代理 | `https://booking-preprod.happybooking.uk/livez`、`/readyz`、`/__ops/version` | `/livez`、`/readyz`、`/__ops/version` |
-| 短链规则 | 裸 slug 由 Vite 代理至后端 `/api/link/resolve/<slug>` | Nginx 裸 slug → 后端 `/api/link/resolve$uri`；`/s/:slug`、`/r/:code` 由后端 302 跳前端路由 | 同 preprod |
+| 短链规则 | `/s/:slug`、`/r/:code` 由开发代理转至后端 | Nginx 仅将单段 `/s/:slug`、`/r/:code` 转至后端，其余根路径保持 SPA fallback | 同 preprod |
 | Postgres | 可用本地或直连 NAS | 独立容器：`5432`（容器内），宿主机仅 `127.0.0.1:5434` | 生产容器：宿主机 `5433:5432`（LAN 可连） |
 | Redis | 可本地或直连 NAS | 独立容器，不对外端口 | 宿主机 `6379:6379`（LAN 可连） |
-| 核心 env（示例） | `NODE_ENV=development` 等 | `NODE_ENV=production`；`ALLOWED_ORIGINS=https://preprod...`；`API_URL=https://preprod.../api`；`TYPEORM_SYNCHRONIZE=false` | 与 preprod 相同，域名为 `https://app.happybooking.uk` |
+| 核心 env（示例） | `NODE_ENV=development` 等 | 控制服务 `NODE_ENV=preproduction`；候选业务容器 `NODE_ENV=production`；`ALLOWED_ORIGINS=https://booking-preprod.happybooking.uk`；`TYPEORM_SYNCHRONIZE=false` | `NODE_ENV=production`；域名为 `https://app.happybooking.uk` |
 | Telegram | polling；token=dev 专用 | 独立预发 bot；候选以 webhook 模式验证，单例 worker 与 egress 受状态机控制 | 独立生产 bot；HTTPS webhook |
 | 发布方式 | 本地 `npm run dev` | 仅 root-owned fenced control-plane，按 G4 状态机推进 | 仅在 G4 通过及回滚方案验证后按生产发布控制面推进 |
 
