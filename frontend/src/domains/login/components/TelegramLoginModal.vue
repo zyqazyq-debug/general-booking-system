@@ -51,7 +51,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { getBotName } from '@/utils/env';
 import {
   getTelegramLoginTicketApi,
-  checkIdentityScanStatusApi,
+  checkTelegramLoginTicketStatusApi,
 } from '@/domains/user';
 import { useUserStore } from '@/shared/stores/user';
 import { useI18n } from 'vue-i18n';
@@ -200,7 +200,7 @@ const startPolling = () => {
   const poll = async () => {
     if (!isPolling.value) return;
     try {
-      const res = await checkIdentityScanStatusApi({
+      const res = await checkTelegramLoginTicketStatusApi({
         ticket_id: loginTicket.value,
       });
       if (res.status === 'success' && res.access_token) {

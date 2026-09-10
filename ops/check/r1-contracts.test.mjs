@@ -87,10 +87,11 @@ test('compose and Nginx contracts reject mutable production behavior', async () 
 });
 
 test('preproduction Telegram profile enforces migration, readiness and exact evidence inputs', async () => {
-  const [compose, dockerfile, frontendDockerfile] = await Promise.all([
+  const [compose, dockerfile, frontendDockerfile, routeContract] = await Promise.all([
     readFile(resolve(root, 'ops/compose/compose.preprod.yml'), 'utf8'),
     readFile(resolve(root, 'backend/Dockerfile'), 'utf8'),
     readFile(resolve(root, 'frontend/Dockerfile'), 'utf8'),
+    readFile(resolve(root, 'frontend/nginx.preprod.conf'), 'utf8'),
   ]);
   assert.match(compose, /schema-migrate:\s*\n\s*profiles:\s*\[migrate\]/);
   assert.match(compose, /schema-migration-readback:\s*\n\s*profiles:\s*\[migrate-readback\]/);
@@ -103,6 +104,12 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
   assert.match(compose, /backend-blue:/);
   assert.match(compose, /gateway-blue:/);
   assert.match(compose, /BOOKING_BACKEND_UPSTREAM:\s*backend-blue:3001/);
+  assert.match(compose, /NGINX_ENVSUBST_FILTER:\s*BOOKING_BACKEND_UPSTREAM/);
+  assert.match(compose, /target:\s*\/etc\/nginx\/conf\.d/);
+  assert.match(compose, /target:\s*\/etc\/nginx\/templates\/default\.conf\.template/);
+  assert.match(routeContract, /proxy_pass http:\/\/\$\{BOOKING_BACKEND_UPSTREAM\}/);
+  assert.match(routeContract, /\^\/\(s\|r\)\/\[\^\/\]\+\$/);
+  assert.doesNotMatch(routeContract, /proxy_pass http:\/\/backend-(?:green|blue)/);
   assert.match(compose, /BOOKING_SLOT:\s*blue/);
   assert.match(compose, /BOOKING_GREEN_PORT:-18082/);
   assert.match(compose, /BOOKING_BLUE_PORT:-18083/);
@@ -113,7 +120,7 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
     assert.match(api, /BOOKING_WORKERS_ENABLED:\s*"false"/);
     assert.match(api, /ORDER_OUTBOX_DISPATCH_ENABLED:\s*"false"/);
     assert.match(api, /TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE:\s*\/run\/secrets\/telegram_webhook_secret/);
-    assert.match(api, /source:\s*\/volume1\/homes\/realzyq\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/);
+    assert.match(api, /source:\s*\/volume1\/happybooking\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/);
     assert.match(api, /target:\s*\/run\/secrets\/telegram_webhook_secret/);
     assert.match(worker, /BOOKING_RUNTIME_ROLE:\s*worker/);
     assert.match(worker, /BOOKING_WORKERS_ENABLED:\s*"true"/);
@@ -125,20 +132,20 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
     assert.match(worker, /networks:\s*\[preprod-data\]/);
     for (const block of [api, worker]) {
       assert.match(block, /TELEGRAM_DATA_ENCRYPTION_SECRET_FILE:\s*\/run\/secrets\/telegram_data_encryption_secret/);
-      assert.match(block, /source:\s*\/volume1\/homes\/realzyq\/booking-preprod\/\.g4\/secrets\/telegram-data-encryption-secret/);
+      assert.match(block, /source:\s*\/volume1\/happybooking\/booking-preprod\/\.g4\/secrets\/telegram-data-encryption-secret/);
       assert.match(block, /target:\s*\/run\/secrets\/telegram_data_encryption_secret/);
     }
   }
   assert.equal((compose.match(/TELEGRAM_DATA_ENCRYPTION_SECRET_FILE:/g) || []).length, 4);
-  assert.equal((compose.match(/source:\s*\/volume1\/homes\/realzyq\/booking-preprod\/\.g4\/secrets\/telegram-data-encryption-secret/g) || []).length, 4);
+  assert.equal((compose.match(/source:\s*\/volume1\/happybooking\/booking-preprod\/\.g4\/secrets\/telegram-data-encryption-secret/g) || []).length, 4);
   for (const service of ['telegram-webhook-set', 'telegram-webhook-readback']) {
     const block = new RegExp(`${service}:[\\s\\S]*?(?=\\n  [a-z][a-z0-9-]+:|$)`).exec(compose)?.[0] || '';
     assert.match(block, /TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE:\s*\/run\/secrets\/telegram_webhook_secret/);
-    assert.match(block, /source:\s*\/volume1\/homes\/realzyq\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/);
+    assert.match(block, /source:\s*\/volume1\/happybooking\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/);
     assert.match(block, /target:\s*\/run\/secrets\/telegram_webhook_secret/);
   }
   assert.equal((compose.match(/TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE:/g) || []).length, 4);
-  assert.equal((compose.match(/source:\s*\/volume1\/homes\/realzyq\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/g) || []).length, 4);
+  assert.equal((compose.match(/source:\s*\/volume1\/happybooking\/booking-preprod\/\.g4\/secrets\/telegram-webhook-secret/g) || []).length, 4);
   assert.match(dockerfile, /COPY --from=build \/app\/src\/migrations \.\/migration-source/);
   assert.match(dockerfile, /npm ci --omit=dev --omit=optional --ignore-scripts/);
   assert.doesNotMatch(dockerfile, /npm ci[^\n]*--omit=peer/);

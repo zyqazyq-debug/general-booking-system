@@ -61,6 +61,7 @@ export async function validateComposeContracts(paths) {
   requirePattern(edge, /BOOKING_EDGE_BIND_ADDRESS:\?/, 'edge bind address must be explicit and fail closed');
   rejectPattern(edge, /0\.0\.0\.0|:::/, 'edge compose must not default to a wildcard bind');
   requirePattern(edge, /BOOKING_TRUSTED_PROXY_CIDR:\?/, 'trusted proxy CIDR must be explicit');
+  requirePattern(edge, /tmpfs:\s*\[[^\]]*\/etc\/nginx\/conf\.d[^\]]*\]/, 'edge rendered config must use tmpfs with a read-only root');
   requirePattern(release, /BOOKING_WORKERS_ENABLED:\s*\$\{BOOKING_(BLUE|GREEN)_WORKERS_ENABLED:-false\}/, 'candidate workers must default to disabled');
   requirePattern(release, /TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE/, 'webhook secret file handoff is missing');
   const backendCommon = /x-backend-common:[\s\S]*?(?=\nx-gateway-common:)/.exec(release)?.[0] || '';
@@ -81,6 +82,9 @@ export async function validateComposeContracts(paths) {
   requirePattern(release, /--ready-url=https:\/\/app\.happybooking\.uk\/readyz/, 'webhook setter readiness probe is missing');
   requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-blue:3001/, 'blue gateway backend upstream is missing');
   requirePattern(release, /BOOKING_BACKEND_UPSTREAM:\s*backend-green:3001/, 'green gateway backend upstream is missing');
+  const gatewayCommon = /x-gateway-common:[\s\S]*?(?=\nservices:)/.exec(release)?.[0] || '';
+  requirePattern(gatewayCommon, /tmpfs:\s*\[[^\]]*\/etc\/nginx\/conf\.d[^\]]*\]/, 'gateway rendered config must use tmpfs with a read-only root');
+  requirePattern(gatewayCommon, /http:\/\/127\.0\.0\.1:8080\/livez/, 'gateway healthcheck must target the internal listener and backend liveness route');
 
   requirePattern(network, /location\s*=\s*\/telegram\/webhook\s*\{/, 'root Telegram webhook route is missing');
   rejectPattern(network, /\/api\/telegram\/webhook/, 'Telegram webhook must not be routed below /api');

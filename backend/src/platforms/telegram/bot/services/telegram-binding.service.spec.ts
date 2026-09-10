@@ -63,6 +63,36 @@ describe('TelegramBindingService durable tickets', () => {
     expect(consumed.result_payload).toBeNull();
   });
 
+  it('keeps login and binding ticket results separated and owner-bound', async () => {
+    const service = new TelegramBindingService(config, {} as any, tickets);
+    const loginToken = await service.generateLoginToken();
+    const bindingToken = await service.generateToken('owner-a');
+    await service.completeToken(loginToken, { access_token: 'login-access' });
+    await service.completeToken(bindingToken, {
+      access_token: 'binding-access',
+    });
+
+    await expect(
+      service.getBindingTokenStatus(loginToken, 'owner-a'),
+    ).resolves.toEqual({ status: 'not_found' });
+    await expect(service.getLoginTokenStatus(bindingToken)).resolves.toEqual({
+      status: 'not_found',
+    });
+    await expect(
+      service.getBindingTokenStatus(bindingToken, 'owner-b'),
+    ).resolves.toEqual({ status: 'not_found' });
+    await expect(service.getLoginTokenStatus(loginToken)).resolves.toEqual({
+      status: 'success',
+      result: { access_token: 'login-access' },
+    });
+    await expect(
+      service.getBindingTokenStatus(bindingToken, 'owner-a'),
+    ).resolves.toEqual({
+      status: 'success',
+      result: { access_token: 'binding-access' },
+    });
+  });
+
   it('deletes an expired successful ticket before exposing its result', async () => {
     const service = new TelegramBindingService(config, {} as any, tickets);
     const token = await service.generateLoginToken();
@@ -140,7 +170,9 @@ describe('TelegramBindingService durable tickets', () => {
           key === 'TELEGRAM_BOT_NAME' ? 'happybookingbot' : undefined,
         ),
       } as unknown as ConfigService,
-      { telegram: { getMe: jest.fn().mockRejectedValue(new Error('offline')) } } as any,
+      {
+        telegram: { getMe: jest.fn().mockRejectedValue(new Error('offline')) },
+      } as any,
     );
 
     await expect(service.getBotDeepLink('lt_ticket')).resolves.toBe(

@@ -34,29 +34,34 @@ filesystem, all capabilities dropped, `no-new-privileges`, a bounded `/tmp`,
 and only these host mounts:
 
 - `/var/lib/happybooking` read-write;
-- `/volume1/homes/realzyq/booking-preprod` read-only;
+- `/volume1/happybooking/booking-preprod` read-only;
 - `/var/run/docker.sock` read-write;
 - `/var/packages/ContainerManager/target/usr/bin/docker` read-only at the same path;
 - `/var/packages/ContainerManager/target/usr/bin/docker-compose` read-only at
   `/root/.docker/cli-plugins/docker-compose`;
 - `/usr/local/libexec/happybooking/control-plane` read-only;
+- `/usr/local/bin/cosign` read-only;
+- `/etc/happybooking/trust/cosign-preprod.pub` and
+  `/etc/happybooking/trust/cosign-preprod.pub.sha256` read-only;
+- `/etc/happybooking/secrets/booking-preprod-control-plane.env` read-only;
 - the self-contained `switch-preprod-ingress` launcher and
   `switch-preprod-ingress.mjs` files read-only at their same absolute paths;
 - only `/etc/happybooking/secrets/cloudflare-preprod-api-token` read-only at
-  its same absolute path.
-- `/volume1/homes/realzyq/booking-preprod/.g4/backups` read-write only for the
+  its same absolute path;
+- `/volume1/happybooking/booking-preprod/.g4/backups` read-write only for the
   backup generator;
-- `/volume1/homes/realzyq/booking-preprod/.g4/receipts` read-write only for the
+- `/volume1/happybooking/booking-preprod/.g4/receipts` read-write only for the
   backup and schema-diff generators.
 
-The last three mounts are action-scoped: the two ingress-helper files and the
+The ingress mounts are action-scoped: the two ingress-helper files and the
 Cloudflare token file are added only for
 `execute-fenced-action:preprod-switch-ingress` and
 `execute-fenced-action:preprod-rollback-ingress`. State initialization, lease
 management, baseline, migration, staging and Telegram webhook actions neither
 mount nor preflight the Cloudflare token, so an intentionally absent token
 cannot block those earlier gates.
-The evidence generators never receive arbitrary paths. Their symbolic inputs
+The two nested evidence write mounts are added only to the corresponding
+backup/schema-diff generator. The evidence generators never receive arbitrary paths. Their symbolic inputs
 are an inert operation ID and, for candidate binding, a strictly parsed release
 ID plus exact backup digest. The launcher constructs the manifest, backup, and
 receipt paths below the fixed preproduction roots. Backup creation is fixed to
@@ -76,10 +81,12 @@ root-only env file so that it cannot redirect the Node runtime or Docker daemon.
 The Debian image is deliberate: the tested Synology Compose v2.20.1 plugin is a
 glibc binary and does not execute in the Alpine control image. The fixed
 root-only `/etc/happybooking/secrets/booking-preprod-control-plane.env` supplies
-the curated release environment. Host Docker reads this `--env-file`; it is not
-mounted into the control container. Never substitute the user-owned project
-`.env` as the control container's environment file. The application containers
-may still consume their separately mounted runtime env file through Compose.
+the curated release environment. Host Docker reads it for the outer
+`docker run --env-file`; the same file is also mounted read-only so the fenced
+process can pass its fixed path to the inner `docker compose --env-file`.
+Never substitute the project `.env` as the control container's environment
+file. Application containers consume their separately mounted runtime env file
+through Compose.
 
 The fixed container name `booking-preprod-control-plane` is also a fail-closed
 concurrency signal. A residual container makes the next `docker run` fail with
@@ -89,7 +96,7 @@ its state and resolve it through the forensic recovery procedure.
 On Synology the executor derives:
 
 - canonical state: `/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json`;
-- immutable release: `/volume1/homes/realzyq/booking-preprod/releases/<state releaseId>`;
+- immutable release: `/volume1/happybooking/booking-preprod/releases/<state releaseId>`;
 - Compose file: `<release>/ops/compose/compose.preprod.yml`;
 - Telegram egress overlay: `<release>/ops/compose/compose.preprod-telegram-egress.yml`;
 - release manifest: `<release>/release-manifest.json`;
@@ -157,7 +164,7 @@ delivery off (`polling` mode with delete-on-startup false, webhook false). Thus
 the worker process cannot expose `/telegram/webhook` through either gateway.
 The Telegram persistence encryption key is not stored in the shared `.env`.
 Preproduction binds only the fixed root-owned
-`/volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret`
+`/volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret`
 file into `backend-blue`, `backend-green`, `order-worker-blue`, and
 `order-worker-green`, and supplies only
 `TELEGRAM_DATA_ENCRYPTION_SECRET_FILE=/run/secrets/telegram_data_encryption_secret`.

@@ -8,11 +8,13 @@ IMAGE='node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a
 HOST_DOCKER='/var/packages/ContainerManager/target/usr/bin/docker'
 HOST_COMPOSE='/var/packages/ContainerManager/target/usr/bin/docker-compose'
 STATE_ROOT='/var/lib/happybooking'
-PREPROD_ROOT='/volume1/homes/realzyq/booking-preprod'
+PREPROD_ROOT='/volume1/happybooking/booking-preprod'
 CONTROL_ROOT='/usr/local/libexec/happybooking/control-plane'
 CONTROL_ENV='/etc/happybooking/secrets/booking-preprod-control-plane.env'
 TOKEN_FILE='/etc/happybooking/secrets/cloudflare-preprod-api-token'
-EVIDENCE_ROOT='/volume1/homes/realzyq/booking-preprod/.g4'
+EVIDENCE_ROOT='/volume1/happybooking/booking-preprod/.g4'
+COSIGN='/usr/local/bin/cosign'
+TRUST_ROOT='/etc/happybooking/trust'
 LEGACY_RELEASE='booking-20260908T202714Z-317be4dec675'
 
 fail() {
@@ -148,10 +150,10 @@ case "$entrypoint:$action" in
 esac
 case "$entrypoint" in
   generate-database-backup-receipt)
-    evidence_mounts=' --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/backups,dst=/volume1/homes/realzyq/booking-preprod/.g4/backups --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts'
+    evidence_mounts=' --mount type=bind,src=/volume1/happybooking/booking-preprod/.g4/backups,dst=/volume1/happybooking/booking-preprod/.g4/backups --mount type=bind,src=/volume1/happybooking/booking-preprod/.g4/receipts,dst=/volume1/happybooking/booking-preprod/.g4/receipts'
     ;;
   generate-schema-diff-receipt)
-    evidence_mounts=' --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts'
+    evidence_mounts=' --mount type=bind,src=/volume1/happybooking/booking-preprod/.g4/receipts,dst=/volume1/happybooking/booking-preprod/.g4/receipts'
     ;;
 esac
 
@@ -170,11 +172,14 @@ set -- \
   --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \
   --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
   --mount type=bind,src=/var/lib/happybooking,dst=/var/lib/happybooking \
-  --mount type=bind,src=/volume1/homes/realzyq/booking-preprod,dst=/volume1/homes/realzyq/booking-preprod,readonly \
+  --mount type=bind,src=/volume1/happybooking/booking-preprod,dst=/volume1/happybooking/booking-preprod,readonly \
   --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
   --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly \
   --mount type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly \
   --mount type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly \
+  --mount type=bind,src=/usr/local/bin/cosign,dst=/usr/local/bin/cosign,readonly \
+  --mount type=bind,src=/etc/happybooking/trust/cosign-preprod.pub,dst=/etc/happybooking/trust/cosign-preprod.pub,readonly \
+  --mount type=bind,src=/etc/happybooking/trust/cosign-preprod.pub.sha256,dst=/etc/happybooking/trust/cosign-preprod.pub.sha256,readonly \
   --mount type=bind,src=/etc/happybooking/secrets/booking-preprod-control-plane.env,dst=/etc/happybooking/secrets/booking-preprod-control-plane.env,readonly \
   $ingress_mounts \
   $evidence_mounts \
@@ -197,6 +202,10 @@ esac
 [ -d "$PREPROD_ROOT" ] || fail
 [ -S /var/run/docker.sock ] || fail
 [ -d "$CONTROL_ROOT" ] || fail
+[ -x "$COSIGN" ] || fail
+[ -d "$TRUST_ROOT" ] || fail
+[ -f "$TRUST_ROOT/cosign-preprod.pub" ] && [ -r "$TRUST_ROOT/cosign-preprod.pub" ] || fail
+[ -f "$TRUST_ROOT/cosign-preprod.pub.sha256" ] && [ -r "$TRUST_ROOT/cosign-preprod.pub.sha256" ] || fail
 [ -f "$CONTROL_ENV" ] && [ -r "$CONTROL_ENV" ] || fail
 [ -f "$CONTROL_ROOT/ops/release/manage-deploy-state.mjs" ] || fail
 [ -f "$CONTROL_ROOT/ops/release/execute-fenced-action.mjs" ] || fail

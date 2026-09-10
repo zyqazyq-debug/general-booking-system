@@ -70,7 +70,10 @@ export class AuthIdentityController {
   }
 
   @Post('identity/bind')
-  @ApiCreatedAuthSuccessResponse([IdentityBoundResponseDto, IdentityMergeRequiredResponseDto])
+  @ApiCreatedAuthSuccessResponse([
+    IdentityBoundResponseDto,
+    IdentityMergeRequiredResponseDto,
+  ])
   @UseGuards(JwtAuthGuard)
   async bindIdentity(
     @Req() req: AuthenticatedRequest,
@@ -102,7 +105,10 @@ export class AuthIdentityController {
   }
 
   @Post('identity/scan/start')
-  @ApiCreatedAuthSuccessResponse([TelegramIdentityScanStartResponseDto, ReservedIdentityScanStartResponseDto])
+  @ApiCreatedAuthSuccessResponse([
+    TelegramIdentityScanStartResponseDto,
+    ReservedIdentityScanStartResponseDto,
+  ])
   @UseGuards(JwtAuthGuard)
   async startIdentityScan(
     @Req() req: AuthenticatedRequest,
@@ -115,10 +121,19 @@ export class AuthIdentityController {
   }
 
   @Post('identity/scan/status')
-  @ApiCreatedAuthSuccessResponse([IdentityScanPendingResponseDto, IdentityScanSuccessResponseDto])
+  @ApiCreatedAuthSuccessResponse([
+    IdentityScanPendingResponseDto,
+    IdentityScanSuccessResponseDto,
+  ])
   @UseGuards(JwtAuthGuard)
-  checkIdentityScanStatus(@Body() body: IdentityScanStatusDto) {
-    return this.authService.checkIdentityScanBindingStatus(body.ticket_id);
+  checkIdentityScanStatus(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: IdentityScanStatusDto,
+  ) {
+    return this.authService.checkIdentityScanBindingStatus(
+      body.ticket_id,
+      req.user.id,
+    );
   }
 
   @Post('identity/unbind')

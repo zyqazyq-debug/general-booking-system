@@ -37,7 +37,7 @@ function worker(slot, status = 'running', overrides = {}) {
     mounts: [
       { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
       { Type: 'tmpfs', Source: '', Destination: '/app/logs', RW: true },
-      { Type: 'bind', Source: '/volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret', Destination: '/run/secrets/telegram_data_encryption_secret', RW: false },
+      { Type: 'bind', Source: '/volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret', Destination: '/run/secrets/telegram_data_encryption_secret', RW: false },
     ],
     networks: { 'booking-preprod-data': {}, 'booking-preprod-telegram': {} }, readOnly: true, capDrop: ['ALL'], capAdd: null,
     securityOpt: ['no-new-privileges:true'], portBindings: {}, ports: { '3001/tcp': null }, user: 'node', privileged: false,

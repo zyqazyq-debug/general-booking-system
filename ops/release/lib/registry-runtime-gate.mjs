@@ -223,7 +223,7 @@ export async function verifyRegistrySupplyChainRuntime({ state, releaseIdentity,
     throw new ContractError('registry runtime gate manifest identity drifted', EXIT.IDENTITY);
   }
   const receiptRootPath = runtime.registryEvidenceRoot ||
-    `/volume1/homes/realzyq/${state.project}/.g4/supply-chain/${releaseIdentity.releaseId}`;
+    `/volume1/happybooking/${state.project}/.g4/supply-chain/${releaseIdentity.releaseId}`;
   const receiptRoot = await trustedDirectory(receiptRootPath, 'registry supply-chain evidence root', runtime, { rootOnly: true });
   const [{ publicKey, publicKeyDigest, anchorDigest }, cosign] = await Promise.all([approvedTrust(runtime), trustedCosign(runtime)]);
   const runner = runtime.cosignCommandRunner || runCosignCapture;

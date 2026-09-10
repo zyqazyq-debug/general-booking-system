@@ -25,4 +25,25 @@ describe('AuthPublicController social proof transport', () => {
       );
     },
   );
+
+  it('polls only the dedicated anonymous Telegram login ticket service', async () => {
+    const authService = {
+      checkTelegramLoginTicketStatus: jest.fn().mockResolvedValue({
+        status: 'pending',
+        ticket_id: `lt_${'a'.repeat(32)}`,
+      }),
+    };
+    const controller = new AuthPublicController(authService as never);
+    const body = { ticket_id: `lt_${'a'.repeat(32)}` };
+
+    await expect(
+      controller.getTelegramLoginTicketStatus(body),
+    ).resolves.toEqual({
+      status: 'pending',
+      ticket_id: body.ticket_id,
+    });
+    expect(authService.checkTelegramLoginTicketStatus).toHaveBeenCalledWith(
+      body.ticket_id,
+    );
+  });
 });

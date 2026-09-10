@@ -113,7 +113,7 @@ function verifyWorkerRuntimeIsolation(containers) {
   const expectedMounts = [
     { type: 'tmpfs', source: '', destination: '/app/logs', rw: true },
     { type: 'tmpfs', source: '', destination: '/tmp', rw: true },
-    { type: 'bind', source: '/volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret',
+    { type: 'bind', source: '/volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret',
       destination: '/run/secrets/telegram_data_encryption_secret', rw: false },
   ];
   for (const container of containers.filter((item) => item.service?.startsWith('order-worker-'))) {
@@ -286,7 +286,7 @@ async function composeServices(docker, runner, options, composeFiles, controlEnv
 async function canonicalEgressComposePath(path, releaseId, runtime) {
   if (releaseId === LEGACY_OLD_BINDING.releaseId) return null;
   if (!isAbsolute(path)) throw new ContractError('singleton Telegram egress Compose file must be absolute', EXIT.IDENTITY);
-  const root = await realpath(runtime.releaseRoot || '/volume1/homes/realzyq/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
+  const root = await realpath(runtime.releaseRoot || '/volume1/happybooking/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
   const file = await realpath(path).catch(() => { throw new ContractError('singleton Telegram egress Compose file cannot be resolved', EXIT.IDENTITY); });
   const expected = await realpath(resolve(root, releaseId, 'ops', 'compose', 'compose.preprod-telegram-egress.yml')).catch(() => {
     throw new ContractError('release-bound singleton Telegram egress Compose file cannot be resolved', EXIT.IDENTITY);
@@ -313,7 +313,7 @@ async function canonicalComposePath(path, releaseId, runtime) {
     }
     return file;
   }
-  const root = await realpath(runtime.releaseRoot || '/volume1/homes/realzyq/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
+  const root = await realpath(runtime.releaseRoot || '/volume1/happybooking/booking-preprod/releases').catch(() => { throw new ContractError('release root cannot be resolved', EXIT.IDENTITY); });
   const file = await realpath(path).catch(() => { throw new ContractError('singleton compose file cannot be resolved', EXIT.IDENTITY); });
   const expected = await realpath(resolve(root, releaseId, 'ops', 'compose', 'compose.preprod.yml')).catch(() => {
     throw new ContractError('release-bound singleton compose file cannot be resolved', EXIT.IDENTITY);

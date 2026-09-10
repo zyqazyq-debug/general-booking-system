@@ -1,4 +1,4 @@
-import { IsIn, IsString } from 'class-validator';
+import { IsIn, IsString, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class IdentityScanStartDto {
@@ -11,5 +11,12 @@ export class IdentityScanStartDto {
 export class IdentityScanStatusDto {
   @IsString()
   @ApiProperty({ type: String })
+  ticket_id: string;
+}
+
+export class TelegramLoginTicketStatusDto {
+  @IsString()
+  @Matches(/^lt_[0-9a-f]{32}$/)
+  @ApiProperty({ type: String, pattern: '^lt_[0-9a-f]{32}$' })
   ticket_id: string;
 }

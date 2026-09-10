@@ -27,12 +27,12 @@ x-gateway-common: &gateway-common
   restart: unless-stopped
   networks: [prod-edge]
   read_only: true
-  tmpfs: [/var/cache/nginx, /var/run, /tmp]
+  tmpfs: [/var/cache/nginx, /var/run, /tmp, /etc/nginx/conf.d]
   cap_drop: ["ALL"]
   cap_add: ["NET_BIND_SERVICE"]
   security_opt: ["no-new-privileges:true"]
   healthcheck:
-    test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+    test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]
     interval: 10s
     timeout: 5s
     retries: 12
@@ -149,6 +149,7 @@ services:
     image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_BLUE_GATEWAY_DIGEST:?set blue gateway digest}
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-blue:3001
+      NGINX_ENVSUBST_FILTER: BOOKING_BACKEND_UPSTREAM
     networks:
       prod-edge:
         aliases: [gateway-blue]
@@ -193,6 +194,7 @@ services:
     image: ${BOOKING_GATEWAY_IMAGE:?set immutable gateway image repository}@${BOOKING_GREEN_GATEWAY_DIGEST:?set green gateway digest}
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-green:3001
+      NGINX_ENVSUBST_FILTER: BOOKING_BACKEND_UPSTREAM
     networks:
       prod-edge:
         aliases: [gateway-green]

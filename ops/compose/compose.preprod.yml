@@ -257,7 +257,7 @@ services:
     tmpfs: [/tmp]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-webhook-secret
         target: /run/secrets/telegram_webhook_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -295,7 +295,7 @@ services:
     tmpfs: [/tmp]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-webhook-secret
         target: /run/secrets/telegram_webhook_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -369,11 +369,11 @@ services:
     tmpfs: [/tmp, /app/logs]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret
         target: /run/secrets/telegram_data_encryption_secret
         read_only: true
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-webhook-secret
         target: /run/secrets/telegram_webhook_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -435,7 +435,7 @@ services:
     tmpfs: [/tmp, /app/logs]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret
         target: /run/secrets/telegram_data_encryption_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -468,10 +468,7 @@ services:
       - "127.0.0.1:${BOOKING_GREEN_PORT:-18082}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-green:3001
-      # The NAS Docker runtime discards tmpfs mode options. Avoid rendering a
-      # writable config at startup: bind the candidate's committed static
-      # upstream configuration read-only and skip the image template directory.
-      NGINX_ENVSUBST_TEMPLATE_DIR: /tmp/empty-nginx-templates
+      NGINX_ENVSUBST_FILTER: BOOKING_BACKEND_UPSTREAM
     read_only: true
     # nginx renders the upstream-specific template at startup. Keep generated
     # configuration ephemeral while retaining a read-only image filesystem.
@@ -482,9 +479,11 @@ services:
         target: /var/run
       - type: tmpfs
         target: /tmp
+      - type: tmpfs
+        target: /etc/nginx/conf.d
       - type: bind
         source: ../../frontend/nginx.preprod.conf
-        target: /etc/nginx/conf.d/default.conf
+        target: /etc/nginx/templates/default.conf.template
         read_only: true
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
@@ -546,11 +545,11 @@ services:
     tmpfs: [/tmp, /app/logs]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret
         target: /run/secrets/telegram_data_encryption_secret
         read_only: true
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-webhook-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-webhook-secret
         target: /run/secrets/telegram_webhook_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -608,7 +607,7 @@ services:
     tmpfs: [/tmp, /app/logs]
     volumes:
       - type: bind
-        source: /volume1/homes/realzyq/booking-preprod/.g4/secrets/telegram-data-encryption-secret
+        source: /volume1/happybooking/booking-preprod/.g4/secrets/telegram-data-encryption-secret
         target: /run/secrets/telegram_data_encryption_secret
         read_only: true
     cap_drop: ["ALL"]
@@ -641,7 +640,7 @@ services:
       - "127.0.0.1:${BOOKING_BLUE_PORT:-18083}:8080"
     environment:
       BOOKING_BACKEND_UPSTREAM: backend-blue:3001
-      NGINX_ENVSUBST_TEMPLATE_DIR: /tmp/empty-nginx-templates
+      NGINX_ENVSUBST_FILTER: BOOKING_BACKEND_UPSTREAM
     read_only: true
     volumes:
       - type: tmpfs
@@ -650,9 +649,11 @@ services:
         target: /var/run
       - type: tmpfs
         target: /tmp
+      - type: tmpfs
+        target: /etc/nginx/conf.d
       - type: bind
         source: ../../frontend/nginx.preprod.conf
-        target: /etc/nginx/conf.d/default.conf
+        target: /etc/nginx/templates/default.conf.template
         read_only: true
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]

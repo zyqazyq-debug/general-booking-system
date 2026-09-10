@@ -139,8 +139,8 @@ function candidateRuntimeInspect(component, releaseRoot, overrides = {}) {
     'BOOKING_SLOT=blue', 'BOOKING_RUNTIME_ROLE=standby', 'BOOKING_WORKERS_ENABLED=false', 'ORDER_OUTBOX_DISPATCH_ENABLED=false',
     'TELEGRAM_ENABLE_WEBHOOK=true', 'TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP=false',
     'BOOKING_TELEGRAM_EGRESS_REQUIRED=true', 'TELEGRAM_PROXY_URL=socks5h://telegram-egress:1080',
-  ] : ['BOOKING_BACKEND_UPSTREAM=backend-blue:3001', 'NGINX_ENVSUBST_TEMPLATE_DIR=/tmp/empty-nginx-templates'];
-  const secretRoot = '/volume1/homes/realzyq/booking-preprod/.g4/secrets';
+  ] : ['BOOKING_BACKEND_UPSTREAM=backend-blue:3001', 'NGINX_ENVSUBST_FILTER=BOOKING_BACKEND_UPSTREAM'];
+  const secretRoot = '/volume1/happybooking/booking-preprod/.g4/secrets';
   const mounts = backend ? [
     { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true }, { Type: 'tmpfs', Source: '', Destination: '/app/logs', RW: true },
     { Type: 'bind', Source: `${secretRoot}/telegram-data-encryption-secret`, Destination: '/run/secrets/telegram_data_encryption_secret', RW: false },
@@ -148,7 +148,8 @@ function candidateRuntimeInspect(component, releaseRoot, overrides = {}) {
   ] : [
     { Type: 'tmpfs', Source: '', Destination: '/var/cache/nginx', RW: true }, { Type: 'tmpfs', Source: '', Destination: '/var/run', RW: true },
     { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
-    { Type: 'bind', Source: join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), Destination: '/etc/nginx/conf.d/default.conf', RW: false },
+    { Type: 'tmpfs', Source: '', Destination: '/etc/nginx/conf.d', RW: true },
+    { Type: 'bind', Source: join(releaseRoot, CANDIDATE.releaseId, 'frontend', 'nginx.preprod.conf'), Destination: '/etc/nginx/templates/default.conf.template', RW: false },
   ];
   const values = [labels, env, mounts, backend ? { 'booking-preprod-edge': {}, 'booking-preprod-data': {}, 'booking-preprod-telegram': {} } : { 'booking-preprod-edge': {} },
     true, ['ALL'], backend ? [] : ['NET_BIND_SERVICE'], ['no-new-privileges:true'],

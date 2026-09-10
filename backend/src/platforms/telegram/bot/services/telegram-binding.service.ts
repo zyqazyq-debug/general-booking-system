@@ -89,10 +89,7 @@ export class TelegramBindingService {
   /**
    * Marks a token as successfully bound/merged
    */
-  async completeToken(
-    token: string,
-    result?: unknown,
-  ): Promise<void> {
+  async completeToken(token: string, result?: unknown): Promise<void> {
     const info = await this.loadToken(token);
     const now = Date.now();
     if (!info || info.status !== 'pending') return;
@@ -151,6 +148,26 @@ export class TelegramBindingService {
       return { status: 'success', result };
     }
     return { status: info.status, result: info.result };
+  }
+
+  async getLoginTokenStatus(token: string) {
+    if (this.tickets) {
+      return this.getPersistentTokenStatus(token, true, 'login');
+    }
+    const info = this.tokens.get(token);
+    if (!info || info.kind !== 'login') return { status: 'not_found' as const };
+    return this.getTokenStatus(token);
+  }
+
+  async getBindingTokenStatus(token: string, userId: string) {
+    if (this.tickets) {
+      return this.getPersistentTokenStatus(token, true, 'binding', userId);
+    }
+    const info = this.tokens.get(token);
+    if (!info || info.kind !== 'binding' || info.userId !== userId) {
+      return { status: 'not_found' as const };
+    }
+    return this.getTokenStatus(token);
   }
 
   async peekTokenStatus(token: string) {
@@ -272,12 +289,19 @@ export class TelegramBindingService {
   private async getPersistentTokenStatus(
     token: string,
     consumeSuccess: boolean,
+    expectedKind?: 'login' | 'binding',
+    expectedUserId?: string,
   ): Promise<{
     status: 'pending' | 'success' | 'expired' | 'not_found';
     result?: unknown;
   }> {
     const tokenHash = this.hashToken(token);
-    const ticket = await this.tickets!.findOneBy({ token_hash: tokenHash });
+    const identity = {
+      token_hash: tokenHash,
+      ...(expectedKind ? { kind: expectedKind } : {}),
+      ...(expectedUserId ? { user_id: expectedUserId } : {}),
+    };
+    const ticket = await this.tickets!.findOneBy(identity);
     if (!ticket) {
       this.tokens.delete(token);
       return { status: 'not_found' };
@@ -303,6 +327,8 @@ export class TelegramBindingService {
       const consumed = await this.tickets!.update(
         {
           token_hash: tokenHash,
+          ...(expectedKind ? { kind: expectedKind } : {}),
+          ...(expectedUserId ? { user_id: expectedUserId } : {}),
           status: 'success',
           expires_at: MoreThan(new Date(now)),
         },

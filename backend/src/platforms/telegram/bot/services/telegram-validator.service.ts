@@ -83,4 +83,12 @@ export class TelegramValidatorService implements ITelegramValidator {
   }> {
     return this.bindingService.getTokenStatus(token);
   }
+
+  getLoginTokenStatus(token: string) {
+    return this.bindingService.getLoginTokenStatus(token);
+  }
+
+  getBindingTokenStatus(token: string, userId: string) {
+    return this.bindingService.getBindingTokenStatus(token, userId);
+  }
 }

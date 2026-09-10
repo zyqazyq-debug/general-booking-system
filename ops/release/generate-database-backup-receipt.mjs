@@ -15,9 +15,9 @@ import { EVIDENCE_BINDING_FIELDS, publishWithCurrentEvidenceBinding, readEvidenc
 export const PREPROD_POSTGRES_CONTAINER = 'booking-preprod-postgres-1';
 export const PREPROD_DATABASE = 'booking_preprod';
 export const PREPROD_DATABASE_USER = 'booking_preprod';
-export const PREPROD_BACKUP_ROOT = '/volume1/homes/realzyq/booking-preprod/.g4/backups';
-export const PREPROD_RECEIPT_ROOT = '/volume1/homes/realzyq/booking-preprod/.g4/receipts';
-export const PREPROD_RELEASE_ROOT = '/volume1/homes/realzyq/booking-preprod/releases';
+export const PREPROD_BACKUP_ROOT = '/volume1/happybooking/booking-preprod/.g4/backups';
+export const PREPROD_RECEIPT_ROOT = '/volume1/happybooking/booking-preprod/.g4/receipts';
+export const PREPROD_RELEASE_ROOT = '/volume1/happybooking/booking-preprod/releases';
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ALLOWED = new Set(['action', 'execute', 'identity', 'manifest', 'backup-path', 'receipt-path', 'expected-backup-digest', ...EVIDENCE_BINDING_FIELDS]);

@@ -24,11 +24,14 @@ function mounts(argv) {
 
 const BASE_MOUNTS = [
   'type=bind,src=/var/lib/happybooking,dst=/var/lib/happybooking',
-  'type=bind,src=/volume1/homes/realzyq/booking-preprod,dst=/volume1/homes/realzyq/booking-preprod,readonly',
+  'type=bind,src=/volume1/happybooking/booking-preprod,dst=/volume1/happybooking/booking-preprod,readonly',
   'type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock',
   'type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly',
   'type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly',
   'type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly',
+  'type=bind,src=/usr/local/bin/cosign,dst=/usr/local/bin/cosign,readonly',
+  'type=bind,src=/etc/happybooking/trust/cosign-preprod.pub,dst=/etc/happybooking/trust/cosign-preprod.pub,readonly',
+  'type=bind,src=/etc/happybooking/trust/cosign-preprod.pub.sha256,dst=/etc/happybooking/trust/cosign-preprod.pub.sha256,readonly',
   'type=bind,src=/etc/happybooking/secrets/booking-preprod-control-plane.env,dst=/etc/happybooking/secrets/booking-preprod-control-plane.env,readonly',
 ];
 
@@ -39,10 +42,10 @@ const INGRESS_MOUNTS = [
 ];
 
 const BACKUP_RW_MOUNTS = [
-  'type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/backups,dst=/volume1/homes/realzyq/booking-preprod/.g4/backups',
-  'type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts',
+  'type=bind,src=/volume1/happybooking/booking-preprod/.g4/backups,dst=/volume1/happybooking/booking-preprod/.g4/backups',
+  'type=bind,src=/volume1/happybooking/booking-preprod/.g4/receipts,dst=/volume1/happybooking/booking-preprod/.g4/receipts',
 ];
-const RECEIPT_RW_MOUNT = 'type=bind,src=/volume1/homes/realzyq/booking-preprod/.g4/receipts,dst=/volume1/homes/realzyq/booking-preprod/.g4/receipts';
+const RECEIPT_RW_MOUNT = 'type=bind,src=/volume1/happybooking/booking-preprod/.g4/receipts,dst=/volume1/happybooking/booking-preprod/.g4/receipts';
 
 const common = ['--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod',
   '--approval-id', 'approval-1', '--expected-generation', '3', '--expected-fencing-epoch', '7',
@@ -59,7 +62,10 @@ test('control-plane launcher builds the fixed hardened Docker plan for the state
   for (const expected of ['host', '0:0', 'ALL', 'no-new-privileges:true', '/usr/local/bin/node']) assert.ok(argv.includes(expected));
   for (const expected of ['HOME=/root', 'NODE_OPTIONS=', 'NODE_PATH=', 'LD_PRELOAD=', 'DOCKER_HOST=unix:///var/run/docker.sock', 'DOCKER_CONFIG=/root/.docker']) assert.ok(argv.includes(expected));
   assert.ok(argv.includes('type=bind,src=/var/lib/happybooking,dst=/var/lib/happybooking'));
-  assert.ok(argv.includes('type=bind,src=/volume1/homes/realzyq/booking-preprod,dst=/volume1/homes/realzyq/booking-preprod,readonly'));
+  assert.ok(argv.includes('type=bind,src=/volume1/happybooking/booking-preprod,dst=/volume1/happybooking/booking-preprod,readonly'));
+  assert.ok(argv.includes('type=bind,src=/usr/local/bin/cosign,dst=/usr/local/bin/cosign,readonly'));
+  assert.ok(argv.includes('type=bind,src=/etc/happybooking/trust/cosign-preprod.pub,dst=/etc/happybooking/trust/cosign-preprod.pub,readonly'));
+  assert.ok(argv.includes('type=bind,src=/etc/happybooking/trust/cosign-preprod.pub.sha256,dst=/etc/happybooking/trust/cosign-preprod.pub.sha256,readonly'));
   assert.ok(argv.includes('type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock'));
   assert.ok(argv.includes('type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly'));
   assert.ok(argv.includes('type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly'));
@@ -122,9 +128,9 @@ test('backup symbolic entrypoint constructs only canonical release/evidence path
   assert.equal(created.status, 0, created.stderr);
   const createArgv = created.stdout.trim().split(/\r?\n/);
   assert.ok(createArgv.includes('/usr/local/libexec/happybooking/control-plane/ops/release/generate-database-backup-receipt.mjs'));
-  assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/release-manifest.json'));
-  assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/.g4/backups/g4-op-1.dump'));
-  assert.ok(createArgv.includes('/volume1/homes/realzyq/booking-preprod/.g4/receipts/g4-op-1-old-backup.json'));
+  assert.ok(createArgv.includes('/volume1/happybooking/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/release-manifest.json'));
+  assert.ok(createArgv.includes('/volume1/happybooking/booking-preprod/.g4/backups/g4-op-1.dump'));
+  assert.ok(createArgv.includes('/volume1/happybooking/booking-preprod/.g4/receipts/g4-op-1-old-backup.json'));
   assert.equal(createArgv[createArgv.indexOf('--expected-generation') + 1], '3');
   assert.deepEqual(mounts(createArgv), [...BASE_MOUNTS, ...BACKUP_RW_MOUNTS]);
 
@@ -134,9 +140,9 @@ test('backup symbolic entrypoint constructs only canonical release/evidence path
     '--release-id', candidate, '--expected-backup-digest', digest, ...base]);
   assert.equal(bound.status, 0, bound.stderr);
   const bindArgv = bound.stdout.trim().split(/\r?\n/);
-  assert.ok(bindArgv.includes(`/volume1/homes/realzyq/booking-preprod/releases/${candidate}/release-manifest.json`));
+  assert.ok(bindArgv.includes(`/volume1/happybooking/booking-preprod/releases/${candidate}/release-manifest.json`));
   assert.ok(bindArgv.includes(digest));
-  assert.ok(bindArgv.includes('/volume1/homes/realzyq/booking-preprod/.g4/receipts/g4-op-1-candidate-backup.json'));
+  assert.ok(bindArgv.includes('/volume1/happybooking/booking-preprod/.g4/receipts/g4-op-1-candidate-backup.json'));
   assert.deepEqual(mounts(bindArgv), [...BASE_MOUNTS, ...BACKUP_RW_MOUNTS]);
   assert.equal(bindArgv.some((value) => value.includes('cloudflare-preprod-api-token')), false);
 });
@@ -151,8 +157,8 @@ test('schema-diff symbolic entrypoint fixes the legacy manifest/slot and grants 
   assert.ok(argv.includes('/usr/local/libexec/happybooking/control-plane/ops/release/generate-schema-diff-receipt.mjs'));
   assert.equal(argv[argv.indexOf('--identity') + 1], 'old');
   assert.equal(argv[argv.indexOf('--slot') + 1], 'green');
-  assert.ok(argv.includes('/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/release-manifest.json'));
-  assert.ok(argv.includes('/volume1/homes/realzyq/booking-preprod/.g4/receipts/g4-op-2-old-zero-diff.json'));
+  assert.ok(argv.includes('/volume1/happybooking/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/release-manifest.json'));
+  assert.ok(argv.includes('/volume1/happybooking/booking-preprod/.g4/receipts/g4-op-2-old-zero-diff.json'));
   assert.deepEqual(mounts(argv), [...BASE_MOUNTS, RECEIPT_RW_MOUNT]);
 });
 

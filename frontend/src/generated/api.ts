@@ -260,6 +260,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/telegram/login-ticket/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["AuthPublicController_getTelegramLoginTicketStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/telegram/webapp-login": {
         parameters: {
             query?: never;
@@ -1615,6 +1631,24 @@ export interface components {
             bot_url: string;
             expires_in: number;
         };
+        IdentityScanPendingResponseDto: {
+            /** @enum {string} */
+            status: "pending" | "expired";
+            ticket_id: string;
+            message: string;
+        };
+        IdentityScanSuccessResponseDto: {
+            access_token: string;
+            refresh_token: string;
+            user: components["schemas"]["AuthLoginUserResponseDto"];
+            /** @enum {string} */
+            status: "success";
+            ticket_id: string;
+            message: string;
+        };
+        TelegramLoginTicketStatusDto: {
+            ticket_id: string;
+        };
         TelegramWebAppLoginDto: {
             /** @description Signed initData payload supplied by Telegram Web Apps. */
             initData: string;
@@ -1726,21 +1760,6 @@ export interface components {
         IdentityScanStartDto: {
             /** @enum {string} */
             provider: "wechat" | "qq" | "telegram";
-        };
-        IdentityScanPendingResponseDto: {
-            /** @enum {string} */
-            status: "pending" | "expired";
-            ticket_id: string;
-            message: string;
-        };
-        IdentityScanSuccessResponseDto: {
-            access_token: string;
-            refresh_token: string;
-            user: components["schemas"]["AuthLoginUserResponseDto"];
-            /** @enum {string} */
-            status: "success";
-            ticket_id: string;
-            message: string;
         };
         IdentityScanStatusDto: {
             ticket_id: string;
@@ -3407,6 +3426,31 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
                         data: components["schemas"]["TelegramLoginTicketResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    AuthPublicController_getTelegramLoginTicketStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TelegramLoginTicketStatusDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiSuccessEnvelopeDto"] & {
+                        data: components["schemas"]["IdentityScanPendingResponseDto"] | components["schemas"]["IdentityScanSuccessResponseDto"];
                     };
                 };
             };

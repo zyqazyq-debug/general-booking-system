@@ -102,7 +102,7 @@ function isExactLegacyBootstrap(identityValue) {
 }
 
 async function inspectRuntimeEnvironment(args, runtime) {
-  const fixedPath = `/volume1/homes/realzyq/${args.project}/.env`;
+  const fixedPath = `/volume1/happybooking/${args.project}/.env`;
   if (runtime.runtimeEnvFile !== undefined && runtime.allowInsecureTestPaths !== true) {
     throw new ContractError('runtime environment path cannot be supplied by the caller', EXIT.IDENTITY);
   }

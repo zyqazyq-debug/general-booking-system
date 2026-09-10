@@ -5,6 +5,7 @@ server {
   index index.html;
 
   location ~ ^/(livez|readyz|__ops/version)$ { proxy_pass http://${BOOKING_BACKEND_UPSTREAM}; }
+  location ~ ^/(s|r)/[^/]+$ { proxy_pass http://${BOOKING_BACKEND_UPSTREAM}; }
   location /api/ { proxy_pass http://${BOOKING_BACKEND_UPSTREAM}; }
   location = /telegram/webhook { proxy_pass http://${BOOKING_BACKEND_UPSTREAM}; }
   location / { try_files $uri $uri/ /index.html; }

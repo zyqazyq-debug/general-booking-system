@@ -100,7 +100,7 @@ async function trustedDirectory(path, label, runtime) {
 }
 
 async function trustedReleasePaths(state, releaseIdentity, runtime) {
-  const configuredRoot = runtime.releaseRoot || `/volume1/homes/realzyq/${state.project}/releases`;
+  const configuredRoot = runtime.releaseRoot || `/volume1/happybooking/${state.project}/releases`;
   if (!isAbsolute(configuredRoot)) throw new ContractError('trusted release root must be absolute', EXIT.IDENTITY);
   const trustedAncestors = [];
   for (let current = resolve(configuredRoot); ; current = dirname(current)) {
@@ -376,13 +376,14 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
   const expectedNetworks = component === 'backend' ? [state.resources.dataNetwork, state.resources.edgeNetwork, 'booking-preprod-telegram'].sort() : [state.resources.edgeNetwork];
   if (JSON.stringify(networkNames) !== JSON.stringify(expectedNetworks)) throw new ContractError(`${component} candidate network isolation mismatch`, EXIT.IDENTITY);
   const normalizedMounts = Array.isArray(mounts) ? mounts.map((item) => ({ type: item.Type, source: item.Source || '', destination: item.Destination, rw: item.RW })).sort((a, b) => a.destination.localeCompare(b.destination)) : [];
-  const secretRoot = `/volume1/homes/realzyq/${state.project}/.g4/secrets`;
+  const secretRoot = `/volume1/happybooking/${state.project}/.g4/secrets`;
   const expectedMounts = component === 'backend' ? [
     { type: 'tmpfs', source: '', destination: '/app/logs', rw: true }, { type: 'tmpfs', source: '', destination: '/tmp', rw: true },
     { type: 'bind', source: `${secretRoot}/telegram-data-encryption-secret`, destination: '/run/secrets/telegram_data_encryption_secret', rw: false },
     { type: 'bind', source: `${secretRoot}/telegram-webhook-secret`, destination: '/run/secrets/telegram_webhook_secret', rw: false },
   ] : [
-    { type: 'bind', source: join(paths.releaseDirectory, 'frontend', 'nginx.preprod.conf'), destination: '/etc/nginx/conf.d/default.conf', rw: false },
+    { type: 'tmpfs', source: '', destination: '/etc/nginx/conf.d', rw: true },
+    { type: 'bind', source: join(paths.releaseDirectory, 'frontend', 'nginx.preprod.conf'), destination: '/etc/nginx/templates/default.conf.template', rw: false },
     { type: 'tmpfs', source: '', destination: '/tmp', rw: true }, { type: 'tmpfs', source: '', destination: '/var/cache/nginx', rw: true },
     { type: 'tmpfs', source: '', destination: '/var/run', rw: true },
   ];
@@ -401,7 +402,7 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
     BOOKING_SLOT: releaseIdentity.slot, BOOKING_RUNTIME_ROLE: 'standby', BOOKING_WORKERS_ENABLED: 'false', ORDER_OUTBOX_DISPATCH_ENABLED: 'false',
     TELEGRAM_ENABLE_WEBHOOK: 'true', TELEGRAM_POLLING_DELETE_WEBHOOK_ON_STARTUP: 'false',
     BOOKING_TELEGRAM_EGRESS_REQUIRED: 'true', TELEGRAM_PROXY_URL: 'socks5h://telegram-egress:1080',
-  } : { BOOKING_BACKEND_UPSTREAM: `backend-${releaseIdentity.slot}:3001`, NGINX_ENVSUBST_TEMPLATE_DIR: '/tmp/empty-nginx-templates' };
+  } : { BOOKING_BACKEND_UPSTREAM: `backend-${releaseIdentity.slot}:3001`, NGINX_ENVSUBST_FILTER: 'BOOKING_BACKEND_UPSTREAM' };
   if (Object.entries(expectedEnv).some(([key, value]) => env.get(key) !== value)) throw new ContractError(`${component} candidate critical environment mismatch`, EXIT.IDENTITY);
   if (component === 'gateway') {
     if (JSON.stringify(capAdd) !== JSON.stringify(['NET_BIND_SERVICE']) || JSON.stringify(portBindings) !== JSON.stringify({ '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: String(candidatePort) }] })) {
@@ -507,7 +508,7 @@ function assertCandidateRollbackCompatibility(state, releaseIdentity, manifest) 
 }
 
 async function inspectTrustedRuntimeEnvironment(state, runtime) {
-  const fixedPath = `/volume1/homes/realzyq/${state.project}/.env`;
+  const fixedPath = `/volume1/happybooking/${state.project}/.env`;
   if (runtime.runtimeEnvFile !== undefined) throw new ContractError('runtime environment path cannot be overridden', EXIT.IDENTITY);
   const fixturePath = runtime.releaseManifest && runtime.releaseRoot ? join(runtime.releaseRoot, '.runtime.env') : null;
   const configuredPath = fixturePath || fixedPath;
@@ -685,7 +686,7 @@ async function buildPlan(state, args, runtime) {
   }
   const composePrefix = ['compose', '--env-file', controlEnvFile, '--project-name', state.project, '--file', paths.composeFile,
     ...(!exactLegacyCompose ? ['--file', paths.egressComposeFile] : [])];
-  const evidenceRoot = `/volume1/homes/realzyq/${state.project}/.g4`;
+  const evidenceRoot = `/volume1/happybooking/${state.project}/.g4`;
   const expectedEvidenceBinding = { environment: state.environment, project: state.project, operationId: state.operationId,
     approvalId: state.approvalId, generation: state.generation, fencingEpoch: state.fencingEpoch, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
     currentManifestDigest: state.candidate?.manifestDigest || state.active.manifestDigest, phase: state.phase, runtimeEnvDigest: state.runtimeEnvDigest };

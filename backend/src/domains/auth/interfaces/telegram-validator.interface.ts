@@ -33,4 +33,15 @@ export interface ITelegramValidator {
     status: 'pending' | 'success' | 'expired' | 'not_found';
     result?: unknown;
   }>;
+  getLoginTokenStatus(token: string): Promise<{
+    status: 'pending' | 'success' | 'expired' | 'not_found';
+    result?: unknown;
+  }>;
+  getBindingTokenStatus(
+    token: string,
+    userId: string,
+  ): Promise<{
+    status: 'pending' | 'success' | 'expired' | 'not_found';
+    result?: unknown;
+  }>;
 }

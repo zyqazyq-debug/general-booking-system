@@ -20,6 +20,7 @@ export type { SocialProvider } from './auth';
 export {
   bindIdentityApi,
   checkIdentityScanStatusApi,
+  checkTelegramLoginTicketStatusApi,
   confirmIdentityMergeApi,
   startIdentityScanApi,
   unbindIdentityApi,

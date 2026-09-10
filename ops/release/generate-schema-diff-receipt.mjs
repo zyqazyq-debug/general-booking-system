@@ -14,9 +14,9 @@ import { EVIDENCE_BINDING_FIELDS, publishWithCurrentEvidenceBinding, readEvidenc
 export const PREPROD_DATABASE = 'booking_preprod';
 export const PREPROD_DATABASE_USER = 'booking_preprod';
 export const PREPROD_DATA_NETWORK = 'booking-preprod-data';
-export const PREPROD_ENV_FILE = '/volume1/homes/realzyq/booking-preprod/.env';
-export const PREPROD_RECEIPT_ROOT = '/volume1/homes/realzyq/booking-preprod/.g4/receipts';
-export const PREPROD_RELEASE_ROOT = '/volume1/homes/realzyq/booking-preprod/releases';
+export const PREPROD_ENV_FILE = '/volume1/happybooking/booking-preprod/.env';
+export const PREPROD_RECEIPT_ROOT = '/volume1/happybooking/booking-preprod/.g4/receipts';
+export const PREPROD_RELEASE_ROOT = '/volume1/happybooking/booking-preprod/releases';
 
 const ALLOWED = new Set(['execute', 'identity', 'slot', 'manifest', 'receipt-path', ...EVIDENCE_BINDING_FIELDS]);
 const IMAGE_FORMAT = '{{json .Id}}|{{json .RepoDigests}}|{{json .RepoTags}}|{{json .Config.Labels}}';

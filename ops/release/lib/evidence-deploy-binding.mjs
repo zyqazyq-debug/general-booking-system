@@ -51,7 +51,7 @@ export async function publishWithCurrentEvidenceBinding(args, binding, runtime, 
         Date.parse(state.lease?.expiresAt || '') <= (runtime.nowMs ?? Date.now())) {
       throw new ContractError('evidence generation lost its canonical lease or fencing identity before publication', EXIT.IDENTITY);
     }
-    const fixedPath = `/volume1/homes/realzyq/${state.project}/.env`;
+    const fixedPath = `/volume1/happybooking/${state.project}/.env`;
     if (runtime.runtimeEnvFile !== undefined && runtime.allowInsecureTestPaths !== true) {
       throw new ContractError('runtime environment path cannot be supplied by the evidence publisher', EXIT.IDENTITY);
     }

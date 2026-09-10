@@ -146,9 +146,13 @@ export class AuthTelegramLoginService {
 
   async checkIdentityScanBindingStatus(
     ticketId: string,
+    userId: string,
   ): Promise<BindingStatusResponse> {
-    if (ticketId.startsWith('bt_') || ticketId.startsWith('lt_')) {
-      const res = await this.telegramValidator.getTokenStatus(ticketId);
+    if (ticketId.startsWith('bt_')) {
+      const res = await this.telegramValidator.getBindingTokenStatus(
+        ticketId,
+        userId,
+      );
       if (res.status === 'success') {
         return {
           status: 'success',
@@ -171,6 +175,35 @@ export class AuthTelegramLoginService {
       status: 'pending',
       ticket_id: ticketId,
       message: '扫码授权状态查询接口已预留，待接入官方回调',
+    };
+  }
+
+  async checkTelegramLoginTicketStatus(
+    ticketId: string,
+  ): Promise<BindingStatusResponse> {
+    if (!ticketId.startsWith('lt_')) {
+      return {
+        status: 'expired',
+        ticket_id: ticketId,
+        message: '登录链接已失效',
+      };
+    }
+    const res = await this.telegramValidator.getLoginTokenStatus(ticketId);
+    if (res.status === 'success') {
+      return {
+        status: 'success',
+        ticket_id: ticketId,
+        message: 'Telegram 登录成功',
+        ...(res.result as Record<string, unknown>),
+      };
+    }
+    return {
+      status: res.status === 'pending' ? 'pending' : 'expired',
+      ticket_id: ticketId,
+      message:
+        res.status === 'pending'
+          ? '等待用户在 Telegram 中确认...'
+          : '登录链接已失效',
     };
   }
 }

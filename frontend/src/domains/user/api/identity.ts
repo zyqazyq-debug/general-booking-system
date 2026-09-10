@@ -47,14 +47,32 @@ export const startIdentityScanApi = (data: { provider: string }) => {
 };
 
 export const checkIdentityScanStatusApi = (data: { ticket_id: string }) => {
-  return request<{
-    status: 'success' | 'pending' | 'expired';
-    message: string;
-    user?: any;
-    access_token?: string;
-    refresh_token?: string;
-  }>({
+  return request<
+    | { status: 'pending' | 'expired'; ticket_id: string; message: string }
+    | ({
+        status: 'success';
+        ticket_id: string;
+        message: string;
+      } & LoginResponse)
+  >({
     url: '/auth/identity/scan/status',
+    method: 'POST',
+    data,
+  });
+};
+
+export const checkTelegramLoginTicketStatusApi = (data: {
+  ticket_id: string;
+}) => {
+  return request<
+    | { status: 'pending' | 'expired'; ticket_id: string; message: string }
+    | ({
+        status: 'success';
+        ticket_id: string;
+        message: string;
+      } & LoginResponse)
+  >({
+    url: '/auth/telegram/login-ticket/status',
     method: 'POST',
     data,
   });

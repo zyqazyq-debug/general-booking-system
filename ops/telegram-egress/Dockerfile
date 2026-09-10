@@ -8,8 +8,6 @@ FROM ${TELEGRAM_EGRESS_BASE_IMAGE}
 ARG CLOUDFLARE_WARP_VERSION=2026.7.1377.0
 ARG CLOUDFLARE_WARP_DEB_SHA256=95d33c2b4fc42f21c204981c51470a6a679d618fb0b78ee64bdd0db142230c55
 ARG CLOUDFLARE_WARP_DEB_URL=https://pkg.cloudflareclient.com/pool/bookworm/main/c/cloudflare-warp/cloudflare-warp_2026.7.1377.0_amd64.deb
-ARG BOOKING_GIT_SHA
-ARG BOOKING_RELEASE_ID
 ARG TELEGRAM_EGRESS_BASE_IMAGE
 
 # Bootstrap the trust store only from the reviewed base image's official APT
@@ -39,6 +37,12 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends /tmp/cloudflare-warp.deb; \
     rm -f /tmp/cloudflare-warp.deb; \
     rm -rf /var/lib/apt/lists/*
+
+# Release identity is applied only after the expensive deterministic package
+# layer so a new source SHA does not force a network reinstall of identical
+# pinned egress dependencies.
+ARG BOOKING_GIT_SHA
+ARG BOOKING_RELEASE_ID
 
 LABEL org.opencontainers.image.vendor="Cloudflare package wrapped by HappyBooking" \
       org.opencontainers.image.title="booking-preprod Telegram egress" \

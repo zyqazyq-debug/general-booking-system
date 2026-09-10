@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Logger, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Logger,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { CreateAuthUserDto } from './dto/create-auth-user.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
@@ -13,7 +21,10 @@ import {
   ReservedSocialLoginResponseDto,
   SocialProviderResponseDto,
   TelegramLoginTicketResponseDto,
+  IdentityScanPendingResponseDto,
+  IdentityScanSuccessResponseDto,
 } from './dto/auth-response.dto';
+import { TelegramLoginTicketStatusDto } from './dto/identity-scan.dto';
 
 @Controller('auth')
 @UseGuards(AppThrottlerGuard)
@@ -73,6 +84,18 @@ export class AuthPublicController {
   @ApiCreatedAuthSuccessResponse(TelegramLoginTicketResponseDto)
   async getTelegramLoginTicket() {
     return this.authService.generateTelegramLoginTicket();
+  }
+
+  @Post('telegram/login-ticket/status')
+  @Header('Cache-Control', 'no-store')
+  @ApiCreatedAuthSuccessResponse([
+    IdentityScanPendingResponseDto,
+    IdentityScanSuccessResponseDto,
+  ])
+  async getTelegramLoginTicketStatus(
+    @Body() body: TelegramLoginTicketStatusDto,
+  ) {
+    return this.authService.checkTelegramLoginTicketStatus(body.ticket_id);
   }
 
   @Post('telegram/webapp-login')

@@ -1,5 +1,6 @@
 export {
   checkIdentityScanStatusApi,
+  checkTelegramLoginTicketStatusApi,
   getTelegramLoginTicketApi,
   getUserById,
   loginApi,
