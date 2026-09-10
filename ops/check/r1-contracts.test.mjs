@@ -185,6 +185,9 @@ test('preproduction Telegram profile enforces migration, readiness and exact evi
   const productionMigration = /^  schema-migrate:[\s\S]*?(?=\n  [a-z][a-z0-9-]+:|(?![\s\S]))/m.exec(releaseCompose)?.[0] || '';
   assert.match(productionMigration, /user:\s*"0:0"/, 'production migration must own its root-only backup receipt');
   assert.match(productionMigration, /<<:\s*\*backend-common/, 'production migration must retain the hardened backend anchor');
+  const executor = await readFile(resolve(root, 'ops/release/execute-fenced-action.mjs'), 'utf8');
+  assert.match(executor, /\[\.\.\.composePrefix, '--profile', '\*', 'config', '--format', 'json'\]/,
+    'rendered admission must activate every one-shot Compose profile');
 });
 
 async function withProbeServer(manifest, callback) {

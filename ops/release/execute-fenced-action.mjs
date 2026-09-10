@@ -836,7 +836,10 @@ async function buildPlan(state, args, runtime) {
   const inspectComposeConfig = async ({ runner, env, timeoutMs }) => {
     if (exactLegacyCompose) return { legacy: true };
     if (runtime.releaseManifest && runtime.releaseRoot && !runtime.enforceTelegramEgressFixture) return { injectedFixture: true };
-    const rendered = await runner(docker, [...composePrefix, 'config', '--format', 'json'], { cwd: paths.releaseDirectory, env, timeoutMs });
+    // `docker compose config` omits services whose profiles are inactive.
+    // Admission must render every one-shot profile before it can prove the
+    // baseline, migration, and webhook isolation contracts.
+    const rendered = await runner(docker, [...composePrefix, '--profile', '*', 'config', '--format', 'json'], { cwd: paths.releaseDirectory, env, timeoutMs });
     assertResult(rendered, EXIT.IDENTITY);
     return verifyTelegramComposeConfig(rendered.stdout);
   };
