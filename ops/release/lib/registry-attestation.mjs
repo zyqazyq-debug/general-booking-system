@@ -82,13 +82,48 @@ function parseJsonRecords(stdout, label) {
   return records;
 }
 
-function decodedPayload(record, label) {
-  const encoded = record?.payload ?? record?.Payload;
-  if (typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+function base64Value(code) {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+}
+
+function strictBase64Bytes(encoded, label) {
+  if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length % 4 !== 0) {
     throw new ContractError(`${label} does not contain a strict base64 payload`);
   }
+  let padding = 0;
+  if (encoded.charCodeAt(encoded.length - 1) === 61) padding += 1;
+  if (encoded.charCodeAt(encoded.length - 2) === 61) padding += 1;
+  const contentLength = encoded.length - padding;
+  for (let index = 0; index < contentLength; index += 1) {
+    if (base64Value(encoded.charCodeAt(index)) === -1) {
+      throw new ContractError(`${label} does not contain a strict base64 payload`);
+    }
+  }
+  for (let index = contentLength; index < encoded.length; index += 1) {
+    if (encoded.charCodeAt(index) !== 61) {
+      throw new ContractError(`${label} does not contain a strict base64 payload`);
+    }
+  }
+  const finalValue = base64Value(encoded.charCodeAt(contentLength - 1));
+  if ((padding === 1 && (finalValue & 0b11) !== 0) ||
+      (padding === 2 && (finalValue & 0b1111) !== 0)) {
+    throw new ContractError(`${label} does not contain a strict base64 payload`);
+  }
+  return Buffer.from(encoded, 'base64');
+}
+
+function decodedPayload(record, label) {
+  const encoded = record?.payload ?? record?.Payload;
   let value;
-  try { value = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')); } catch { throw new ContractError(`${label} payload is not JSON`); }
+  try { value = JSON.parse(strictBase64Bytes(encoded, label).toString('utf8')); } catch (error) {
+    if (error instanceof ContractError) throw error;
+    throw new ContractError(`${label} payload is not JSON`);
+  }
   return value;
 }
 

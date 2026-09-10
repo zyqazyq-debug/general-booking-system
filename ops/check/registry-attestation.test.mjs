@@ -249,6 +249,35 @@ test('pure validators reject wrong subjects, malformed base64, predicate type co
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
+test('attestation verifier accepts a production-scale payload and rejects invalid characters and padding without stack overflow',
+  { timeout: 30_000 }, () => {
+    const document = sbom(digest('1'));
+    document.files = Array.from({ length: 38_000 }, (_, index) => ({
+      path: `/app/node_modules/booking-package-${index}/dist/production-artifact-${index}.js`,
+      digest: `sha256:${index.toString(16).padStart(64, '0')}`,
+    }));
+    const evidenceDigest = sha256(`${canonicalJson(document)}\n`);
+    const predicate = evidencePredicate({
+      kind: 'image-sbom', component: 'backend', releaseId, gitSha, manifestDigest: digest('2'),
+      image, imageDigest, evidenceDigest, document,
+    });
+    const encoded = envelope(ATTESTATION_TYPES['image-sbom'], predicate).payload;
+    const expected = { kind: 'image-sbom', image, imageDigest, predicate };
+    assert.ok(Buffer.byteLength(encoded) > 7 * 1024 * 1024);
+    assert.equal(verifyAttestationOutput(JSON.stringify({ payload: encoded }), expected).length, 1);
+
+    const middle = Math.floor(encoded.length / 2);
+    for (const malformed of [
+      `${encoded.slice(0, middle)}!${encoded.slice(middle + 1)}`,
+      `${encoded.slice(0, -1)}!`,
+      `${encoded.slice(0, middle)}=${encoded.slice(middle + 1)}`,
+      `${encoded}=`,
+      'AB==',
+    ]) {
+      assert.throws(() => verifyAttestationOutput(JSON.stringify({ payload: malformed }), expected), /strict base64/);
+    }
+  });
+
 test('image signature verifier accepts only the paired legacy and Cosign v3 identity contracts', () => {
   const annotations = { 'booking.release-id': releaseId, 'booking.git-sha': gitSha };
   const expected = { image, imageDigest, annotations };
