@@ -221,16 +221,46 @@ export async function listDockerContainers(runtime = {}) {
   if (!Number.isSafeInteger(configuredTimeoutMs) || configuredTimeoutMs < 1) throw new MigrationError('Docker transport limits are invalid');
   const transportRuntime = runtime.dockerJson ? runtime : { ...runtime, dockerDeadlineAt: Date.now() + configuredTimeoutMs };
   const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const validMount = (mount) => isObject(mount) && typeof mount.Source === 'string' && isAbsolute(mount.Source) &&
-    typeof mount.Destination === 'string' && isAbsolute(mount.Destination) && typeof mount.RW === 'boolean';
+  const volumeCache = new Map();
+  async function normalizeMounts(mounts) {
+    if (!Array.isArray(mounts)) throw new MigrationError('Docker container mounts are invalid');
+    const normalized = [];
+    for (const mount of mounts) {
+      if (!isObject(mount) || !['bind', 'volume', 'tmpfs'].includes(mount.Type) || typeof mount.Source !== 'string' ||
+          typeof mount.Destination !== 'string' || !isAbsolute(mount.Destination) || typeof mount.RW !== 'boolean') throw new MigrationError('Docker container mount is invalid');
+      if (mount.Type === 'tmpfs') {
+        if (mount.Source !== '') throw new MigrationError('Docker tmpfs mount source is invalid');
+        continue;
+      }
+      let source = mount.Source;
+      if (mount.Type === 'bind') {
+        if (!isAbsolute(source)) throw new MigrationError('Docker bind mount source is invalid');
+      } else {
+        if (typeof mount.Name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(mount.Name)) throw new MigrationError('Docker volume mount identity is invalid');
+        let volume = volumeCache.get(mount.Name);
+        if (!volume) {
+          try { volume = await dockerJson(`/volumes/${encodeURIComponent(mount.Name)}`, transportRuntime); } catch { throw new MigrationError('cannot resolve Docker volume mount'); }
+          volumeCache.set(mount.Name, volume);
+        }
+        if (!isObject(volume) || volume.Name !== mount.Name || volume.Driver !== 'local' || volume.Scope !== 'local' ||
+            typeof volume.Mountpoint !== 'string' || !isAbsolute(volume.Mountpoint) ||
+            (volume.Options !== null && (!isObject(volume.Options) || Object.keys(volume.Options).length !== 0))) throw new MigrationError('Docker volume inspection is invalid');
+        if (source !== '' && source !== volume.Mountpoint) throw new MigrationError('Docker volume source differs from its inspected mountpoint');
+        source = volume.Mountpoint;
+      }
+      normalized.push({ ...mount, Source: source });
+    }
+    return normalized;
+  }
   let summaries;
   try { summaries = await dockerJson('/containers/json?all=1', transportRuntime); } catch { throw new MigrationError('cannot enumerate containers'); }
   if (!Array.isArray(summaries)) throw new MigrationError('Docker container list is invalid');
   const containers = [];
   for (const summary of summaries) {
     if (!/^[0-9a-f]{64}$/.test(summary?.Id || '') || !Array.isArray(summary?.Names) || summary.Names.length < 1 || summary.Names.some((name) => typeof name !== 'string' || !name.startsWith('/')) ||
-        !Array.isArray(summary?.Mounts) || summary.Mounts.some((mount) => !validMount(mount)) ||
+        !Array.isArray(summary?.Mounts) ||
         !['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(summary?.State)) throw new MigrationError('Docker container summary is invalid');
+    const summaryMounts = await normalizeMounts(summary.Mounts);
     const fixedNames = summary.Names.filter((name) => ['/booking-preprod-control-plane', '/booking-preprod-legacy-active-migration', '/booking-preprod-legacy-active-migration-recovery'].includes(name));
     if (fixedNames.length > 1) throw new MigrationError('Docker container summary has multiple fixed identities');
     const fixedName = fixedNames[0];
@@ -239,11 +269,11 @@ export async function listDockerContainers(runtime = {}) {
       try { inspected = await dockerJson(`/containers/${summary.Id}/json`, transportRuntime); } catch { throw new MigrationError('cannot inspect fixed control container'); }
       if (inspected?.Id !== summary.Id || inspected?.Name !== fixedName) throw new MigrationError('fixed control container identity changed during inspection');
       if (!isObject(inspected.State) || typeof inspected.State.Running !== 'boolean' || !Number.isSafeInteger(inspected.State.Pid) || inspected.State.Pid < 0 ||
-          !Array.isArray(inspected.Mounts) || inspected.Mounts.some((mount) => !validMount(mount)) || !isObject(inspected.Config) ||
+          !Array.isArray(inspected.Mounts) || !isObject(inspected.Config) ||
           typeof inspected.Config.Image !== 'string' || inspected.Config.Image.length < 1 || !isObject(inspected.HostConfig)) throw new MigrationError('fixed control container inspection is invalid');
-      containers.push(inspected);
+      containers.push({ ...inspected, Mounts: await normalizeMounts(inspected.Mounts) });
     } else {
-      containers.push({ Name: fixedName || summary.Names[0], State: { Running: summary.State === 'running', Pid: 0 }, Mounts: summary.Mounts });
+      containers.push({ Name: summary.Names[0], State: { Running: summary.State === 'running', Pid: 0 }, Mounts: summaryMounts });
     }
   }
   return containers;

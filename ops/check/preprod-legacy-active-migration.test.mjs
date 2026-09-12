@@ -322,7 +322,7 @@ test('the post-stage quiescence gate rejects a newly mounted or opened normalize
 
 test('Docker list API never inspects an unrelated container and rechecks every fixed identity', async () => {
   const foreignId = 'a'.repeat(64); const fixedId = 'b'.repeat(64); const calls = [];
-  const foreign = { Id: foreignId, Names: ['/clash-mihomo'], State: 'running', Mounts: [{ Source: '/volume1/docker/clash', Destination: '/config', RW: true }] };
+  const foreign = { Id: foreignId, Names: ['/clash-mihomo'], State: 'running', Mounts: [{ Type: 'bind', Source: '/volume1/docker/clash', Destination: '/config', RW: true }] };
   const fixedSummary = { Id: fixedId, Names: ['/booking-preprod-legacy-active-migration'], State: 'running', Mounts: [] };
   const fixedInspect = { Id: fixedId, Name: '/booking-preprod-legacy-active-migration', State: { Running: true, Pid: 123 }, Mounts: [], Config: { Image: 'fixed' }, HostConfig: {} };
   const containers = await listDockerContainers({ dockerJson: async (path) => {
@@ -331,7 +331,7 @@ test('Docker list API never inspects an unrelated container and rechecks every f
     throw new Error(`unexpected Docker API path: ${path}`);
   } });
   assert.deepEqual(calls, ['/containers/json?all=1', `/containers/${fixedId}/json`]);
-  assert.deepEqual(containers[0].Mounts, foreign.Mounts); assert.equal(containers[1], fixedInspect);
+  assert.deepEqual(containers[0].Mounts, foreign.Mounts); assert.deepEqual(containers[1], fixedInspect);
   calls.length = 0; fixedSummary.State = 'paused'; fixedInspect.State.Paused = true;
   await listDockerContainers({ dockerJson: async (path) => { calls.push(path); return path === '/containers/json?all=1' ? [fixedSummary] : fixedInspect; } });
   assert.deepEqual(calls, ['/containers/json?all=1', `/containers/${fixedId}/json`]);
@@ -340,10 +340,29 @@ test('Docker list API never inspects an unrelated container and rechecks every f
     { ...fixedInspect, Mounts: [{ Source: 'relative', Destination: '/x', RW: false }] }, { ...fixedInspect, Config: null },
     { ...fixedInspect, Config: { Image: '' } }, { ...fixedInspect, HostConfig: null },
   ]) {
-    await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [fixedSummary] : inspected }), /inspection is invalid/);
+    await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [fixedSummary] : inspected }), /(inspection|mount) is invalid/);
   }
   await assert.rejects(listDockerContainers({ dockerJson: async () => [{ Id: foreignId, Names: ['/foreign'], State: 'running' }] }), /summary is invalid/);
   await assert.rejects(listDockerContainers({ dockerJson: async () => [{ ...foreign, State: 'unknown' }] }), /summary is invalid/);
+  const volumeName = 'a'.repeat(64); const volumeSummary = { ...foreign, Mounts: [
+    { Type: 'tmpfs', Source: '', Destination: '/tmp', RW: true },
+    { Type: 'volume', Name: volumeName, Source: '', Destination: '/data', RW: true },
+  ] };
+  calls.length = 0;
+  const resolved = await listDockerContainers({ dockerJson: async (path) => {
+    calls.push(path); return path === '/containers/json?all=1' ? [volumeSummary]
+      : { Name: volumeName, Driver: 'local', Scope: 'local', Mountpoint: '/volume1/@docker/volumes/resolved/_data', Options: null };
+  } });
+  assert.deepEqual(calls, ['/containers/json?all=1', `/volumes/${volumeName}`]);
+  assert.deepEqual(resolved[0].Mounts.map((mount) => mount.Source), ['/volume1/@docker/volumes/resolved/_data']);
+  const ordinaryVolume = { Name: volumeName, Driver: 'local', Scope: 'local', Mountpoint: '/volume1/@docker/volumes/resolved/_data', Options: {} };
+  const populatedSummary = { ...volumeSummary, Mounts: [{ Type: 'volume', Name: volumeName, Source: ordinaryVolume.Mountpoint, Destination: '/data', RW: true }] };
+  calls.length = 0; await listDockerContainers({ dockerJson: async (path) => { calls.push(path); return path === '/containers/json?all=1' ? [populatedSummary] : ordinaryVolume; } });
+  assert.deepEqual(calls, ['/containers/json?all=1', `/volumes/${volumeName}`], 'even a populated volume source must be independently resolved');
+  await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [volumeSummary] : { ...ordinaryVolume, Mountpoint: 'relative' } }), /volume inspection is invalid/);
+  await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [populatedSummary] : { ...ordinaryVolume, Mountpoint: '/different' } }), /source differs/);
+  await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [populatedSummary] : { ...ordinaryVolume, Options: { type: 'none', o: 'bind', device: '/usr/local/libexec/happybooking' } } }), /volume inspection is invalid/);
+  await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [populatedSummary] : { ...ordinaryVolume, Driver: 'plugin' } }), /volume inspection is invalid/);
 });
 
 test('Docker socket transport fails closed on deadline, size, status and truncation', async (t) => {
