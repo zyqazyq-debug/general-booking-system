@@ -590,7 +590,7 @@ test('NAS no-Node launcher verifies its signed host bootstrap before emitting th
   const args = ['--action', 'inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL];
   const result = spawnSync(shell, [launcher, ...args], { encoding: 'utf8', env: f.env }); assert.equal(result.status, 0, result.stderr);
   const argv = result.stdout.trim().split(/\r?\n/);
-  for (const value of ['--network', 'none', '--pid', 'host', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+  for (const value of ['--network', 'none', '--pid', 'host', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'DAC_OVERRIDE', '--security-opt', 'no-new-privileges:true',
     '/usr/local/libexec', '/volume1/happybooking/booking-preprod/.g4/control-plane-install', '/volume1/happybooking/booking-preprod/.g4/receipts',
     '/usr/local/bin/cosign', '/etc/happybooking/trust/control-plane-approver.pub', '/etc/happybooking/trust/control-plane-approver.pub.sha256']) assert.ok(argv.some((item) => item.includes(value)), value);
   assert.ok(argv.some((value) => value.endsWith(`/volume1/happybooking/booking-preprod/.g4/control-plane-install/bundles/${ID}/installer.mjs`)));

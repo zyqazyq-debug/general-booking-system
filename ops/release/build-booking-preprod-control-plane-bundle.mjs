@@ -105,7 +105,7 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
 
   const finalRoot = join(outputRoot, 'bundles', installId); const stagingParent = join(outputRoot, `.bundle-${installId}.${process.pid}.tmp`);
   const staging = join(stagingParent, installId); const validationRoot = join(outputRoot, `.validation-${installId}`);
-  const tuplePath = join(outputRoot, 'approval-tuples', `${installId}.json`); let tuplePublished = false;
+  const tuplePath = join(outputRoot, 'approval-tuples', `${installId}.json`); let tuplePublishedIdentity = null; let tupleBytes = null;
   if (await exists(finalRoot) || await exists(tuplePath)) throw new Error('immutable bundle or approval tuple already exists');
   await mkdir(outputRoot, { recursive: true }); await rm(stagingParent, { recursive: true, force: true }); await rm(validationRoot, { recursive: true, force: true });
   await mkdir(join(staging, 'payload'), { recursive: true });
@@ -152,16 +152,22 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
       archiveCommand, archiveCommandDigest: declaration.archiveCommandDigest, sourceArchiveDigest: declaration.sourceArchiveDigest,
       payloadMapDigest: declaration.payloadMapDigest, inventoryDigest: declaration.inventoryDigest, installerDigest: declaration.installerDigest,
       bootstrapInstallerLauncherDigest, declarationDigest };
-    const tuple = { ...tupleBody, tupleDigest: digest(canonical(tupleBody)) }; const tupleBytes = `${canonical(tuple)}\n`; const tupleTemporary = join(stagingParent, 'approval-tuple.json');
+    const tuple = { ...tupleBody, tupleDigest: digest(canonical(tupleBody)) }; tupleBytes = `${canonical(tuple)}\n`; const tupleTemporary = join(stagingParent, 'approval-tuple.json');
     await writeFile(tupleTemporary, tupleBytes, { flag: 'wx', mode: 0o444 }); await chmod(tupleTemporary, 0o444);
     if ((await readFile(tupleTemporary, 'utf8')) !== tupleBytes) throw new Error('approval tuple readback differs before bundle publication');
-    await mkdir(dirname(tuplePath), { recursive: true }); await link(tupleTemporary, tuplePath); tuplePublished = true;
+    await mkdir(dirname(tuplePath), { recursive: true }); await link(tupleTemporary, tuplePath); tuplePublishedIdentity = await lstat(tuplePath);
     if ((await readFile(tuplePath, 'utf8')) !== tupleBytes) throw new Error('published approval tuple readback differs before bundle publication');
+    await runtime.checkpoint?.('tuple:linked'); await runtime.checkpoint?.('bundle:before-publish');
     await mkdir(dirname(finalRoot), { recursive: true }); await rename(staging, finalRoot); await rm(stagingParent, { recursive: true, force: true }).catch(() => {});
     return { bundlePath: finalRoot, approvalTuplePath: tuplePath, declaration, declarationDigest, tuple };
   } catch (error) {
-    await rm(stagingParent, { recursive: true, force: true }); await rm(validationRoot, { recursive: true, force: true });
-    if (tuplePublished && !(await exists(finalRoot))) await rm(tuplePath, { force: true });
+    await Promise.allSettled([rm(stagingParent, { recursive: true, force: true }), rm(validationRoot, { recursive: true, force: true })]);
+    if (tuplePublishedIdentity) {
+      try {
+        const current = await lstat(tuplePath);
+        if (current.dev === tuplePublishedIdentity.dev && current.ino === tuplePublishedIdentity.ino && (await readFile(tuplePath, 'utf8')) === tupleBytes) await rm(tuplePath);
+      } catch {}
+    }
     throw error;
   }
 }

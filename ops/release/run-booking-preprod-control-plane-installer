@@ -262,7 +262,7 @@ if [ "$action" = 'recover' ]; then
 fi
 set -- run --rm --pull never --name "$installer_container_name" \
   --network none --pid host --user 0:0 --read-only \
-  --cap-drop ALL --security-opt no-new-privileges:true \
+  --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
   --env HOME=/root --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \

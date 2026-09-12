@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,4 +90,16 @@ test('production builder rejects Windows before creating a misleading published 
   await assert.rejects(buildControlPlaneBundle(['--git-sha', f.sha, '--install-id', installId, '--approval-id', 'approval.g4.posix-only'],
     { repoRoot: f.root, outputRoot: f.outputRoot }), /POSIX filesystem/);
   await assert.rejects(access(f.outputRoot), /ENOENT/);
+});
+
+test('tuple and pre-publication failures leave no final bundle, tuple, staging, or validation artifact', { skip: process.platform === 'win32' }, async (t) => {
+  for (const checkpoint of ['tuple:linked', 'bundle:before-publish']) {
+    const f = await committedFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    const installId = `booking-control-20260913T010206Z-${f.sha.slice(0, 12)}`; const tuple = join(f.outputRoot, 'approval-tuples', `${installId}.json`);
+    await assert.rejects(buildControlPlaneBundle(['--git-sha', f.sha, '--install-id', installId, '--approval-id', 'approval.g4.atomic-publication'], {
+      ...builderRuntime(f), checkpoint: async (value) => { if (value === checkpoint) throw new Error(`injected ${checkpoint}`); },
+    }), new RegExp(`injected ${checkpoint.replace(':', '\\:')}`));
+    await assert.rejects(access(join(f.outputRoot, 'bundles', installId)), /ENOENT/); await assert.rejects(access(tuple), /ENOENT/);
+    assert.equal((await readdir(f.outputRoot)).some((name) => name.startsWith('.bundle-') || name.startsWith('.validation-')), false);
+  }
 });
