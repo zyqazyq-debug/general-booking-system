@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, parse } from 'node:path';
 import {
-  runLegacyActiveMigration, listDockerContainers, SimulatedLegacyMigrationCrash,
+  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, SimulatedLegacyMigrationCrash,
 } from '../release/migrate-booking-preprod-legacy-active-root.mjs';
 
 const MIGRATION = 'booking-legacy-active-20260913T010203Z-536b435723ae';
@@ -408,4 +408,11 @@ test('Docker socket transport fails closed on deadline, size, status and truncat
   await serve((_request, response) => { response.writeHead(200); response.write('['); response.destroy(); }, async (socketPath) => {
     await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath }), /cannot enumerate containers/);
   });
+});
+
+test('self migration security options admit only the exact daemon-normalized Synology variant', () => {
+  assert.equal(hasExactSelfSecurityOptions(['no-new-privileges:true']), true);
+  assert.equal(hasExactSelfSecurityOptions(['no-new-privileges:true', 'label=disable']), true);
+  for (const value of [[], ['label=disable'], ['no-new-privileges:true', 'label=disable', 'apparmor=unconfined'],
+    ['no-new-privileges:true', 'no-new-privileges:true'], null, 'no-new-privileges:true']) assert.equal(hasExactSelfSecurityOptions(value), false);
 });

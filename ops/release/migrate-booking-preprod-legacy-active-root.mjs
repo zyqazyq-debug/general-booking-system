@@ -279,6 +279,13 @@ export async function listDockerContainers(runtime = {}) {
   return containers;
 }
 
+export function hasExactSelfSecurityOptions(value) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) return false;
+  const sorted = [...value].sort();
+  return canonical(sorted) === canonical(['no-new-privileges:true']) ||
+    canonical(sorted) === canonical(['label=disable', 'no-new-privileges:true']);
+}
+
 async function assertQuiescent(paths, runtime, now, action = null, additionalProtectedPaths = []) {
   if (runtime.assertQuiescent) return runtime.assertQuiescent();
   for (const path of [paths.runtimeLock, paths.installLock, paths.installJournal, `${paths.deployState}.lock`]) if (await exists(path)) throw new MigrationError(`conflicting lock or journal exists: ${basename(path)}`);
@@ -317,7 +324,7 @@ async function assertQuiescent(paths, runtime, now, action = null, additionalPro
       const self = ['/booking-preprod-legacy-active-migration', '/booking-preprod-legacy-active-migration-recovery'].includes(container?.Name) && container?.State?.Running &&
         container?.State?.Pid === process.pid && container?.Config?.Image === CONTROL_IMAGE && parentMounts.length === 1 && mountsExact && host.PidMode === 'host' &&
         host.NetworkMode === 'none' && host.ReadonlyRootfs === true && canonical(host.CapDrop || []) === canonical(['ALL']) && canonical(host.CapAdd || []) === canonical(['DAC_OVERRIDE']) &&
-        canonical(host.SecurityOpt || []) === canonical(['no-new-privileges:true']);
+        hasExactSelfSecurityOptions(host.SecurityOpt);
       for (const mount of inspectedMounts) {
         const source = mount.canonicalSource;
         const contains = (parent, child) => { const delta = relative(resolve(parent), resolve(child)); return delta === '' || (!delta.startsWith('..') && !isAbsolute(delta)); };
