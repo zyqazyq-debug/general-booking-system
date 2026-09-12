@@ -9,6 +9,11 @@ import { buildControlPlaneBundle, FIXED_CONTROL_PLANE_SOURCES } from '../release
 import { inspectControlPlaneSourceArchive } from '../release/install-booking-preprod-control-plane.mjs';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const EXECUTABLE_SOURCES = new Set([
+  'ops/release/run-booking-preprod-control-plane',
+  'ops/release/run-booking-preprod-control-plane-installer',
+  'ops/release/switch-preprod-ingress',
+]);
 function git(repo, args) { const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' }); assert.equal(result.status, 0, result.stderr); return result.stdout.trim(); }
 
 async function committedFixture() {
@@ -16,17 +21,21 @@ async function committedFixture() {
   const runningInstaller = await readFile(join(project, 'ops', 'release', 'install-booking-preprod-control-plane.mjs'));
   for (const sourcePath of FIXED_CONTROL_PLANE_SOURCES) {
     const path = join(root, ...sourcePath.split('/')); await mkdir(dirname(path), { recursive: true });
+    const executable = EXECUTABLE_SOURCES.has(sourcePath);
     const bytes = sourcePath === 'ops/release/install-booking-preprod-control-plane.mjs' ? runningInstaller
-      : sourcePath.endsWith('run-booking-preprod-control-plane') || sourcePath.endsWith('switch-preprod-ingress') ? Buffer.from('#!/bin/sh\nexit 0\n')
+      : executable ? Buffer.from('#!/bin/sh\nexit 0\n')
       : Buffer.from(`export const fixture = ${JSON.stringify(sourcePath)};\n`);
-    await writeFile(path, bytes); await chmod(path, sourcePath.endsWith('run-booking-preprod-control-plane') || sourcePath.endsWith('switch-preprod-ingress') ? 0o755 : 0o644);
+    await writeFile(path, bytes); await chmod(path, executable ? 0o755 : 0o644);
   }
-  git(root, ['add', '--', ...FIXED_CONTROL_PLANE_SOURCES]); git(root, ['commit', '-m', 'exact reviewed control plane']);
+  git(root, ['add', '--', ...FIXED_CONTROL_PLANE_SOURCES]);
+  for (const sourcePath of EXECUTABLE_SOURCES) git(root, ['update-index', '--chmod=+x', '--', sourcePath]);
+  for (const sourcePath of EXECUTABLE_SOURCES) assert.match(git(root, ['ls-files', '--stage', '--', sourcePath]), /^100755 /);
+  git(root, ['commit', '-m', 'exact reviewed control plane']);
   return { root, sha: git(root, ['rev-parse', 'HEAD']), outputRoot: join(root, '.g4', 'build') };
 }
-const builderRuntime = (f) => ({ repoRoot: f.root, outputRoot: f.outputRoot, allowInsecureTestPlatform: true });
+const builderRuntime = (f) => ({ repoRoot: f.root, outputRoot: f.outputRoot });
 
-test('builder uses exact clean HEAD committed bytes and emits an installer-verified approval tuple', async (t) => {
+test('builder uses exact clean HEAD committed bytes and emits an installer-verified approval tuple', { skip: process.platform === 'win32' }, async (t) => {
   const f = await committedFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const installId = `booking-control-20260913T010203Z-${f.sha.slice(0, 12)}`; const approvalId = 'approval.g4.control-plane.test';
   const result = await buildControlPlaneBundle(['--git-sha', f.sha, '--install-id', installId, '--approval-id', approvalId], builderRuntime(f));
@@ -46,7 +55,7 @@ test('builder rejects refs/replace even though every Git object read disables re
     builderRuntime(f)), /replacement refs are forbidden/);
 });
 
-test('builder strips inherited Git repository and object database redirection variables', async (t) => {
+test('builder strips inherited Git repository and object database redirection variables', { skip: process.platform === 'win32' }, async (t) => {
   const f = await committedFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE, GIT_OBJECT_DIRECTORY: process.env.GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES: process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES };
   Object.assign(process.env, { GIT_DIR: join(f.root, 'missing-git-dir'), GIT_WORK_TREE: join(f.root, 'wrong-tree'), GIT_OBJECT_DIRECTORY: join(f.root, 'wrong-objects'), GIT_ALTERNATE_OBJECT_DIRECTORIES: join(f.root, 'wrong-alternates') });
@@ -66,6 +75,11 @@ test('builder refuses a non-HEAD SHA, dirty fixed source and an already publishe
   await assert.rejects(buildControlPlaneBundle(args, builderRuntime(f)), /source set is dirty/);
   git(f.root, ['checkout', '--', 'ops/release/manage-deploy-state.mjs']);
   await assert.rejects(buildControlPlaneBundle(['--git-sha', '0'.repeat(40), '--install-id', `booking-control-20260913T010203Z-${'0'.repeat(12)}`, '--approval-id', 'approval.g4.test'], builderRuntime(f)), /exact clean HEAD/);
+  if (process.platform === 'win32') {
+    await assert.rejects(buildControlPlaneBundle(args, builderRuntime(f)), /POSIX filesystem/);
+    await assert.rejects(access(f.outputRoot), /ENOENT/);
+    return;
+  }
   await buildControlPlaneBundle(args, builderRuntime(f));
   await assert.rejects(buildControlPlaneBundle(args, builderRuntime(f)), /EEXIST|exist/i);
 });

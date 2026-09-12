@@ -39,7 +39,13 @@ const REQUIRED_FILES = [
   'control-plane/ops/release/generate-schema-diff-receipt.mjs',
   'control-plane/ops/release/run-booking-preprod-control-plane-installer',
 ];
-const EXECUTABLE_FILES = new Set(['run-booking-preprod-control-plane', 'switch-preprod-ingress']);
+const EXECUTABLE_FILES = new Set([
+  'run-booking-preprod-control-plane',
+  'switch-preprod-ingress',
+  'control-plane/ops/release/run-booking-preprod-control-plane',
+  'control-plane/ops/release/run-booking-preprod-control-plane-installer',
+  'control-plane/ops/release/switch-preprod-ingress',
+]);
 const PHASES = new Set(['PREPARED', 'OLD_RETIRED', 'ACTIVE_MOVED', 'NEW_ACTIVE', 'RECEIPT_PUBLISHED', 'COMPLETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
