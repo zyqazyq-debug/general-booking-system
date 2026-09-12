@@ -96,15 +96,18 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
   const { sha, installId, approvalId } = parseArgs(argv);
   const repoRoot = resolve(runtime.repoRoot || join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
   const outputRoot = resolve(runtime.outputRoot || join(repoRoot, '.g4', 'control-plane-bundle-build'));
+  if (process.platform === 'win32' && runtime.allowInsecureTestPlatform !== true) throw new Error('control-plane bundle must be built on a POSIX filesystem');
   if (git(repoRoot, ['rev-parse', 'HEAD']).trim() !== sha) throw new Error('Git SHA must be the exact clean HEAD');
   if (git(repoRoot, ['replace', '-l']).trim()) throw new Error('Git replacement refs are forbidden');
   if (git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', ...FIXED_CONTROL_PLANE_SOURCES]).trim()) throw new Error('fixed control-plane source set is dirty');
   const tracked = git(repoRoot, ['ls-tree', '-r', '--name-only', sha, '--', ...FIXED_CONTROL_PLANE_SOURCES]).trim().split(/\r?\n/).filter(Boolean).sort();
   if (canonical(tracked) !== canonical(FIXED_CONTROL_PLANE_SOURCES)) throw new Error('fixed control-plane source allowlist is not exactly committed');
 
-  const finalRoot = join(outputRoot, 'bundles', installId); const staging = join(outputRoot, `.bundle-${installId}.${process.pid}.tmp`);
+  const finalRoot = join(outputRoot, 'bundles', installId); const stagingParent = join(outputRoot, `.bundle-${installId}.${process.pid}.tmp`);
+  const staging = join(stagingParent, installId); const validationRoot = join(outputRoot, `.validation-${installId}`);
   if (await exists(finalRoot)) throw new Error('immutable bundle already exists');
-  await mkdir(outputRoot, { recursive: true }); await rm(staging, { recursive: true, force: true }); await mkdir(join(staging, 'payload'), { recursive: true });
+  await mkdir(outputRoot, { recursive: true }); await rm(stagingParent, { recursive: true, force: true }); await rm(validationRoot, { recursive: true, force: true });
+  await mkdir(join(staging, 'payload'), { recursive: true });
   try {
     const payloadMap = [];
     for (const sourcePath of FIXED_CONTROL_PLANE_SOURCES) {
@@ -133,12 +136,10 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
       trackedAllowlistDigest: digest(canonical(trackedFiles)), trackedFiles, payloadMap, payloadMapDigest: digest(canonical(payloadMap)),
       archiveCommand, archiveCommandDigest: digest(canonical(archiveCommand)) };
     await writeFile(join(staging, 'bundle-declaration.json'), `${canonical(declaration)}\n`); await chmod(join(staging, 'bundle-declaration.json'), 0o444);
-    await mkdir(dirname(finalRoot), { recursive: true }); await rename(staging, finalRoot);
-
-    const validationRoot = join(outputRoot, `.validation-${installId}`); const receiptRoot = join(validationRoot, 'receipts'); const installParent = join(validationRoot, 'libexec');
+    const receiptRoot = join(validationRoot, 'receipts'); const installParent = join(validationRoot, 'libexec');
     await mkdir(receiptRoot, { recursive: true }); await mkdir(installParent, { recursive: true });
     const verified = await runControlPlaneInstaller(['--action', 'inventory', '--install-id', installId, '--git-sha', sha, '--approval-id', approvalId], {
-      paths: { installRoot: join(installParent, 'happybooking'), rollbackRoot: join(installParent, 'happybooking.rollback'), bundleRoot: dirname(finalRoot), receiptRoot,
+      paths: { installRoot: join(installParent, 'happybooking'), rollbackRoot: join(installParent, 'happybooking.rollback'), bundleRoot: stagingParent, receiptRoot,
         lockPath: join(installParent, '.happybooking-control-plane-install.lock'), journalPath: join(installParent, '.happybooking-control-plane-install.journal.json'), deployStatePath: join(validationRoot, 'deploy-state.json') },
       expectedUid: null, enforceMode: false, assertQuiescent: async () => {}, assertNotMountpoints: async () => {}, syncDirectory: async () => {}, syncFile: async () => {},
     });
@@ -151,9 +152,10 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
       payloadMapDigest: declaration.payloadMapDigest, inventoryDigest: declaration.inventoryDigest, installerDigest: declaration.installerDigest,
       bootstrapInstallerLauncherDigest, declarationDigest };
     const tuple = { ...tupleBody, tupleDigest: digest(canonical(tupleBody)) }; const tuplePath = join(outputRoot, 'approval-tuples', `${installId}.json`);
+    await mkdir(dirname(finalRoot), { recursive: true }); await rename(staging, finalRoot); await rm(stagingParent, { recursive: true, force: true });
     await mkdir(dirname(tuplePath), { recursive: true }); await writeFile(tuplePath, `${canonical(tuple)}\n`);
     return { bundlePath: finalRoot, approvalTuplePath: tuplePath, declaration, declarationDigest, tuple };
-  } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
+  } catch (error) { await rm(stagingParent, { recursive: true, force: true }); await rm(validationRoot, { recursive: true, force: true }); throw error; }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
