@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,14 @@ const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}` : JSON.stringify(value);
 const digest = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+
+async function freezePayloadTree(root) {
+  async function walk(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await walk(join(directory, entry.name));
+    await chmod(directory, 0o555); const handle = await open(directory, 'r'); try { await handle.sync(); } finally { await handle.close(); }
+  }
+  await walk(root);
+}
 
 export const FIXED_CONTROL_PLANE_SOURCES = Object.freeze([
   'ops/release/attest-registry-evidence.mjs',
@@ -38,6 +46,7 @@ export const FIXED_CONTROL_PLANE_SOURCES = Object.freeze([
   'ops/release/lib/state-machine.mjs',
   'ops/release/manage-deploy-state.mjs',
   'ops/release/manage-preprod-singletons.mjs',
+  'ops/release/migrate-booking-preprod-legacy-active-root.mjs',
   'ops/release/probe-fenced-business.mjs',
   'ops/release/probe-fenced-candidate.mjs',
   'ops/release/probe-fenced-public.mjs',
@@ -130,7 +139,8 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
       }
     } finally { await rm(mirrorParent, { recursive: true, force: true }); }
     await writeFile(join(staging, 'source-archive.tar'), archive); await chmod(join(staging, 'source-archive.tar'), 0o444);
-    const inventory = await inspectControlPlaneInventory(join(staging, 'payload'), { uid: null, source: true, enforceMode: false });
+    await freezePayloadTree(join(staging, 'payload'));
+    const inventory = await inspectControlPlaneInventory(join(staging, 'payload'), { uid: null, strict: true, enforceMode: true });
     const trackedFiles = inventory.entries.filter((entry) => entry.type === 'file').map((entry) => entry.path).sort();
     const declaration = { schema: 'booking.preprod-control-plane-bundle/v1', installId, gitSha: sha, approvalId,
       sourceArchiveDigest: digest(archive), installerDigest: digest(installerBytes), inventoryDigest: inventory.digest,

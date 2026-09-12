@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,6 +150,27 @@ test('active inventory is fixed-path, strict, host-bound and read-only', async (
   await assert.rejects(runControlPlaneInstaller(['--action', 'active-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], f.runtime), /real directory|symlink/);
 });
 
+test('bundle inventory verifies only the immutable bundle before receipt and quiescence gates', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const result = await runControlPlaneInstaller(['--action', 'bundle-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], {
+    ...f.runtime, paths: { ...f.paths, receiptRoot: join(f.root, 'missing-receipts') }, assertQuiescent: async () => { throw new Error('must not run'); },
+  });
+  assert.equal(result.action, 'bundle-inventory'); assert.equal(result.inventoryDigest, f.inv.digest);
+});
+
+test('bundle inventory rejects hardlink aliases and actual payload mode drift', async (t) => {
+  for (const scenario of ['hardlink', 'file-mode', 'directory-mode', 'root-mode']) {
+    if (process.platform === 'win32' && scenario !== 'hardlink') continue;
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    const payloadRoot = join(f.paths.bundleRoot, ID, 'payload');
+    if (scenario === 'hardlink') await link(join(payloadRoot, 'switch-preprod-ingress.mjs'), join(f.root, 'outside-alias'));
+    if (scenario === 'file-mode') await chmod(join(payloadRoot, 'switch-preprod-ingress'), 0o744);
+    if (scenario === 'directory-mode') await chmod(join(payloadRoot, 'control-plane', 'ops'), 0o755);
+    if (scenario === 'root-mode') await chmod(payloadRoot, 0o755);
+    await assert.rejects(runControlPlaneInstaller(['--action', 'bundle-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], { ...f.runtime, enforceMode: scenario !== 'hardlink' }), /hard-linked|mode drift/, scenario);
+  }
+});
+
 test('install re-inventories active and rejects mutation after independently approved inventory', async (t) => {
   const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const target = join(f.paths.installRoot, 'run-booking-preprod-control-plane');
@@ -157,6 +178,58 @@ test('install re-inventories active and rejects mutation after independently app
   await assert.rejects(runControlPlaneInstaller(f.installArgs, f.runtime), /independently approved inventory/);
   assert.match(await readFile(target, 'utf8'), /changed-after-approval/);
   assert.equal(await existsLocal(f.paths.journalPath), false);
+});
+
+test('approval cannot predate the active inventory observation', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const path = join(f.paths.approvalRoot, ID, 'approver-receipt.json');
+  const receipt = JSON.parse(await readFile(path, 'utf8')); receipt.approvedAt = '2026-09-12T02:03:01.000Z';
+  const { receiptDigest: ignored, ...body } = receipt; receipt.receiptDigest = digest(canonical(body)); await chmod(path, 0o600); await writeFile(path, `${canonical(receipt)}\n`); await chmod(path, 0o400);
+  const args = [...f.installArgs]; args[args.indexOf('--approver-receipt-digest') + 1] = receipt.receiptDigest;
+  await assert.rejects(runControlPlaneInstaller(args, f.runtime), /not bound to the approval tuple/);
+});
+
+test('migration approval-check binds v3 action, migration, transaction and verification time', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const migrationId = 'booking-legacy-active-20260913T010203Z-536b435723ae'; const transactionId = '10000000-0000-4000-8000-000000000013';
+  const path = join(f.paths.approvalRoot, ID, 'approver-receipt.json');
+  async function save(overrides = {}) {
+    const base = { ...f.approverReceipt, schema: 'booking.preprod.control-plane-approval-receipt/v3', migrationContext: { migrationId, allowedActions: ['migrate', 'recover'], transactionId,
+      predecessorReceiptDigest: null, expectedNormalizedInventoryDigest: null }, ...overrides }; delete base.receiptDigest;
+    const receipt = { ...base, receiptDigest: digest(canonical(base)) }; await chmod(path, 0o600); await writeFile(path, `${canonical(receipt)}\n`); await chmod(path, 0o400); return receipt;
+  }
+  const receipt = await save();
+  const args = ['--action', 'approval-check', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--approval-tuple-digest', f.tuple.tupleDigest,
+    '--approver-receipt-digest', receipt.receiptDigest, '--migration-id', migrationId, '--migration-action', 'migrate', '--transaction-id', transactionId];
+  const result = await runControlPlaneInstaller(args, f.runtime); assert.equal(result.status, 'pass'); assert.equal(result.transactionId, transactionId);
+  const wrongAction = [...args]; wrongAction[wrongAction.indexOf('--migration-action') + 1] = 'rollback';
+  await assert.rejects(runControlPlaneInstaller(wrongAction, f.runtime), /migration approval context/);
+  const wrongId = [...args]; wrongId[wrongId.indexOf('--migration-id') + 1] = 'booking-legacy-active-20260913T010203Z-000000000000';
+  await assert.rejects(runControlPlaneInstaller(wrongId, f.runtime), /migration approval context/);
+  const future = await save({ approvedAt: '2026-09-12T02:03:05.000Z' }); const futureArgs = [...args]; futureArgs[futureArgs.indexOf('--approver-receipt-digest') + 1] = future.receiptDigest;
+  await assert.rejects(runControlPlaneInstaller(futureArgs, f.runtime), /verification time/);
+});
+
+test('rollback and rollback-recovery approval-check bind the immutable predecessor receipt', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const migrationId = 'booking-legacy-active-20260913T010203Z-536b435723ae'; const transactionId = '10000000-0000-4000-8000-000000000014';
+  const normalized = digest('normalized-tree');
+  const predecessorBody = { schema: 'booking.preprod-legacy-active-migration-receipt/v1', status: 'pass', action: 'migrate', environment: 'preprod', project: 'booking-preprod',
+    transactionId: '10000000-0000-4000-8000-000000000013', migrationId, approvalId: 'approval.g4.legacy.migrate', rawInventoryDigest: f.active.digest,
+    normalizedInventoryDigest: normalized, rawArchiveName: `.happybooking-legacy-raw-${migrationId}`, migratedAt: '2026-09-12T02:03:03.000Z' };
+  const predecessor = { ...predecessorBody, receiptDigest: digest(canonical(predecessorBody)) };
+  const predecessorPath = join(f.paths.receiptRoot, `control-plane-legacy-migration-${migrationId}.json`); await writeFile(predecessorPath, `${canonical(predecessor)}\n`); await chmod(predecessorPath, 0o400);
+  const receiptBody = { ...f.approverReceipt, schema: 'booking.preprod.control-plane-approval-receipt/v3', migrationContext: { migrationId, allowedActions: ['rollback', 'recover'], transactionId,
+    predecessorReceiptDigest: predecessor.receiptDigest, expectedNormalizedInventoryDigest: normalized } }; delete receiptBody.receiptDigest;
+  const receipt = { ...receiptBody, receiptDigest: digest(canonical(receiptBody)) }; const receiptPath = join(f.paths.approvalRoot, ID, 'approver-receipt.json');
+  await chmod(receiptPath, 0o600); await writeFile(receiptPath, `${canonical(receipt)}\n`); await chmod(receiptPath, 0o400);
+  const common = ['--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--approval-tuple-digest', f.tuple.tupleDigest, '--approver-receipt-digest', receipt.receiptDigest,
+    '--migration-id', migrationId, '--transaction-id', transactionId, '--predecessor-receipt-digest', predecessor.receiptDigest, '--expected-normalized-inventory-digest', normalized];
+  for (const action of ['rollback', 'recover']) {
+    const result = await runControlPlaneInstaller(['--action', 'approval-check', ...common, '--migration-action', action], f.runtime); assert.equal(result.action, action);
+  }
+  const wrong = ['--action', 'approval-check', ...common, '--migration-action', 'rollback']; wrong[wrong.indexOf('--predecessor-receipt-digest') + 1] = digest('wrong');
+  await assert.rejects(runControlPlaneInstaller(wrong, f.runtime), /migration approval context|predecessor/);
 });
 
 test('every install rename/journal/receipt crash point is restart-recoverable without deleting the stale lock', async (t) => {
@@ -564,10 +637,13 @@ async function bootstrapFixture() {
   const active = join(root, 'usr', 'local', 'libexec', 'happybooking'); const hostIdentity = join(root, 'etc', 'machine-id');
   const bundle = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4', 'control-plane-install', 'bundles', ID); const approval = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4', 'control-plane-install', 'approvals', ID);
   const trust = join(root, 'etc', 'happybooking', 'trust'); const cosign = join(root, 'usr', 'local', 'bin', 'cosign');
-  for (const path of [dirname(launcher), bundle, approval, trust, dirname(cosign), dirname(hostIdentity)]) await mkdir(path, { recursive: true });
+  const receiptRoot = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4', 'receipts');
+  const stateProject = join(root, 'var', 'lib', 'happybooking', 'deploy-state', 'preprod', 'booking-preprod');
+  for (const path of [dirname(launcher), bundle, approval, receiptRoot, stateProject, trust, dirname(cosign), dirname(hostIdentity)]) await mkdir(path, { recursive: true });
   await payload(active, 'bootstrap-old'); await writeFile(hostIdentity, '0123456789abcdef0123456789abcdef\n');
   const launcherBytes = await readFile(join(repo, 'ops', 'release', 'run-booking-preprod-control-plane-installer')); await writeFile(launcher, launcherBytes); await chmod(launcher, 0o755);
   await writeFile(join(bundle, 'installer.mjs'), '#!/usr/bin/env node\n'); await chmod(join(bundle, 'installer.mjs'), 0o755);
+  const migrator = join(bundle, 'payload', 'control-plane', 'ops', 'release', 'migrate-booking-preprod-legacy-active-root.mjs'); await mkdir(dirname(migrator), { recursive: true }); await writeFile(migrator, '#!/usr/bin/env node\n'); await chmod(migrator, 0o444);
   await writeFile(cosign, '#!/bin/sh\n[ "$1" = verify-blob ] && [ "$(cat "$5")" = valid ]\n'); await chmod(cosign, 0o755);
   const key = join(trust, 'control-plane-approver.pub'); const anchor = `${key}.sha256`; await writeFile(key, 'approver-public-key\n'); const keyDigest = digest(await readFile(key)); await writeFile(anchor, `${keyDigest}\n`);
   const tupleBody = { schema: 'booking.preprod-control-plane-approval-tuple/v1', status: 'awaiting-independent-approval', installId: ID, gitSha: GIT, approvalId: APPROVAL,
@@ -581,7 +657,7 @@ async function bootstrapFixture() {
   const receipt = { ...receiptBody, receiptDigest: digest(canonical(receiptBody)) }; await writeFile(join(approval, 'approval-tuple.json'), `${canonical(tuple)}\n`); await writeFile(join(approval, 'approver-receipt.json'), `${canonical(receipt)}\n`); await writeFile(join(approval, 'approver-receipt.sig'), 'valid\n');
   const env = { ...process.env, BOOKING_CONTROL_PLANE_DRY_RUN: 'true', BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_ROOT: shellPath(root) };
   const args = ['--action', 'inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL];
-  return { root, launcher, active, hostIdentity, bundle, approval, trust, cosign, env, args };
+  return { root, launcher, active, hostIdentity, bundle, approval, receiptRoot, stateProject, trust, cosign, migrator, env, args, tuple, receipt, keyDigest, activeInventory };
 }
 
 test('NAS no-Node launcher verifies its signed host bootstrap before emitting the isolated Docker plan', async (t) => {
@@ -619,6 +695,47 @@ test('pre-approval active inventory bootstrap has a read-only Docker boundary an
   assert.equal(argv.some((value) => value.includes('docker.sock')), false);
   assert.equal(argv.some((value) => value.includes('/var/lib/happybooking')), false);
   assert.equal(argv.includes('--pid'), false);
+});
+
+test('legacy mutation is rejected before signed v3 context and then emits only the exact approved transaction', async (t) => {
+  const f = await bootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const migrationId = 'booking-legacy-active-20260913T010203Z-536b435723ae';
+  const transactionId = '10000000-0000-4000-8000-000000000013';
+  const digestValue = f.activeInventory.digest;
+  await rm(join(f.approval, 'approver-receipt.json')); await rm(join(f.approval, 'approver-receipt.sig'));
+  const unsigned = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--migration-id', migrationId, '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'true'], { encoding: 'utf8', env: f.env });
+  assert.notEqual(unsigned.status, 0); assert.equal(unsigned.stdout.includes('LEGACY_MIGRATION'), false);
+  const body = { ...f.receipt, schema: 'booking.preprod.control-plane-approval-receipt/v3', migrationContext: { migrationId, allowedActions: ['migrate', 'recover'], transactionId,
+    predecessorReceiptDigest: null, expectedNormalizedInventoryDigest: null } }; delete body.receiptDigest;
+  const receipt = { ...body, receiptDigest: digest(canonical(body)) };
+  await writeFile(join(f.approval, 'approver-receipt.json'), `${canonical(receipt)}\n`); await writeFile(join(f.approval, 'approver-receipt.sig'), 'valid\n');
+  const result = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--migration-id', migrationId, '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'true'], { encoding: 'utf8', env: f.env });
+  assert.equal(result.status, 0, result.stderr); const argv = result.stdout.trim().split(/\r?\n/);
+  assert.ok(argv.includes('LEGACY_BUNDLE_PREFLIGHT')); assert.ok(argv.includes('LEGACY_APPROVAL_PREFLIGHT')); assert.ok(argv.includes('LEGACY_MIGRATION'));
+  assert.ok(argv.includes('booking-preprod-legacy-bundle-preflight')); assert.ok(argv.includes('booking-preprod-legacy-active-migration'));
+  assert.ok(argv.some((value) => value.endsWith('/payload/control-plane/ops/release/migrate-booking-preprod-legacy-active-root.mjs')));
+  assert.ok(argv.includes('--network') && argv.includes('none') && argv.includes('--pid') && argv.includes('host'));
+  const preflight = argv.slice(argv.indexOf('LEGACY_BUNDLE_PREFLIGHT'), argv.indexOf('LEGACY_MIGRATION'));
+  assert.ok(preflight.includes('bundle-inventory')); assert.equal(preflight.includes('--pid'), false); assert.equal(preflight.some((value) => value.includes('docker.sock')), false);
+  assert.equal(preflight.some((value) => value.includes('/var/lib/happybooking')), false); assert.equal(preflight.some((value) => value.includes('/usr/local/libexec') && !value.includes('/bundles/')), false);
+  assert.ok(argv.includes('--cap-add') && argv.includes('DAC_OVERRIDE')); assert.equal(argv.some((value) => value.includes('booking-prod')), false);
+  for (const bad of [
+    ['--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--migration-id', '../../prod', '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'true'],
+    ['--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--migration-id', migrationId, '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'false'],
+    ['--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--migration-id', migrationId, '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'true', '--project', 'booking-prod'],
+  ]) assert.notEqual(spawnSync(shell, [shellPath(f.launcher), ...bad], { encoding: 'utf8', env: f.env }).status, 0);
+});
+
+test('legacy inventory has no PID namespace, Docker socket, state or writable host mount', async (t) => {
+  const f = await bootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const result = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--migration-id', 'booking-legacy-active-20260913T010203Z-536b435723ae'], { encoding: 'utf8', env: f.env });
+  assert.equal(result.status, 0, result.stderr); const argv = result.stdout.trim().split(/\r?\n/); const migration = argv.slice(argv.indexOf('LEGACY_MIGRATION'));
+  assert.equal(migration.includes('--pid'), false); assert.equal(migration.some((value) => value.includes('docker.sock')), false);
+  assert.equal(migration.some((value) => value.includes('/var/lib/happybooking')), false);
+  for (const value of migration.filter((item) => item.startsWith('type=bind,src='))) assert.ok(value.endsWith(',readonly'), value);
 });
 
 test('host bootstrap rejects tampered IMAGE/path/tuple/signature before any Docker dry-run output', async (t) => {

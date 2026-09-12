@@ -136,18 +136,21 @@ the fixed path, verifies that it and every parent through `/usr/local/libexec`
 are root-owned, non-symlinked and not group/other writable, and hashes its own
 bytes. That digest must equal `bootstrapInstallerLauncherDigest` in the
 self-digested approval tuple. Except for the isolated pre-approval
-`active-inventory` action described above, it then recomputes the signed approver receipt,
+`active-inventory`, `bundle-inventory`, and `legacy-inventory` actions described
+here, it then recomputes the signed approver receipt,
 requires the receipt to bind the same tuple/install/Git/approval identity,
 validates the dedicated public key against its root-owned digest anchor, and
 runs host Cosign `verify-blob`. It addresses `sha256sum`, `stat`, and `readlink`
-through fixed `/bin` paths, checks their root-owned trusted directory in the
+through fixed `/usr/bin` paths, checks their root-owned trusted directory in the
 real path, and admits only the architecture-specific reviewed Cosign 3.1.2
 binary digest. The bundle and approval chains are checked through the fixed
 `/volume1/happybooking/booking-preprod/.g4` trust root, and the approver-key
 chain through the fixed `/etc/happybooking` trust root; every directory and
 consumed child in those chains must be root-owned, non-symlinked and not
 group/other writable. The Cosign binary receives the same checks through
-`/usr/local/bin`.
+`/usr/local/bin`. The fixed Synology utility paths are `/usr/bin/sha256sum`,
+`/usr/bin/stat`, and `/usr/bin/readlink`; each is checked through the trusted
+`/usr/bin` directory before use.
 Changing the bootstrap `IMAGE`, executing a copied or symlinked launcher,
 widening a launcher/parent/mount-root mode, replacing the tuple, or substituting
 the signature therefore stops before Docker. The bootstrap test-root facility
@@ -158,7 +161,94 @@ run-booking-preprod-control-plane-installer --action inventory \
   --install-id <install-id> --git-sha <40-hex> --approval-id <approval-id>
 ```
 
-Before creating the signed approval receipt, obtain its legacy-active binding:
+Before creating the install approval, obtain the legacy-active binding. Only
+`legacy-inventory` is pre-approval. Every mutation requires a separately signed
+`booking.preprod.control-plane-approval-receipt/v3`. In addition to all v2
+fields, v3 has one exact `migrationContext` object with exactly
+`migrationId`, `allowedActions`, `transactionId`,
+`predecessorReceiptDigest`, and `expectedNormalizedInventoryDigest`.
+`approvedAt` must be at or after `activeInventoryObservedAt` and must not be in
+the future at verification time. The Node `approval-check` repeats the exact
+tuple, bundle, host, key-anchor, signature, timestamp, action and context
+verification in a read-only container before any migration container receives
+the Docker socket or a writable parent mount.
+
+The one reviewed pre-existing NAS layout must first be normalized without
+editing the live tree in place. The same fixed bootstrap launcher exposes only
+`legacy-inventory`, `legacy-migrate`, `legacy-recover`, and `legacy-rollback`.
+It first runs the bundle installer's `bundle-inventory` action in a networkless,
+read-only container with only the selected immutable bundle mounted. It then
+runs the fixed migration module from that verified payload. Mutation actions
+mount only `/usr/local/libexec` and the preprod receipt root read-write; deploy
+state is read-only, the network is disabled, and the Docker socket is used only
+for the migrator's fail-closed container-reference check. The migration creates
+a normalized sibling tree, journals and fsyncs every phase, renames the complete
+raw active tree to a content-bound archive, and only then renames the normalized
+tree into place. Never replace this flow with individual `chmod`, `mv`, or
+hand-written Docker commands.
+
+```text
+run-booking-preprod-control-plane-installer --action legacy-inventory \
+  --install-id <install-id> --git-sha <40-hex> --approval-id <approval-id> \
+  --migration-id <booking-legacy-active-YYYYMMDDTHHMMSSZ-12hex>
+
+run-booking-preprod-control-plane-installer --action legacy-migrate \
+  --install-id <install-id> --git-sha <40-hex> --approval-id <approval-id> \
+  --migration-id <migration-id> --transaction-id <approved-uuid> \
+  --expected-raw-inventory-digest sha256:<64hex> --execute true
+```
+
+For initial migration, v3 must bind `allowedActions` to `migrate` and, if
+crash recovery is authorized in advance, `recover`; it binds the exact
+migration and transaction IDs and uses null predecessor/normalized fields.
+`legacy-recover` for that migration must present the same transaction and the
+same signed context. A rollback is a new independently approved operation: its
+v3 context binds a new rollback transaction, `rollback` (and optionally
+`recover`), the immutable successful migration-receipt digest, and the exact
+normalized inventory digest. A recovery of an interrupted rollback supplies
+those same predecessor and normalized bindings. The approval preflight reads
+the immutable predecessor receipt and proves its raw and normalized digests
+match the v3 approval; the migrator verifies it again before acquisition.
+
+```text
+run-booking-preprod-control-plane-installer --action legacy-rollback \
+  --install-id <rollback-approval-bundle-id> --git-sha <40-hex> \
+  --approval-id <rollback-approval-id> --migration-id <migration-id> \
+  --transaction-id <approved-rollback-uuid> \
+  --expected-raw-inventory-digest sha256:<64hex> \
+  --expected-normalized-inventory-digest sha256:<64hex> \
+  --predecessor-receipt-digest sha256:<64hex> --execute true
+```
+
+On interruption, read the exact transaction ID from the root-owned migration
+lock or journal and invoke `legacy-recover`; do not delete either artifact. A
+still-running or stale fixed-name migration/recovery container is a forensic
+stop condition: inspect it and prove it is not running before any explicit
+removal. The launcher and migrator never remove an unknown container.
+
+```text
+# Recover the approved initial migration transaction.
+run-booking-preprod-control-plane-installer --action legacy-recover \
+  --install-id <migration-bundle-id> --git-sha <40-hex> \
+  --approval-id <migration-approval-id> --migration-id <migration-id> \
+  --transaction-id <approved-migration-uuid> --execute true
+
+# Recover an approved rollback transaction; all three rollback bindings repeat.
+run-booking-preprod-control-plane-installer --action legacy-recover \
+  --install-id <rollback-approval-bundle-id> --git-sha <40-hex> \
+  --approval-id <rollback-approval-id> --migration-id <migration-id> \
+  --transaction-id <approved-rollback-uuid> \
+  --expected-normalized-inventory-digest sha256:<64hex> \
+  --predecessor-receipt-digest sha256:<64hex> --execute true
+```
+
+After migration, do not reuse the raw-tree approval for installation. First
+run strict `active-inventory` against the normalized tree. Then create bundle B
+(the same committed SHA may be used, but it has a new install ID and approval
+identity), create and sign a normal v2 install approval binding that normalized
+active digest, and only then run `install`. Thus the sequence is bundle A + raw
+v3 migration approval, normalized readback, then bundle B + normalized v2
+install approval.
 
 ```text
 run-booking-preprod-control-plane-installer --action active-inventory \

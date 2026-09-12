@@ -51,7 +51,7 @@ const common = ['--execute', 'true', '--environment', 'preprod', '--project', 'b
   '--manifest-digest', `sha256:${'a'.repeat(64)}`];
 
 test('control-plane launcher builds the fixed hardened Docker plan for the state manager', () => {
-  const result = dryRun(['manage-deploy-state', '--action', 'renew', ...common, '--lease-id', 'lease-1', '--holder-id', 'owner-1', '--lease-duration-ms', '300000']);
+  const result = dryRun(['manage-deploy-state', '--action', 'renew', ...common, '--lease-id', 'lease-1', '--holder-id', 'owner-1', '--lease-duration-ms', '300000', '--observation-window-minutes', '30']);
   assert.equal(result.status, 0, result.stderr);
   const argv = result.stdout.trim().split(/\r?\n/);
   assert.equal(argv[0], '/var/packages/ContainerManager/target/usr/bin/docker');
@@ -79,6 +79,22 @@ test('control-plane launcher builds the fixed hardened Docker plan for the state
   assert.equal(argv.some((value) => value.includes('src=/usr/local/libexec/happybooking,dst=')), false);
   assert.deepEqual(mounts(argv), BASE_MOUNTS);
   assert.equal(argv[argv.indexOf('--env-file') + 1], '/etc/happybooking/secrets/booking-preprod-control-plane.env');
+  assert.deepEqual(argv.slice(argv.indexOf('--observation-window-minutes'), argv.indexOf('--observation-window-minutes') + 2), ['--observation-window-minutes', '30']);
+});
+
+test('state recovery transition and fresh acquire forward the exact 30-minute observation contract', () => {
+  for (const [action, extra] of [
+    ['transition', ['--to', 'FAILED_RECOVERED']],
+    ['acquire', ['--operation-id', 'g4.new.operation', '--lease-id', 'lease-new', '--holder-id', 'holder-new', '--lease-duration-ms', '300000']],
+  ]) {
+    const result = dryRun(['manage-deploy-state', '--action', action, ...common, '--observation-window-minutes', '30', ...extra]);
+    assert.equal(result.status, 0, `${action}: ${result.stderr}`); const argv = result.stdout.trim().split(/\r?\n/);
+    assert.equal(argv.filter((value) => value === '--observation-window-minutes').length, 1, action);
+    assert.equal(argv[argv.indexOf('--observation-window-minutes') + 1], '30', action);
+    assert.ok(argv.includes('/usr/local/libexec/happybooking/control-plane/ops/release/manage-deploy-state.mjs'), action);
+  }
+  const duplicate = dryRun(['manage-deploy-state', '--action', 'acquire', ...common, '--observation-window-minutes', '30', '--observation-window-minutes', '30']);
+  assert.notEqual(duplicate.status, 0); assert.equal(duplicate.stdout, '');
 });
 
 test('control-plane launcher maps only the fenced executor and preserves argument boundaries', () => {

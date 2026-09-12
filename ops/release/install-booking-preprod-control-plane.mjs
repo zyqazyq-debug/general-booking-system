@@ -48,6 +48,7 @@ const EXECUTABLE_FILES = new Set([
 ]);
 const PHASES = new Set(['PREPARED', 'OLD_RETIRED', 'ACTIVE_MOVED', 'NEW_ACTIVE', 'RECEIPT_PUBLISHED', 'COMPLETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MIGRATION_ID = /^booking-legacy-active-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$/;
 
 class InstallError extends Error {}
 export class SimulatedInstallCrash extends Error {}
@@ -67,7 +68,8 @@ function parseArgs(argv) {
     args[key] = value;
   }
   const identity = ['action', 'install-id', 'git-sha', 'approval-id'];
-  const allowed = ['inventory', 'active-inventory'].includes(args.action) ? new Set(identity)
+  const allowed = ['inventory', 'bundle-inventory', 'active-inventory'].includes(args.action) ? new Set(identity)
+    : args.action === 'approval-check' ? new Set([...identity, 'approval-tuple-digest', 'approver-receipt-digest', 'migration-id', 'migration-action', 'transaction-id', 'predecessor-receipt-digest', 'expected-normalized-inventory-digest'])
     : args.action === 'install' ? new Set([...identity, 'source-archive-digest', 'installer-digest', 'bundle-declaration-digest',
       'tracked-allowlist-digest', 'expected-inventory-digest', 'approval-tuple-digest', 'approver-receipt-digest'])
       : args.action === 'readback' ? new Set(['action', 'install-id', 'expected-receipt-digest'])
@@ -172,13 +174,15 @@ async function assertDirectory(path, uid, label, enforceMode = true) {
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new InstallError(`${label} must be a real directory`);
   if (uid !== null && (info.uid !== uid || info.gid !== 0)) throw new InstallError(`${label} must be root:root`);
-  if (enforceMode && (info.mode & 0o022)) throw new InstallError(`${label} is group/other writable`);
+  if (enforceMode && ((info.mode & 0o022) || (info.mode & 0o7000))) throw new InstallError(`${label} has writable or special mode bits`);
   if (await realpath(path) !== resolve(path)) throw new InstallError(`${label} resolves through a symlink`);
   return info;
 }
 
 async function inventory(root, { uid, source = false, strict = false, enforceMode = true } = {}) {
-  await assertDirectory(root, uid, 'inventory root', enforceMode);
+  const rootInfo = await assertDirectory(root, uid, 'inventory root', enforceMode);
+  const rootMode = source || !enforceMode ? '0555' : `0${(rootInfo.mode & 0o777).toString(8)}`;
+  if (strict && enforceMode && rootMode !== '0555') throw new InstallError('inventory root mode drift');
   const entries = [];
   async function walk(directory) {
     const children = await readdir(directory, { withFileTypes: true });
@@ -189,12 +193,13 @@ async function inventory(root, { uid, source = false, strict = false, enforceMod
       const info = await lstat(path);
       if (info.isSymbolicLink()) throw new InstallError(`symbolic link rejected: ${name}`);
       if (uid !== null && (info.uid !== uid || info.gid !== 0)) throw new InstallError(`non-root:root entry: ${name}`);
-      if (enforceMode && (info.mode & 0o022)) throw new InstallError(`writable entry: ${name}`);
+      if (enforceMode && ((info.mode & 0o022) || (info.mode & 0o7000))) throw new InstallError(`writable or special-mode entry: ${name}`);
       if (info.isDirectory()) {
         const mode = source || !enforceMode ? '0555' : `0${(info.mode & 0o777).toString(8)}`;
         if (strict && enforceMode && mode !== '0555') throw new InstallError(`directory mode drift: ${name}`);
         entries.push({ path: name, type: 'directory', mode }); await walk(path);
       } else if (info.isFile()) {
+        if (info.nlink !== 1) throw new InstallError(`hard-linked file rejected: ${name}`);
         const executable = (info.mode & 0o111) !== 0;
         const mode = source || !enforceMode ? (executable ? '0555' : '0444') : `0${(info.mode & 0o777).toString(8)}`;
         if (strict && enforceMode && mode !== (executable ? '0555' : '0444')) throw new InstallError(`file mode drift: ${name}`);
@@ -203,7 +208,7 @@ async function inventory(root, { uid, source = false, strict = false, enforceMod
     }
   }
   await walk(root);
-  return { entries, digest: sha256(canonicalJson(entries)) };
+  return { rootMode, entries, digest: sha256(canonicalJson({ rootMode, entries })) };
 }
 export const inspectControlPlaneInventory = (root, options = {}) => inventory(root, options);
 
@@ -215,11 +220,11 @@ async function readDeclaration(paths, args, settings) {
   await assertDirectory(payload, settings.uid, 'payload', settings.enforceMode);
   const roots = (await readdir(payload)).sort();
   if (canonicalJson(roots) !== canonicalJson([...ROOT_ENTRIES].sort())) throw new InstallError('payload root layout is invalid');
-  const found = await inventory(payload, { uid: settings.uid, source: true, enforceMode: settings.enforceMode });
+  const found = await inventory(payload, { uid: settings.uid, strict: true, enforceMode: settings.enforceMode });
   const declarationPath = join(bundle, 'bundle-declaration.json');
   const declarationInfo = await lstat(declarationPath);
-  if (!declarationInfo.isFile() || declarationInfo.isSymbolicLink() || (settings.uid !== null && (declarationInfo.uid !== settings.uid || declarationInfo.gid !== 0)) ||
-      (settings.enforceMode && (declarationInfo.mode & 0o022))) throw new InstallError('bundle declaration is not immutable root:root');
+  if (!declarationInfo.isFile() || declarationInfo.isSymbolicLink() || declarationInfo.nlink !== 1 || (settings.uid !== null && (declarationInfo.uid !== settings.uid || declarationInfo.gid !== 0)) ||
+      (settings.enforceMode && ((declarationInfo.mode & 0o022) || (declarationInfo.mode & 0o7000)))) throw new InstallError('bundle declaration is not immutable root:root');
   const declaration = JSON.parse(await readFile(declarationPath, 'utf8'));
   const declarationKeys = ['approvalId', 'archiveCommand', 'archiveCommandDigest', 'gitSha', 'installId', 'installerDigest', 'inventoryDigest', 'payloadMap', 'payloadMapDigest', 'schema', 'sourceArchiveDigest', 'trackedAllowlistDigest', 'trackedFiles'];
   if (canonicalJson(Object.keys(declaration).sort()) !== canonicalJson(declarationKeys.sort())) throw new InstallError('bundle declaration has an unexpected field');
@@ -248,8 +253,8 @@ async function readDeclaration(paths, args, settings) {
   const bundleInstallerPath = join(bundle, 'installer.mjs'); const archivePath = join(bundle, 'source-archive.tar');
   for (const [path, label, executable] of [[bundleInstallerPath, 'bundle installer', true], [archivePath, 'source archive', false]]) {
     const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || (settings.uid !== null && (info.uid !== settings.uid || info.gid !== 0)) ||
-        (settings.enforceMode && ((info.mode & 0o022) || (executable ? (info.mode & 0o111) === 0 : (info.mode & 0o111) !== 0)))) throw new InstallError(`${label} mode or ownership is invalid`);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (settings.uid !== null && (info.uid !== settings.uid || info.gid !== 0)) ||
+        (settings.enforceMode && ((info.mode & 0o022) || (info.mode & 0o7000) || (executable ? (info.mode & 0o111) === 0 : (info.mode & 0o111) !== 0)))) throw new InstallError(`${label} mode or ownership is invalid`);
   }
   const runningInstallerDigest = sha256(await readFile(fileURLToPath(import.meta.url)));
   if (declaration.installerDigest !== runningInstallerDigest || sha256(await readFile(bundleInstallerPath)) !== runningInstallerDigest) throw new InstallError('installer digest is not the reviewed running installer');
@@ -387,7 +392,7 @@ async function readHostIdentityDigest(paths, settings) {
   return sha256(bytes);
 }
 
-async function verifyIndependentApproval(paths, args, declaration, declarationDigest, settings, runtime) {
+async function verifyIndependentApproval(paths, args, declaration, declarationDigest, settings, runtime, migrationRequest = null) {
   validateDigest(args['approval-tuple-digest'], 'approval tuple'); validateDigest(args['approver-receipt-digest'], 'approver receipt');
   const directory = join(paths.approvalRoot, args['install-id']); await assertDirectory(directory, settings.uid, 'approval directory', settings.enforceMode);
   const tuplePath = join(directory, 'approval-tuple.json'); const receiptPath = join(directory, 'approver-receipt.json'); const signaturePath = join(directory, 'approver-receipt.sig');
@@ -406,12 +411,27 @@ async function verifyIndependentApproval(paths, args, declaration, declarationDi
 
   const receipt = await readImmutableJson(receiptPath, settings, 'approver receipt');
   const receiptFields = ['schema', 'status', 'environment', 'project', 'installId', 'gitSha', 'approvalId', 'tupleDigest', 'approverIdentity', 'publicKeyDigest',
-    'hostIdentityDigest', 'expectedActiveInventoryDigest', 'activeInventoryObservedAt', 'approvedAt', 'receiptDigest'];
+    'hostIdentityDigest', 'expectedActiveInventoryDigest', 'activeInventoryObservedAt', 'approvedAt', ...(migrationRequest ? ['migrationContext'] : []), 'receiptDigest'];
   requireExactKeys(receipt, receiptFields, 'approver receipt'); const { receiptDigest, ...receiptBody } = receipt;
-  if (receiptDigest !== sha256(canonicalJson(receiptBody)) || receiptDigest !== args['approver-receipt-digest'] || receipt.schema !== 'booking.preprod.control-plane-approval-receipt/v2' ||
+  const expectedSchema = migrationRequest ? 'booking.preprod.control-plane-approval-receipt/v3' : 'booking.preprod.control-plane-approval-receipt/v2';
+  const observedAt = Date.parse(receipt.activeInventoryObservedAt); const approvedAt = Date.parse(receipt.approvedAt); const checkedAt = Date.parse(runtime.now || new Date().toISOString());
+  if (receiptDigest !== sha256(canonicalJson(receiptBody)) || receiptDigest !== args['approver-receipt-digest'] || receipt.schema !== expectedSchema ||
       receipt.status !== 'approved' || receipt.environment !== 'preprod' || receipt.project !== 'booking-preprod' || receipt.installId !== args['install-id'] || receipt.gitSha !== args['git-sha'] ||
       receipt.approvalId !== args['approval-id'] || receipt.tupleDigest !== tupleDigest || !IDENTIFIER.test(receipt.approverIdentity || '') ||
-      !Number.isFinite(Date.parse(receipt.activeInventoryObservedAt)) || !Number.isFinite(Date.parse(receipt.approvedAt))) throw new InstallError('approver receipt is not bound to the approval tuple');
+      !Number.isFinite(observedAt) || !Number.isFinite(approvedAt) || !Number.isFinite(checkedAt) || approvedAt < observedAt || approvedAt > checkedAt) throw new InstallError('approver receipt is not bound to the approval tuple or verification time');
+  if (migrationRequest) {
+    const context = receipt.migrationContext;
+    requireExactKeys(context, ['migrationId', 'allowedActions', 'transactionId', 'predecessorReceiptDigest', 'expectedNormalizedInventoryDigest'], 'migration approval context');
+    if (!Array.isArray(context.allowedActions) || context.allowedActions.length < 1 || new Set(context.allowedActions).size !== context.allowedActions.length ||
+        context.allowedActions.some((action) => !['migrate', 'recover', 'rollback'].includes(action)) || !context.allowedActions.includes(migrationRequest.action) ||
+        context.migrationId !== migrationRequest.migrationId || context.transactionId !== migrationRequest.transactionId ||
+        context.predecessorReceiptDigest !== migrationRequest.predecessorReceiptDigest || context.expectedNormalizedInventoryDigest !== migrationRequest.expectedNormalizedInventoryDigest) {
+      throw new InstallError('migration approval context does not authorize this exact action and transaction');
+    }
+    if (migrationRequest.action === 'rollback' || (migrationRequest.action === 'recover' && context.predecessorReceiptDigest !== null)) {
+      validateDigest(context.predecessorReceiptDigest, 'migration predecessor receipt'); validateDigest(context.expectedNormalizedInventoryDigest, 'approved normalized inventory');
+    } else if (context.predecessorReceiptDigest !== null || context.expectedNormalizedInventoryDigest !== null) throw new InstallError('migration approval context has unexpected predecessor bindings');
+  }
   for (const [value, label] of [[receipt.publicKeyDigest, 'approver public key'], [receipt.hostIdentityDigest, 'host identity'],
     [receipt.expectedActiveInventoryDigest, 'expected active inventory'], [receipt.receiptDigest, 'approver receipt']]) validateDigest(value, label);
   if (receipt.hostIdentityDigest !== await readHostIdentityDigest(paths, settings)) throw new InstallError('approved host identity differs from this host');
@@ -427,7 +447,8 @@ async function verifyIndependentApproval(paths, args, declaration, declarationDi
     if (verified.status !== 0) throw new InstallError('independent approver signature verification failed');
   }
   return { approvalTupleDigest: tupleDigest, approverReceiptDigest: receiptDigest, approverIdentity: receipt.approverIdentity,
-    approverPublicKeyDigest: receipt.publicKeyDigest, expectedActiveInventoryDigest: receipt.expectedActiveInventoryDigest };
+    approverPublicKeyDigest: receipt.publicKeyDigest, expectedActiveInventoryDigest: receipt.expectedActiveInventoryDigest,
+    ...(migrationRequest ? { migrationContext: receipt.migrationContext } : {}) };
 }
 
 function validateJournal(journal, args) {
@@ -786,6 +807,33 @@ export async function runControlPlaneInstaller(input, runtime = {}) {
     return { schema: 'booking.preprod-control-plane-active-inventory/v1', status: 'pass', action: 'active-inventory', environment: 'preprod', project: 'booking-preprod',
       installId: args['install-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], hostIdentityDigest: await readHostIdentityDigest(paths, settings),
       observedAt: now, inventoryDigest: active.digest, entries: active.entries };
+  }
+  if (args.action === 'bundle-inventory') {
+    validateIdentity(args); const bundle = await readDeclaration(paths, args, settings);
+    return { schema: 'booking.preprod-control-plane-inventory/v2', status: 'pass', action: 'bundle-inventory', environment: 'preprod', project: 'booking-preprod', installId: args['install-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], declarationDigest: bundle.declarationDigest, inventoryDigest: bundle.inventory.digest, entries: bundle.inventory.entries };
+  }
+  if (args.action === 'approval-check') {
+    validateIdentity(args); const bundle = await readDeclaration(paths, args, settings);
+    requireFields(args, ['migration-id', 'migration-action', 'transaction-id']);
+    if (!MIGRATION_ID.test(args['migration-id']) || !['migrate', 'recover', 'rollback'].includes(args['migration-action']) || !UUID.test(args['transaction-id'])) throw new InstallError('migration approval request is invalid');
+    const migrationRequest = { action: args['migration-action'], migrationId: args['migration-id'], transactionId: args['transaction-id'],
+      predecessorReceiptDigest: args['predecessor-receipt-digest'] || null, expectedNormalizedInventoryDigest: args['expected-normalized-inventory-digest'] || null };
+    const approval = await verifyIndependentApproval(paths, args, bundle.declaration, bundle.declarationDigest, settings, runtime, migrationRequest);
+    if (migrationRequest.predecessorReceiptDigest) {
+      const predecessorPath = join(paths.receiptRoot, `control-plane-legacy-migration-${migrationRequest.migrationId}.json`);
+      const predecessor = await readImmutableJson(predecessorPath, settings, 'legacy migration predecessor receipt');
+      const predecessorFields = ['schema', 'status', 'action', 'environment', 'project', 'transactionId', 'migrationId', 'approvalId', 'rawInventoryDigest', 'normalizedInventoryDigest', 'rawArchiveName', 'migratedAt', 'receiptDigest'];
+      requireExactKeys(predecessor, predecessorFields, 'legacy migration predecessor receipt'); const { receiptDigest, ...predecessorBody } = predecessor;
+      if (receiptDigest !== sha256(canonicalJson(predecessorBody)) || receiptDigest !== migrationRequest.predecessorReceiptDigest ||
+          predecessor.schema !== 'booking.preprod-legacy-active-migration-receipt/v1' || predecessor.status !== 'pass' || predecessor.action !== 'migrate' ||
+          predecessor.environment !== 'preprod' || predecessor.project !== 'booking-preprod' || predecessor.migrationId !== migrationRequest.migrationId ||
+          predecessor.rawInventoryDigest !== approval.expectedActiveInventoryDigest || predecessor.normalizedInventoryDigest !== migrationRequest.expectedNormalizedInventoryDigest) {
+        throw new InstallError('legacy migration predecessor receipt does not match signed rollback context');
+      }
+    }
+    return { schema: 'booking.preprod-control-plane-migration-approval-check/v1', status: 'pass', environment: 'preprod', project: 'booking-preprod', installId: args['install-id'],
+      gitSha: args['git-sha'], approvalId: args['approval-id'], migrationId: migrationRequest.migrationId, action: migrationRequest.action, transactionId: migrationRequest.transactionId,
+      expectedActiveInventoryDigest: approval.expectedActiveInventoryDigest, approverReceiptDigest: approval.approverReceiptDigest };
   }
   await assertDirectory(paths.receiptRoot, settings.uid, 'receipt root', settings.enforceMode);
   let hasJournal = await exists(paths.journalPath); let hasLock = await exists(paths.lockPath); const lockTemps = await lockTemporaryPaths(paths);
