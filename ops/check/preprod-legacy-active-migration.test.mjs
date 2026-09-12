@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, parse } from 'node:path';
 import {
-  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, parseMountInfo, parseProcessStat, processMountInfos, mountedObjectIdentity, mountReferencesProtected, SimulatedLegacyMigrationCrash,
+  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, parseMountInfo, parseProcessStat, processMountInfos, assertNoProcessCommands, mountedObjectIdentity, mountReferencesProtected, SimulatedLegacyMigrationCrash,
 } from '../release/migrate-booking-preprod-legacy-active-root.mjs';
 
 const MIGRATION = 'booking-legacy-active-20260913T010203Z-536b435723ae';
@@ -56,7 +56,7 @@ async function fixture() {
   const deployState = join(root, 'var', 'lib', 'happybooking', 'deploy-state', 'preprod', 'booking-preprod', 'deploy-state.json');
   await mkdir(active, { recursive: true }); await mkdir(receipts, { recursive: true }); await mkdir(dirname(deployState), { recursive: true }); await legacyTree(active);
   const runtime = { parent, active, receipts, deployState, runtimeLock: join(parent, '.runtime.lock'), installLock: join(parent, '.install.lock'), installJournal: join(parent, '.install.journal'), expectedUid: null, enforceMode: false, portableReplace: true,
-    now: '2026-09-13T01:02:03.000Z', syncDirectory: async () => {}, syncFile: async () => {}, assertQuiescent: async () => {}, assertNoMounts: async () => {}, assertNoOpenReferences: async () => {} };
+    now: '2026-09-13T01:02:03.000Z', syncDirectory: async () => {}, syncFile: async () => {}, assertQuiescent: async () => {}, assertNoMounts: async () => {}, assertNoProcessCommands: async () => {} };
   const identity = ['--migration-id', MIGRATION, '--approval-id', APPROVAL];
   const inventory = await runLegacyActiveMigration(['--action', 'inventory', ...identity], runtime);
   return { root, parent, active, receipts, deployState, runtime, identity, inventory,
@@ -104,6 +104,7 @@ test('live proc scanner enumerates the current process thread group with stable 
   const records = await processMountInfos();
   assert.ok(records.some((record) => record.groupId === process.pid && record.pid === process.pid));
   assert.ok(records.every((record) => Number.isSafeInteger(record.groupId) && Number.isSafeInteger(record.pid) && record.value.length > 0));
+  await assertNoProcessCommands('/definitely-not-a-real-happybooking-protected-path');
 });
 
 test('running-process mount identity rejects a stale safe-looking Docker source alias', { skip: process.platform === 'win32' }, async (t) => {
@@ -113,7 +114,7 @@ test('running-process mount identity rejects a stale safe-looking Docker source 
   const actualMount = `901 1 ${activeIdentity.device} ${activeIdentity.root} /foreign rw - testfs none rw\n`;
   const runtime = { ...f.runtime, assertQuiescent: undefined, assertNoMounts: undefined,
     listContainers: async () => [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: '/safe-looking-alias', Destination: '/foreign', RW: false }] }],
-    processMountInfos: async () => [{ pid: process.pid + 100000, groupId: process.pid + 100000, value: actualMount }], assertNoOpenReferences: async () => {} };
+    processMountInfos: async () => [{ pid: process.pid + 100000, groupId: process.pid + 100000, value: actualMount }], assertNoProcessCommands: async () => {} };
   await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /mount referencing protected migration tree/);
   assert.equal(await exists(f.raw), false); assert.equal(await exists(f.active), true);
 });
@@ -124,7 +125,7 @@ test('mount inspection skips every task in the trusted migration executor thread
   const activeIdentity = mountedObjectIdentity(await (await import('node:fs/promises')).realpath(f.active), selfMounts);
   const selfSiblingMount = `902 1 ${activeIdentity.device} ${activeIdentity.root} /executor-sibling rw - testfs none rw\n`;
   const runtime = { ...f.runtime, assertQuiescent: undefined, assertNoMounts: undefined,
-    listContainers: async () => [], processMountInfos: async () => [{ pid: process.pid + 1, groupId: process.pid, value: selfSiblingMount }], assertNoOpenReferences: async () => {} };
+    listContainers: async () => [], processMountInfos: async () => [{ pid: process.pid + 1, groupId: process.pid, value: selfSiblingMount }], assertNoProcessCommands: async () => {} };
   const receipt = await runLegacyActiveMigration(migrationArgs(f), runtime);
   assert.equal(receipt.status, 'pass');
 });
@@ -145,7 +146,7 @@ test('one-time migration keeps the entire raw tree and installs only the normali
 });
 
 test('migration rejects root-entry drift, symbolic links, raw digest drift and every safety gate before rename', async (t) => {
-  for (const scenario of ['extra', 'symlink', 'hardlink', 'digest', 'quiescent', 'mount', 'open']) {
+  for (const scenario of ['extra', 'symlink', 'hardlink', 'digest', 'quiescent', 'mount', 'command']) {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); let runtime = f.runtime; let args = migrationArgs(f);
     if (scenario === 'extra') await writeFile(join(f.active, 'unexpected'), 'x');
     if (scenario === 'symlink') { await rm(join(f.active, 'switch-preprod-ingress.mjs')); await symlink(join(f.active, 'run-booking-preprod-control-plane'), join(f.active, 'switch-preprod-ingress.mjs')); }
@@ -153,7 +154,7 @@ test('migration rejects root-entry drift, symbolic links, raw digest drift and e
     if (scenario === 'digest') args[args.indexOf('--expected-raw-inventory-digest') + 1] = `sha256:${'0'.repeat(64)}`;
     if (scenario === 'quiescent') runtime = { ...runtime, assertQuiescent: async () => { throw new Error('busy'); } };
     if (scenario === 'mount') runtime = { ...runtime, assertNoMounts: async () => { throw new Error('mounted'); } };
-    if (scenario === 'open') runtime = { ...runtime, assertQuiescent: undefined, assertNoOpenReferences: async () => { throw new Error('open'); } };
+    if (scenario === 'command') runtime = { ...runtime, assertQuiescent: undefined, assertNoProcessCommands: async () => { throw new Error('command'); } };
     await assert.rejects(runLegacyActiveMigration(args, runtime));
     assert.equal(await exists(f.raw), false, scenario); assert.equal(await exists(f.active), true, scenario);
   }
@@ -353,18 +354,18 @@ test('foreign container mounts of root, ancestor, active or active child all fai
   const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   for (const source of [parse(f.active).root, dirname(f.parent), f.parent, f.active, join(f.active, 'control-plane')]) {
     const runtime = { ...f.runtime, assertQuiescent: undefined, listContainers: async () => [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: source, Destination: '/foreign', RW: false }] }],
-      assertNoOpenReferences: async () => {}, assertNoMounts: async () => {} };
+      assertNoProcessCommands: async () => {}, assertNoMounts: async () => {} };
     await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /foreign container mount overlaps/, source);
   }
 });
 
-test('the post-stage quiescence gate rejects a newly mounted or opened normalized stage', async (t) => {
-  for (const scenario of ['mount', 'open']) {
+test('the post-stage quiescence gate rejects a newly mounted or command-referenced normalized stage', async (t) => {
+  for (const scenario of ['mount', 'command']) {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); const stage = join(f.parent, `.happybooking-legacy-normalized-stage-${MIGRATE_TX}`); let lists = 0;
     const runtime = { ...f.runtime, assertQuiescent: undefined,
       listContainers: async () => { lists += 1; return scenario === 'mount' && lists >= 2 ? [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: stage, Destination: '/stage', RW: false }] }] : []; },
-      assertNoMounts: async () => {}, assertNoOpenReferences: async (path) => { if (scenario === 'open' && path === stage) throw new Error('stage open'); } };
-    await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), scenario === 'mount' ? /foreign container mount overlaps/ : /stage open/);
+      assertNoMounts: async () => {}, assertNoProcessCommands: async (path) => { if (scenario === 'command' && path === stage) throw new Error('stage command'); } };
+    await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), scenario === 'mount' ? /foreign container mount overlaps/ : /stage command/);
     assert.equal(await exists(f.raw), false, scenario); assert.equal(await exists(f.active), true, scenario);
   }
 });

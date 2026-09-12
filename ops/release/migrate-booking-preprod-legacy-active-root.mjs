@@ -270,24 +270,15 @@ async function assertNoMounts(path, runtime) {
   }
 }
 
-async function assertNoOpenReferences(path, runtime) {
-  if (runtime.assertNoOpenReferences) return runtime.assertNoOpenReferences(path);
+export async function assertNoProcessCommands(path, runtime = {}) {
+  if (runtime.assertNoProcessCommands) return runtime.assertNoProcessCommands(path);
   for (const task of await processTasks(runtime)) {
     const label = `${task.groupId}/${task.taskId}`; const base = task.base; const statPath = `${base}/stat`; let before;
     try { before = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId); }
     catch (error) { if (['ENOENT', 'ESRCH'].includes(error?.code)) continue; throw error instanceof MigrationError ? error : new MigrationError(`cannot inspect process task ${label} identity`); }
     if (before.state === 'Z') continue;
-    for (const leaf of ['cwd', 'root', 'exe']) {
-      try { const target = await readlink(join(base, leaf)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process task ${label} references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} ${leaf}`); }
-    }
-    try {
-      for (const fd of await readdir(join(base, 'fd'))) {
-        try { const target = await readlink(join(base, 'fd', fd)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process task ${label} has an open protected-tree descriptor`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} descriptor`); }
-      }
-    } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot enumerate process task ${label} descriptors`); }
-    for (const leaf of ['cmdline', 'maps']) {
-      try { if ((await readFile(join(base, leaf))).includes(Buffer.from(path))) throw new MigrationError(`process task ${label} text references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} ${leaf}`); }
-    }
+    try { if ((await readFile(join(base, 'cmdline'))).includes(Buffer.from(path))) throw new MigrationError(`process task ${label} command references protected migration tree`); }
+    catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} command`); }
     try { const after = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId); if (after.startTime !== before.startTime) throw new MigrationError(`process task ${label} identity changed during reference inspection`); }
     catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot re-inspect process task ${label} identity`); }
   }
@@ -441,7 +432,7 @@ async function assertQuiescent(paths, runtime, now, action = null, additionalPro
         if (overlaps && !exactSelfParent) throw new MigrationError('a foreign container mount overlaps active root');
       }
   }
-  for (const path of protectedPaths) { await assertNoMounts(path, runtime); await assertNoOpenReferences(path, runtime); }
+  for (const path of protectedPaths) { await assertNoMounts(path, runtime); await assertNoProcessCommands(path, runtime); }
 }
 
 async function normalizeClone(source, target, settings, runtime) {
