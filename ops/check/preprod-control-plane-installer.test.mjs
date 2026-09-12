@@ -723,6 +723,8 @@ test('legacy mutation is rejected before signed v3 context and then emits only t
   const preflight = argv.slice(argv.indexOf('LEGACY_BUNDLE_PREFLIGHT'), argv.indexOf('LEGACY_MIGRATION'));
   assert.ok(preflight.includes('bundle-inventory')); assert.equal(preflight.includes('--pid'), false); assert.equal(preflight.some((value) => value.includes('docker.sock')), false);
   assert.equal(preflight.some((value) => value.includes('/var/lib/happybooking')), false); assert.equal(preflight.some((value) => value.includes('/usr/local/libexec') && !value.includes('/bundles/')), false);
+  assert.equal(preflight.includes('type=bind,src=/,dst=/host,readonly'), false);
+  assert.equal(argv.includes('type=bind,src=/,dst=/host,readonly'), false);
   assert.ok(argv.includes('--cap-add') && argv.includes('DAC_OVERRIDE')); assert.equal(argv.some((value) => value.includes('booking-prod')), false);
   for (const bad of [
     ['--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--migration-id', '../../prod', '--transaction-id', transactionId, '--expected-raw-inventory-digest', digestValue, '--execute', 'true'],

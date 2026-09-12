@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, parse } from 'node:path';
 import {
-  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, SimulatedLegacyMigrationCrash,
+  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, parseMountInfo, mountedObjectIdentity, mountReferencesProtected, SimulatedLegacyMigrationCrash,
 } from '../release/migrate-booking-preprod-legacy-active-root.mjs';
 
 const MIGRATION = 'booking-legacy-active-20260913T010203Z-536b435723ae';
@@ -75,6 +75,32 @@ const recoverArgs = async (f) => {
   const temp = (await readdir(f.parent)).find((name) => name.startsWith(`${basename(f.lock)}.`) && name.endsWith('.tmp')); const transactionId = temp.slice(`${basename(f.lock)}.`.length, -'.tmp'.length);
   return ['--action', 'recover', ...f.identity, '--transaction-id', transactionId, '--expected-raw-inventory-digest', f.inventory.inventoryDigest, '--execute', 'true'];
 };
+
+test('mountinfo identity exposes the actual mounted object rather than a stale Docker source alias', () => {
+  const mounts = parseMountInfo('100 1 0:36 /@syno / rw - btrfs /dev/vg rw\n101 100 0:36 /@syno/usr/local/libexec/happybooking /alias rw - btrfs /dev/vg rw\n50 23 0:3 net:[4026531957] /run/docker/netns/default rw - nsfs nsfs rw\n');
+  assert.deepEqual(mountedObjectIdentity('/usr/local/libexec/happybooking', mounts), { device: '0:36', root: '/@syno/usr/local/libexec/happybooking' });
+  assert.deepEqual(mountedObjectIdentity('/alias/child', mounts), { device: '0:36', root: '/@syno/usr/local/libexec/happybooking/child' });
+  assert.equal(mounts[2].root, 'net:[4026531957]');
+  const protectedIdentity = { device: '9:0', root: '/usr/local/libexec/happybooking' };
+  assert.equal(mountReferencesProtected({ device: '9:0', root: '/', mountPoint: '/' }, protectedIdentity), false);
+  for (const root of ['/usr/local/libexec', '/usr/local/libexec/happybooking', '/usr/local/libexec/happybooking/child']) {
+    assert.equal(mountReferencesProtected({ device: '9:0', root, mountPoint: '/' }, protectedIdentity), true, root);
+  }
+  assert.equal(mountReferencesProtected({ device: '8:0', root: '/usr/local/libexec', mountPoint: '/' }, protectedIdentity), false);
+  assert.throws(() => parseMountInfo('malformed'), /mountinfo row is invalid/);
+});
+
+test('running-process mount identity rejects a stale safe-looking Docker source alias', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const selfMounts = parseMountInfo(await readFile('/proc/self/mountinfo', 'utf8'));
+  const activeIdentity = mountedObjectIdentity(await (await import('node:fs/promises')).realpath(f.active), selfMounts);
+  const actualMount = `901 1 ${activeIdentity.device} ${activeIdentity.root} /foreign rw - testfs none rw\n`;
+  const runtime = { ...f.runtime, assertQuiescent: undefined, assertNoMounts: undefined,
+    listContainers: async () => [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: '/safe-looking-alias', Destination: '/foreign', RW: false }] }],
+    processMountInfos: async () => [{ pid: process.pid + 100000, value: actualMount }], assertNoOpenReferences: async () => {} };
+  await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /mount referencing protected migration tree/);
+  assert.equal(await exists(f.raw), false); assert.equal(await exists(f.active), true);
+});
 
 test('one-time migration keeps the entire raw tree and installs only the normalized reviewed payload', async (t) => {
   const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
@@ -303,10 +329,6 @@ test('foreign container mounts of root, ancestor, active or active child all fai
       assertNoOpenReferences: async () => {}, assertNoMounts: async () => {} };
     await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /foreign container mount overlaps/, source);
   }
-  const alias = join(f.root, 'libexec-alias'); await symlink(f.parent, alias, process.platform === 'win32' ? 'junction' : 'dir');
-  const aliased = { ...f.runtime, assertQuiescent: undefined, listContainers: async () => [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: alias, Destination: '/foreign', RW: false }] }],
-    assertNoOpenReferences: async () => {}, assertNoMounts: async () => {} };
-  await assert.rejects(runLegacyActiveMigration(migrationArgs(f), aliased), /foreign container mount overlaps/);
 });
 
 test('the post-stage quiescence gate rejects a newly mounted or opened normalized stage', async (t) => {
@@ -317,6 +339,27 @@ test('the post-stage quiescence gate rejects a newly mounted or opened normalize
       assertNoMounts: async () => {}, assertNoOpenReferences: async (path) => { if (scenario === 'open' && path === stage) throw new Error('stage open'); } };
     await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), scenario === 'mount' ? /foreign container mount overlaps/ : /stage open/);
     assert.equal(await exists(f.raw), false, scenario); assert.equal(await exists(f.active), true, scenario);
+  }
+});
+
+test('post-rename quiescence failures preserve the journal and recovery cannot cross a busy gate', async (t) => {
+  {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); let checks = 0;
+    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 3) throw new Error('busy after raw retire'); } };
+    await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /busy after raw retire/);
+    assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true); assert.equal(await exists(f.journal), true);
+    const args = await recoverArgs(f); await assert.rejects(runLegacyActiveMigration(args, { ...f.runtime, assertQuiescent: async () => { throw new Error('still busy'); } }), /still busy/);
+    assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true);
+    assert.equal((await runLegacyActiveMigration(args, f.runtime)).status, 'raw-active-restored'); assert.equal(await exists(f.active), true);
+  }
+  {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); const migration = await runLegacyActiveMigration(migrationArgs(f), f.runtime); let checks = 0;
+    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 2) throw new Error('busy after normalized retire'); } };
+    await assert.rejects(runLegacyActiveMigration(rollbackArgs(f, migration), runtime), /busy after normalized retire/);
+    assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true); assert.equal(await exists(f.journal), true);
+    const args = await recoverArgs(f); await assert.rejects(runLegacyActiveMigration(args, { ...f.runtime, assertQuiescent: async () => { throw new Error('still busy'); } }), /still busy/);
+    assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true);
+    assert.equal((await runLegacyActiveMigration(args, f.runtime)).status, 'normalized-active-restored'); assert.equal(await exists(f.active), true);
   }
 });
 

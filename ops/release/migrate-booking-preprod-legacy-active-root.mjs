@@ -5,7 +5,7 @@ import {
   chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, readlink,
   realpath, rename, rm, unlink,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PARENT = '/usr/local/libexec';
@@ -158,11 +158,65 @@ async function assertReviewedRoot(root) {
   if (canonical(found) !== canonical(REVIEWED_ROOT_ENTRIES)) throw new MigrationError('legacy active root entries differ from the reviewed one-time allowlist');
 }
 
+function decodeMountInfoField(value) {
+  if (typeof value !== 'string' || value.length === 0) throw new MigrationError('process mountinfo field is invalid');
+  return value.replace(/\\(040|011|012|134)/g, (_match, code) => ({ '040': ' ', '011': '\t', '012': '\n', '134': '\\' })[code]);
+}
+
+export function parseMountInfo(value) {
+  if (typeof value !== 'string' || value.length === 0) throw new MigrationError('process mountinfo is empty');
+  return value.trim().split('\n').map((row) => {
+    const fields = row.split(' ');
+    if (fields.length < 10 || !/^\d+:\d+$/.test(fields[2]) || !fields.includes('-')) throw new MigrationError('process mountinfo row is invalid');
+    const root = decodeMountInfoField(fields[3]); const mountPoint = decodeMountInfoField(fields[4]);
+    if (!posix.isAbsolute(mountPoint)) throw new MigrationError('process mountinfo mount point is invalid');
+    return { device: fields[2], root, mountPoint };
+  });
+}
+
+function containsPath(parent, child) {
+  const delta = posix.relative(posix.resolve(parent), posix.resolve(child));
+  return delta === '' || (!delta.startsWith('../') && delta !== '..' && !posix.isAbsolute(delta));
+}
+
+export function mountedObjectIdentity(path, mounts) {
+  const candidates = mounts.filter((mount) => containsPath(mount.mountPoint, path)).sort((a, b) => b.mountPoint.length - a.mountPoint.length);
+  if (candidates.length === 0) throw new MigrationError('protected path has no mount identity');
+  const mount = candidates[0]; const suffix = posix.relative(mount.mountPoint, path);
+  if (!posix.isAbsolute(mount.root)) throw new MigrationError('protected path mount root is opaque');
+  return { device: mount.device, root: suffix === '' ? posix.resolve(mount.root) : posix.resolve(mount.root, suffix) };
+}
+
+export function mountReferencesProtected(mount, protectedIdentity) {
+  if (mount.device !== protectedIdentity.device) return false;
+  if (!posix.isAbsolute(mount.root)) throw new MigrationError('mount root is opaque on the protected device');
+  if (mount.mountPoint === '/' && mount.root === '/') return false;
+  return containsPath(mount.root, protectedIdentity.root) || containsPath(protectedIdentity.root, mount.root);
+}
+
+async function processMountInfos(runtime) {
+  if (runtime.processMountInfos) return runtime.processMountInfos();
+  const result = [];
+  for (const name of await readdir('/proc')) {
+    if (!/^[0-9]+$/.test(name)) continue;
+    try { result.push({ pid: Number(name), value: await readFile(`/proc/${name}/mountinfo`, 'utf8') }); }
+    catch (error) { if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process ${name} mounts`); }
+  }
+  return result;
+}
+
 async function assertNoMounts(path, runtime) {
   if (runtime.assertNoMounts) return runtime.assertNoMounts(path);
-  const rows = (await readFile('/proc/self/mountinfo', 'utf8')).trim().split('\n');
-  const mounted = rows.map((row) => row.split(' ')[4]?.replace(/\\040/g, ' '));
-  const real = await realpath(path); if (mounted.some((entry) => entry === real || entry?.startsWith(`${real}/`))) throw new MigrationError('active root contains a mountpoint');
+  const canonicalPath = await realpath(path); const selfMounts = parseMountInfo(await readFile('/proc/self/mountinfo', 'utf8'));
+  if (selfMounts.some((mount) => mount.mountPoint === canonicalPath || containsPath(canonicalPath, mount.mountPoint))) throw new MigrationError('active root contains a mountpoint');
+  const protectedIdentity = mountedObjectIdentity(canonicalPath, selfMounts);
+  for (const record of await processMountInfos(runtime)) {
+    if (!Number.isSafeInteger(record?.pid) || record.pid < 1 || typeof record.value !== 'string') throw new MigrationError('process mountinfo identity is invalid');
+    if (record.pid === process.pid) continue;
+    for (const mount of parseMountInfo(record.value)) {
+      if (mountReferencesProtected(mount, protectedIdentity)) throw new MigrationError(`process ${record.pid} has a mount referencing protected migration tree`);
+    }
+  }
 }
 
 async function assertNoOpenReferences(path, runtime) {
@@ -307,7 +361,7 @@ async function assertQuiescent(paths, runtime, now, action = null, additionalPro
       const inspectedMounts = [];
       for (const mount of container?.Mounts || []) {
         if (!mount?.Source || !isAbsolute(mount.Source)) throw new MigrationError('container mount source is not absolute');
-        inspectedMounts.push({ ...mount, canonicalSource: await realpath(mount.Source) });
+        inspectedMounts.push({ ...mount, canonicalSource: resolve(mount.Source) });
       }
       const canonicalParent = await realpath(paths.parent);
       const parentMounts = inspectedMounts.filter((mount) => mount.canonicalSource === canonicalParent && mount.Destination === paths.parent);
@@ -315,7 +369,7 @@ async function assertQuiescent(paths, runtime, now, action = null, additionalPro
         ['/var/run/docker.sock', '/var/run/docker.sock', true], [DOCKER, DOCKER, false], [resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'), resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'), false]];
       const expectedMounts = new Map();
       if (['/booking-preprod-legacy-active-migration', '/booking-preprod-legacy-active-migration-recovery'].includes(container?.Name)) {
-        for (const [source, destination, rw] of expectedSpecifications) expectedMounts.set(await realpath(source), { destination, rw });
+        for (const [source, destination, rw] of expectedSpecifications) expectedMounts.set(resolve(source), { destination, rw });
       }
       const mountsExact = inspectedMounts.length === expectedMounts.size && inspectedMounts.every((mount) => {
         const expected = expectedMounts.get(mount.canonicalSource); return expected && expected.destination === mount.Destination && expected.rw === Boolean(mount.RW);
@@ -561,11 +615,17 @@ async function recover(paths, args, settings, runtime) {
       const activeExists = await exists(paths.active); const rawExists = await exists(paths.rawArchive); const stageExists = stage && await exists(stage);
       if (activeExists && rawExists) {
         if (journal.phase !== 'RAW_RETIRED' || stageExists) throw new MigrationError('ambiguous pre-commit migration trees');
-        await rename(paths.active, stage); await syncDirectory(paths.parent, runtime); await rename(paths.rawArchive, paths.active); await syncDirectory(paths.parent, runtime); await rm(stage, { recursive: true });
+        await rename(paths.active, stage); await syncDirectory(paths.parent, runtime);
+        await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover', [stage]);
+        await rename(paths.rawArchive, paths.active); await syncDirectory(paths.parent, runtime);
+        await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover', [stage]);
+        await rm(stage, { recursive: true });
       } else if (!activeExists && rawExists) {
-        await rename(paths.rawArchive, paths.active); await syncDirectory(paths.parent, runtime); if (stageExists) await rm(stage, { recursive: true });
-      } else if (activeExists && !rawExists) {
+        await rename(paths.rawArchive, paths.active); await syncDirectory(paths.parent, runtime);
+        await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover', stageExists ? [stage] : []);
         if (stageExists) await rm(stage, { recursive: true });
+      } else if (activeExists && !rawExists) {
+        if (stageExists) { await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover', [stage]); await rm(stage, { recursive: true }); }
       } else throw new MigrationError('pre-commit migration trees are incomplete');
       const restored = await inventory(paths.active, settings); if (journal.rawInventoryDigest && restored.digest !== journal.rawInventoryDigest) throw new MigrationError('restored raw tree identity mismatch');
       await clearTransaction(paths, runtime); return { status: journal.phase === 'RAW_RETIRED' || rawExists ? 'raw-active-restored' : 'rolled-back-before-retire' };
@@ -579,8 +639,14 @@ async function recover(paths, args, settings, runtime) {
   if (['PREPARED', 'NORMALIZED_RETIRED'].includes(journal.phase)) {
     const activeExists = await exists(paths.active); const rawExists = await exists(paths.rawArchive); const retiredExists = retired && await exists(retired);
     if (activeExists && !rawExists && retiredExists) {
-      await rename(paths.active, paths.rawArchive); await syncDirectory(paths.parent, runtime); await rename(retired, paths.active); await syncDirectory(paths.parent, runtime);
-    } else if (!activeExists && rawExists && retiredExists) { await rename(retired, paths.active); await syncDirectory(paths.parent, runtime); }
+      await rename(paths.active, paths.rawArchive); await syncDirectory(paths.parent, runtime);
+      await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover', [retired]);
+      await rename(retired, paths.active); await syncDirectory(paths.parent, runtime);
+      await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover');
+    } else if (!activeExists && rawExists && retiredExists) {
+      await rename(retired, paths.active); await syncDirectory(paths.parent, runtime);
+      await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), 'recover');
+    }
     else if (!(activeExists && rawExists && !retiredExists)) throw new MigrationError('pre-commit rollback trees are incomplete');
     const normalized = await inventory(paths.active, { ...settings, strict: true }); const raw = await inventory(paths.rawArchive, settings);
     if ((journal.normalizedInventoryDigest && normalized.digest !== journal.normalizedInventoryDigest) || (journal.rawInventoryDigest && raw.digest !== journal.rawInventoryDigest)) throw new MigrationError('restored rollback tree identity mismatch');
@@ -679,13 +745,17 @@ export async function runLegacyActiveMigration(input, runtime = {}) {
       const unchangedRaw = await inventory(paths.active, settings); if (unchangedRaw.digest !== raw.digest) throw new MigrationError('legacy active tree changed while normalized stage was built');
       await rename(paths.active, paths.rawArchive); await syncDirectory(paths.parent, runtime); await checkpoint(runtime, 'rename:raw-retired'); await writeJournal(paths, journal, settings, runtime, 'RAW_RETIRED');
       const archivedRaw = await inventory(paths.rawArchive, settings); if (archivedRaw.digest !== raw.digest) throw new MigrationError('raw archive changed during retirement');
+      await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), args.action, [stage]);
       await rename(stage, paths.active); await syncDirectory(paths.parent, runtime); await checkpoint(runtime, 'rename:normalized-active'); const installed = await inventory(paths.active, { ...settings, strict: true }); if (installed.digest !== normalized.digest) throw new MigrationError('normalized active tree changed during rename'); await writeJournal(paths, journal, settings, runtime, 'NORMALIZED_ACTIVE');
+      await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), args.action);
       const receipt = await publishJson(paths.migrationReceipt, { schema: 'booking.preprod-legacy-active-migration-receipt/v1', status: 'pass', action: 'migrate', environment: 'preprod', project: 'booking-preprod', transactionId, migrationId: args['migration-id'], approvalId: args['approval-id'], rawInventoryDigest: raw.digest, normalizedInventoryDigest: normalized.digest, rawArchiveName: basename(paths.rawArchive), migratedAt: runtime.now || new Date().toISOString() }, settings, runtime); journal.receiptDigest = receipt.receiptDigest;
       await writeJournal(paths, journal, settings, runtime, 'RECEIPT_PUBLISHED'); await writeJournal(paths, journal, settings, runtime, 'COMPLETE'); await clearTransaction(paths, runtime); return receipt;
     }
     const { migration, active, raw } = rollbackPreflight;
     const retired = join(paths.parent, journal.normalizedRetiredName); await rename(paths.active, retired); await syncDirectory(paths.parent, runtime); await checkpoint(runtime, 'rename:normalized-retired'); await writeJournal(paths, journal, settings, runtime, 'NORMALIZED_RETIRED');
+    await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), args.action, [retired]);
     await rename(paths.rawArchive, paths.active); await syncDirectory(paths.parent, runtime); await checkpoint(runtime, 'rename:raw-restored'); await writeJournal(paths, journal, settings, runtime, 'RAW_RESTORED');
+    await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), args.action, [retired]);
     const receipt = await publishJson(paths.rollbackReceipt, { schema: 'booking.preprod-legacy-active-migration-receipt/v1', status: 'pass', action: 'rollback', environment: 'preprod', project: 'booking-preprod', transactionId, migrationId: args['migration-id'], approvalId: args['approval-id'], predecessorReceiptDigest: migration.receiptDigest, rawInventoryDigest: raw.digest, normalizedInventoryDigest: active.digest, normalizedArchiveName: journal.normalizedRetiredName, rolledBackAt: runtime.now || new Date().toISOString() }, settings, runtime); journal.receiptDigest = receipt.receiptDigest;
     await writeJournal(paths, journal, settings, runtime, 'RECEIPT_PUBLISHED'); await writeJournal(paths, journal, settings, runtime, 'COMPLETE'); await clearTransaction(paths, runtime); return receipt;
   } catch (error) {
