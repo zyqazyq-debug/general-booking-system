@@ -665,6 +665,9 @@ test('host bootstrap source fixes all trust roots and verifies before Docker or 
     "SHA256SUM='/usr/bin/sha256sum'",
     "STAT='/usr/bin/stat'",
     "READLINK='/usr/bin/readlink'",
+    'trusted_chain "$SHA256SUM" \'/usr/bin\'',
+    'trusted_chain "$STAT" \'/usr/bin\'',
+    'trusted_chain "$READLINK" \'/usr/bin\'',
   ]) assert.ok(source.includes(fixed), fixed);
   assert.match(source, /trusted_chain "\$BUNDLE_ROOT" "\$EVIDENCE_TRUST_ROOT"/);
   assert.match(source, /trusted_chain "\$APPROVAL_ROOT" "\$EVIDENCE_TRUST_ROOT"/);

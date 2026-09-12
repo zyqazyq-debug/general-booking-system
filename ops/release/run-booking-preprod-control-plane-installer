@@ -171,9 +171,9 @@ trusted_chain "$APPROVAL_ROOT" "$EVIDENCE_TRUST_ROOT"
 trusted_chain "$approval_dir" "$APPROVAL_ROOT"
 trusted_item "$approval_tuple"
 if [ "$BOOTSTRAP_TEST" = 'false' ]; then
-  trusted_chain "$SHA256SUM" '/bin'
-  trusted_chain "$STAT" '/bin'
-  trusted_chain "$READLINK" '/bin'
+  trusted_chain "$SHA256SUM" '/usr/bin'
+  trusted_chain "$STAT" '/usr/bin'
+  trusted_chain "$READLINK" '/usr/bin'
 fi
 
 tuple_digest=$(json_string "$approval_tuple" 'tupleDigest') || fail
