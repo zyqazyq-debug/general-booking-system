@@ -139,6 +139,7 @@ test('one-time migration keeps the entire raw tree and installs only the normali
   const normalized = await runLegacyActiveMigration(['--action', 'inventory', ...f.identity], { ...f.runtime, active: f.raw });
   assert.equal(normalized.inventoryDigest, f.inventory.inventoryDigest);
   if (process.platform !== 'win32') {
+    assert.equal((await (await import('node:fs/promises')).stat(f.active)).mode & 0o777, 0o555);
     const rootRunnerMode = (await import('node:fs/promises')).stat(f.active + '/run-booking-preprod-control-plane');
     assert.equal((await rootRunnerMode).mode & 0o777, 0o555);
     assert.equal((await (await import('node:fs/promises')).stat(f.active + '/switch-preprod-ingress.mjs')).mode & 0o777, 0o444);

@@ -128,7 +128,7 @@ async function assertCreatedOwner(path, settings, label) {
 
 async function inventory(root, { uid, strict = false, enforceMode = true } = {}) {
   const rootInfo = await assertDirectory(root, uid, 'inventory root', enforceMode); const rootMode = `0${(rootInfo.mode & 0o777).toString(8)}`;
-  if (strict && enforceMode && rootMode !== '0755') throw new MigrationError('inventory root mode drift');
+  if (strict && enforceMode && rootMode !== '0555') throw new MigrationError('inventory root mode drift');
   const entries = [];
   async function walk(directory) {
     const children = await readdir(directory, { withFileTypes: true }); children.sort((a, b) => Buffer.from(a.name).compare(Buffer.from(b.name)));
@@ -448,14 +448,14 @@ async function normalizeClone(source, target, settings, runtime) {
       else if (info.isFile()) { if (info.nlink !== 1) throw new MigrationError(`hard-linked source rejected while cloning: ${name}`); await copyFile(sourcePath, targetPath); await assertCreatedOwner(targetPath, settings, `normalized file ${name}`); await chmod(targetPath, EXECUTABLES.has(name) ? 0o555 : 0o444); await syncFile(targetPath, runtime); }
       else throw new MigrationError(`non-regular source while cloning: ${name}`);
     }
-    await chmod(to, prefix ? 0o555 : 0o755); await syncDirectory(to, runtime);
+    await chmod(to, 0o555); await syncDirectory(to, runtime);
   }
   for (const name of REQUIRED_ACTIVE_ROOT_ENTRIES) {
     const sourcePath = join(source, name); const info = await lstat(sourcePath); const targetPath = join(target, name);
     if (info.isDirectory()) await copyDirectory(sourcePath, targetPath, name);
     else { if (info.nlink !== 1) throw new MigrationError(`hard-linked source rejected while cloning: ${name}`); await copyFile(sourcePath, targetPath); await assertCreatedOwner(targetPath, settings, `normalized file ${name}`); await chmod(targetPath, EXECUTABLES.has(name) ? 0o555 : 0o444); await syncFile(targetPath, runtime); }
   }
-  await chmod(target, 0o755); await syncDirectory(target, runtime); await syncDirectory(dirname(target), runtime);
+  await chmod(target, 0o555); await syncDirectory(target, runtime); await syncDirectory(dirname(target), runtime);
 }
 
 async function publishJson(path, body, settings, runtime) {
