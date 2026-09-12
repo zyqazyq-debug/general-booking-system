@@ -18,9 +18,12 @@ services:
       - telegram-warp-state:/var/lib/cloudflare-warp
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
-    pids_limit: 128
     mem_limit: 384m
-    cpus: 0.50
+    # DS218+ exposes neither the Docker PIDs controller nor the CPU CFS
+    # controller.  Compose discards `pids_limit` and rejects `cpus` before the
+    # container is created, so do not claim limits this host cannot enforce.
+    # The service remains memory-bounded and isolated by its dedicated
+    # topology, read-only root, dropped capabilities and private networks.
     networks: [preprod-telegram, preprod-warp-uplink]
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck.sh"]

@@ -30,9 +30,23 @@ production. Arbitrary HTTPS hosts are rejected. Before contacting Telegram it
 calls that host's exact `/readyz` URL and requires the expected release ID,
 full Git SHA, manifest digest, config schema, migration catalog digest and
 migration floor. Readiness itself checks the database migration-ledger head.
-It then calls `getMe` and fails if the bot identity differs; after `setWebhook` it calls
-`getWebhookInfo` and fails if the URL differs. There is deliberately no
-automatic delete action.
+It then calls `getMe` and fails if the bot identity differs. The setter fixes
+`allowed_updates` to `message` and `callback_query`, reads `getWebhookInfo`
+before and after `setWebhook`, and requires an exact URL and allowed-update
+readback. It records the before/after `last_error_date` and
+`last_error_message`: an unchanged historical delivery error remains evidence
+but does not fail a release, while an error that appears or changes after this
+setter invocation fails the action. There is deliberately no automatic delete
+action.
+
+`telegram-menu-button-contract.ts` currently defines only the preproduction
+chat-menu-button plan and its rollback ownership rule. It is intentionally not
+wired to the fenced executor yet: rollback may restore the captured `before`
+value only while a fresh readback still equals this plan's exact desired value.
+The Telegram Bot API can read the per-chat/default chat menu button through
+`getChatMenuButton`; it does not provide a readback for the BotFather-managed
+Main Mini App URL. This contract must not be reported as Main Mini App URL
+verification.
 
 Credentials must be supplied as `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_WEBHOOK_SECRET_TOKEN`, and the stable

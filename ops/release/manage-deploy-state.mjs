@@ -3,23 +3,26 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson, ContractError, EXIT, gateResult, parseArgs, sha256 } from './lib/contracts.mjs';
-import { canonicalStatePath, initializeStateFile, mutateStateFile } from './lib/deploy-state-store.mjs';
+import { canonicalStatePath, initializeStateFile, mutateStateFile, verifyCanonicalDeployReceiptChain } from './lib/deploy-state-store.mjs';
 import { readCanonicalExecutorReceiptByDigest, readCompletedExecutorReceiptByDigest, resourceDirectory } from './lib/fenced-resource-store.mjs';
+import { schemaForAction } from './lib/external-action-contract.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
-import { acquireLease, initialDeployState, renewLease, ROLLBACK_MODE, rollbackModeForState, takeoverExpiredLease, transitionDeployState } from './lib/state-machine.mjs';
+import { acquireLease, initialDeployState, MAX_OBSERVATION_WINDOW_MINUTES, renewLease, ROLLBACK_MODE, rollbackModeForState, takeoverExpiredLease, transitionDeployState } from './lib/state-machine.mjs';
 
 export const MIN_LEASE_DURATION_MS = 30_000;
 export const MAX_LEASE_DURATION_MS = 30 * 60_000;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const FORBIDDEN_CALLER_FIELDS = new Set(['state', 'now', 'expires-at']);
 const ALLOWED_FIELDS = new Set([
   'action', 'execute', 'environment', 'project', 'approval-id', 'expected-generation', 'expected-fencing-epoch', 'manifest-digest',
   'active-slot', 'active-release', 'active-git-sha', 'active-manifest-digest',
   'candidate-slot', 'candidate-release', 'candidate-git-sha', 'candidate-manifest-digest',
   'edge-network', 'data-network', 'database-ref', 'ingress-ref',
-  'operation-id', 'lease-id', 'holder-id', 'lease-duration-ms', 'to',
+  'operation-id', 'lease-id', 'holder-id', 'lease-duration-ms', 'to', 'observation-window-minutes',
   'baseline-receipt-digest', 'expand-migration-receipt-digest', 'stage-receipt-digest',
   'candidate-probe-digest', 'rollback-pre-switch-probe-digest', 'singleton-transfer-receipt-digest', 'switch-receipt-digest',
   'webhook-receipt-digest', 'observation-receipt-digest', 'rollback-receipt-digest', 'rollback-singleton-transfer-receipt-digest', 'rolled-back-probe-digest',
+  'database-restore-receipt-digest', 'telegram-abort-receipt-digest', 'active-runtime-restore-receipt-digest', 'active-probe-digest',
 ]);
 
 function required(args, names) {
@@ -36,6 +39,14 @@ function leaseDuration(value) {
   const result = integer(value, 'lease-duration-ms');
   if (result < MIN_LEASE_DURATION_MS || result > MAX_LEASE_DURATION_MS) {
     throw new ContractError(`--lease-duration-ms must be between ${MIN_LEASE_DURATION_MS} and ${MAX_LEASE_DURATION_MS}`, EXIT.SINGLETON);
+  }
+  return result;
+}
+
+function observationWindowMinutes(value) {
+  const result = integer(value, 'observation-window-minutes');
+  if (result < 1 || result > MAX_OBSERVATION_WINDOW_MINUTES) {
+    throw new ContractError(`--observation-window-minutes must be between 1 and ${MAX_OBSERVATION_WINDOW_MINUTES}`, EXIT.SWITCH);
   }
   return result;
 }
@@ -82,13 +93,19 @@ const RECEIPT_TRANSITIONS = Object.freeze({
     { argument: 'rollback-pre-switch-probe-digest', action: 'preprod-probe-active', identity: 'active', resources: ['activeProbe'] },
     { argument: 'singleton-transfer-receipt-digest', action: 'preprod-transfer-singletons', identity: 'candidate', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram'] },
   ],
-  SWITCHED: [{ argument: 'switch-receipt-digest', action: 'preprod-switch-ingress', identity: 'candidate', resources: ['ingressRef'] }],
+  SWITCHED: [{ argument: 'switch-receipt-digest', action: 'preprod-switch-ingress', identity: 'candidate', resources: ['ingressRef', 'edgeNetwork'] }],
   OBSERVING: [{ argument: 'webhook-receipt-digest', action: 'preprod-set-webhook', identity: 'active', resources: ['telegram', 'databaseRef', 'dataNetwork'] }],
   COMMITTED: [{ argument: 'observation-receipt-digest', action: 'preprod-probe-observation', identity: 'active', resources: ['observationProbe'] }],
   ROLLED_BACK: [
-    { argument: 'rollback-receipt-digest', action: 'preprod-rollback-ingress', identity: 'rollback', resources: ['ingressRef'], postSwitchOnly: true },
     { argument: 'rollback-singleton-transfer-receipt-digest', action: 'preprod-rollback-singletons', identity: 'rollback', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram'] },
+    { argument: 'rollback-receipt-digest', action: 'preprod-rollback-ingress', identity: 'rollback', resources: ['ingressRef', 'edgeNetwork'], postSwitchOnly: true, predecessorOf: 'preprod-rollback-singletons' },
     { argument: 'rolled-back-probe-digest', action: 'preprod-probe-rollback', identity: 'rollback', resources: ['rollbackProbe'] },
+  ],
+  FAILED_RECOVERED: [
+    { argument: 'active-runtime-restore-receipt-digest', action: 'preprod-restore-active-runtime', identity: 'active', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram', 'ingressRef'] },
+    { argument: 'database-restore-receipt-digest', action: 'preprod-attest-database-restore', identity: 'candidate', resources: ['databaseRef', 'dataNetwork'], predecessorOf: 'preprod-restore-active-runtime' },
+    { argument: 'telegram-abort-receipt-digest', action: 'preprod-abort-telegram-egress', identity: 'candidate', resources: ['telegram'], predecessorOf: 'preprod-restore-active-runtime' },
+    { argument: 'active-probe-digest', action: 'preprod-probe-recovered-active', identity: 'active', resources: ['activeProbe'] },
   ],
 });
 
@@ -146,7 +163,7 @@ async function verifyTransitionReceipts(statePath, state, args) {
       const priorDigest = successor.receipt.verification.adoption.priorReceiptDigest;
       const prior = await readCanonicalExecutorReceiptByDigest(statePath, priorDigest);
       const priorRequest = {
-        schema: 'booking.fenced-action-request/v1', environment: prior.receipt.environment, project: prior.receipt.project,
+        schema: schemaForAction(prior.receipt.action).request, environment: prior.receipt.environment, project: prior.receipt.project,
         action: prior.receipt.action, actionId: prior.receipt.actionId, operationId: prior.receipt.operationId,
         approvalId: prior.receipt.approvalId, generation: prior.receipt.generation, fencingEpoch: prior.receipt.fencingEpoch,
         leaseId: prior.receipt.leaseId, holderId: prior.receipt.holderId, manifestDigest: prior.receipt.manifestDigest,
@@ -168,14 +185,14 @@ async function verifyTransitionReceipts(statePath, state, args) {
       leaseId: priorFenceSuccessor.leaseId, holderId: priorFenceSuccessor.holderId,
     } : { approvalId: state.approvalId, fencingEpoch: state.fencingEpoch, leaseId: state.lease?.leaseId, holderId: state.lease?.holderId };
     const requestBody = {
-      schema: 'booking.fenced-action-request/v1', environment: receipt.environment, project: receipt.project,
+      schema: schemaForAction(receipt.action).request, environment: receipt.environment, project: receipt.project,
       action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
       generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
       manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
       runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest,
     };
     const mismatches = [
-      [receipt.schema === 'booking.external-action-receipt/v1', 'schema'], [receipt.status === 'pass', 'status'],
+      [receipt.schema === schemaForAction(receipt.action).receipt, 'schema'], [receipt.status === 'pass', 'status'],
       [acceptedReceipt.receiptDigest === args[requirement.argument], 'digest'], [receipt.action === requirement.action, 'action'],
       [receipt.environment === state.environment, 'environment'], [receipt.project === state.project, 'project'],
       [receipt.operationId === state.operationId, 'operation'], [receipt.approvalId === receiptFenceIdentity.approvalId, 'approval'],
@@ -189,15 +206,19 @@ async function verifyTransitionReceipts(statePath, state, args) {
     verified.set(requirement.action, { receipt, acceptedReceipt, expectedResources });
     if (requirement.predecessorOf) {
       if (!successor) throw new ContractError(`${args.to} executor receipt predecessor proof is unavailable`, EXIT.IDENTITY);
-      const observedPredecessors = (priorFenceSuccessor || successor.receipt).resources?.map((resource) => ({
+      const expectedResourceSet = new Set(expectedResources);
+      const successorResources = (priorFenceSuccessor || successor.receipt).resources || [];
+      const observedPredecessors = successorResources.filter((resource) =>
+        expectedResourceSet.has(resource.resourceId)).map((resource) => ({
         resourceId: resource.resourceId,
         previousReceiptDigest: resource.previousReceiptDigest,
       })).sort((left, right) => left.resourceId.localeCompare(right.resourceId));
-      const expectedPredecessors = successor.expectedResources.map((resourceId) => ({
+      const successorResourceSet = new Set(successorResources.map((resource) => resource.resourceId));
+      const expectedPredecessors = expectedResources.filter((resourceId) => successorResourceSet.has(resourceId)).map((resourceId) => ({
         resourceId,
         previousReceiptDigest: acceptedReceipt.receiptDigest,
       })).sort((left, right) => left.resourceId.localeCompare(right.resourceId));
-      if (canonicalJson(observedPredecessors) !== canonicalJson(expectedPredecessors)) {
+      if (expectedPredecessors.length === 0 || canonicalJson(observedPredecessors) !== canonicalJson(expectedPredecessors)) {
         throw new ContractError(`${args.to} executor receipt does not prove the exact baseline predecessor chain`, EXIT.IDENTITY);
       }
     }
@@ -212,11 +233,15 @@ async function verifyTerminalResourceClosure(statePath, state, nextPhase, args) 
   const resourceIds = new Set([...Object.values(state.resources), `telegram:${state.project}`,
     `probe:${state.project}:candidate`, `probe:${state.project}:active`, `probe:${state.project}:observation`, `probe:${state.project}:rollback`]);
   const acceptedHeads = new Set(Object.values(state.evidence).filter(Boolean));
+  for (const key of ['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest', 'activeProbeDigest']) {
+    const digest = state.recovery?.[key];
+    if (DIGEST.test(digest || '')) acceptedHeads.add(digest);
+  }
   const requiredResourceIds = new Set();
   for (const requirements of Object.values(RECEIPT_TRANSITIONS)) {
     for (const requirement of requirements) {
       const evidenceKey = requirement.argument.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
-      const evidenceDigest = args[requirement.argument] || state.evidence[evidenceKey];
+      const evidenceDigest = args[requirement.argument] || state.evidence[evidenceKey] || state.recovery?.[evidenceKey];
       if (/^sha256:[0-9a-f]{64}$/.test(evidenceDigest || '')) {
         for (const resourceKey of requirement.resources) requiredResourceIds.add(resourceMap[resourceKey]);
       }
@@ -255,21 +280,24 @@ export async function runManageDeployState(args, runtime = {}) {
     const active = identity(args, 'active');
     if (active.manifestDigest !== args['manifest-digest']) throw new ContractError('authorized manifest digest does not match active identity', EXIT.IDENTITY);
     if (!isExactLegacyBootstrap(active)) throw new ContractError('initial bootstrap active identity must be the exact fixed legacy release', EXIT.IDENTITY);
-    required(args, ['edge-network', 'data-network', 'database-ref', 'ingress-ref']);
+    required(args, ['edge-network', 'data-network', 'database-ref', 'ingress-ref', 'observation-window-minutes']);
     const resources = { edgeNetwork: args['edge-network'], dataNetwork: args['data-network'], databaseRef: args['database-ref'], ingressRef: args['ingress-ref'] };
     const runtimeEnvDigest = await inspectRuntimeEnvironment(args, runtime);
-    return initializeStateFile(statePath, initialDeployState({ environment: args.environment, project: args.project, resources, active, runtimeEnvDigest }, now), storeOptions);
+    return initializeStateFile(statePath, initialDeployState({ environment: args.environment, project: args.project, resources, active, runtimeEnvDigest,
+      observationWindowMinutes: observationWindowMinutes(args['observation-window-minutes']) }, now), storeOptions);
   }
 
   return mutateStateFile(statePath, async (state) => {
     if (state.environment !== args.environment || state.project !== args.project) throw new ContractError('canonical state identity mismatch', EXIT.SWITCH);
     if (args.action === 'acquire') {
+      await verifyCanonicalDeployReceiptChain(statePath, state, { mode: 'acquire' });
       const candidate = identity(args, 'candidate');
       if (candidate.manifestDigest !== args['manifest-digest']) throw new ContractError('authorized manifest digest does not match candidate identity', EXIT.IDENTITY);
-      required(args, ['operation-id', 'lease-id', 'holder-id', 'lease-duration-ms']);
+      required(args, ['operation-id', 'lease-id', 'holder-id', 'lease-duration-ms', 'observation-window-minutes']);
       const expiresAt = new Date(nowMs + leaseDuration(args['lease-duration-ms'])).toISOString();
       const runtimeEnvDigest = await inspectRuntimeEnvironment(args, runtime);
-      return acquireLease(state, { ...cas, candidate, operationId: args['operation-id'], approvalId: args['approval-id'], leaseId: args['lease-id'], holderId: args['holder-id'], now, expiresAt, runtimeEnvDigest });
+      return acquireLease(state, { ...cas, candidate, operationId: args['operation-id'], approvalId: args['approval-id'], leaseId: args['lease-id'], holderId: args['holder-id'], now, expiresAt, runtimeEnvDigest,
+        observationWindowMinutes: observationWindowMinutes(args['observation-window-minutes']) });
     }
     const runtimeEnvDigest = await inspectRuntimeEnvironment(args, runtime);
     if (runtimeEnvDigest !== state.runtimeEnvDigest) {
@@ -290,6 +318,9 @@ export async function runManageDeployState(args, runtime = {}) {
     }
     if (args.action === 'transition') {
       required(args, ['to']);
+      if (state.schema === 'booking.deploy-state/v2' && ['FAILED_RECOVERED', 'IDLE'].includes(args.to)) {
+        required(args, ['observation-window-minutes']);
+      }
       await verifyTransitionReceipts(statePath, state, args);
       await verifyTerminalResourceClosure(statePath, state, args.to, args);
       return transitionDeployState(state, {
@@ -301,6 +332,10 @@ export async function runManageDeployState(args, runtime = {}) {
         switchReceiptDigest: args['switch-receipt-digest'], webhookReceiptDigest: args['webhook-receipt-digest'], observationReceiptDigest: args['observation-receipt-digest'],
         rollbackReceiptDigest: args['rollback-receipt-digest'], rollbackSingletonTransferReceiptDigest: args['rollback-singleton-transfer-receipt-digest'],
         rolledBackProbeDigest: args['rolled-back-probe-digest'],
+        databaseRestoreReceiptDigest: args['database-restore-receipt-digest'], telegramAbortReceiptDigest: args['telegram-abort-receipt-digest'],
+        activeRuntimeRestoreReceiptDigest: args['active-runtime-restore-receipt-digest'], activeProbeDigest: args['active-probe-digest'],
+        priorFailedStateDigest: args.to === 'FAILED_RECOVERED' ? sha256(state) : undefined,
+        observationWindowMinutes: args['observation-window-minutes'] === undefined ? undefined : observationWindowMinutes(args['observation-window-minutes']),
       });
     }
     throw new ContractError(`unsupported --action: ${args.action}`);

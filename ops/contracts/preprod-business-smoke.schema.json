@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/preprod-business-smoke.schema.json",
+  "title": "HappyBooking fenced preproduction business smoke",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "origin", "releaseId", "gitSha", "manifestDigest", "slot", "configSchema", "migrationFloor", "migrationCatalogDigest", "telegramBotMode", "telegramWebhookEnabled", "telegramWebhookUrl", "fixture", "checks"],
+  "properties": {
+    "schema": { "const": "booking.preprod-business-smoke/v2" },
+    "status": { "const": "pass" },
+    "origin": { "const": "https://booking-preprod.happybooking.uk" },
+    "releaseId": { "type": "string", "pattern": "^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "slot": { "enum": ["blue", "green"] },
+    "configSchema": { "type": "string", "pattern": "^booking\\.config/v[1-9][0-9]*$" },
+    "migrationFloor": { "type": "string", "minLength": 1 },
+    "migrationCatalogDigest": { "$ref": "#/$defs/digest" },
+    "telegramBotMode": { "const": "webhook" },
+    "telegramWebhookEnabled": { "const": true },
+    "telegramWebhookUrl": { "const": "https://booking-preprod.happybooking.uk/telegram/webhook" },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["marker", "updateId", "operationId", "actionId", "generation", "fencingEpoch"],
+      "properties": {
+        "marker": { "type": "string", "pattern": "^g4_[0-9a-f]{24}$" },
+        "updateId": { "type": "integer", "minimum": 8000000000000000, "maximum": 8099999999999999 },
+        "operationId": { "$ref": "#/$defs/identifier" },
+        "actionId": { "$ref": "#/$defs/identifier" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "fencingEpoch": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicIdentity", "rootUi", "sessionChain", "shortLinks", "database", "telegramWidget", "telegramLogin", "telegramInbox"],
+      "properties": {
+        "publicIdentity": { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "pass" } } },
+        "rootUi": { "type": "object", "additionalProperties": false, "required": ["statusCode", "bodyDigest"], "properties": { "statusCode": { "const": 200 }, "bodyDigest": { "$ref": "#/$defs/digest" } } },
+        "sessionChain": {
+          "type": "object", "additionalProperties": false,
+          "required": ["registered", "loggedIn", "rotated", "authenticatedReadback", "loggedOut", "revokedReadback"],
+          "properties": {
+            "registered": { "const": true }, "loggedIn": { "const": true }, "rotated": { "const": true },
+            "authenticatedReadback": { "const": true }, "loggedOut": { "const": true }, "revokedReadback": { "const": true }
+          }
+        },
+        "shortLinks": {
+          "type": "object", "additionalProperties": false, "required": ["referral", "share"],
+          "properties": {
+            "referral": { "type": "object", "additionalProperties": false, "required": ["statusCode", "location"], "properties": { "statusCode": { "const": 302 }, "location": { "type": "string", "pattern": "^/#/pages/login/register\\?ref=G4[0-9A-F]{12}$" } } },
+            "share": { "type": "object", "additionalProperties": false, "required": ["statusCode", "location"], "properties": { "statusCode": { "const": 302 }, "location": { "type": "string", "pattern": "^/#/pages/booking/detail\\?slug=g4_[0-9a-f]{24}$" } } }
+          }
+        },
+        "database": {
+          "type": "object", "additionalProperties": false,
+          "required": ["database", "databaseUser", "writeReadback", "sessionRows", "revokedRows", "fixtureOwnership", "fixtureCleanup"],
+          "properties": {
+            "database": { "const": "booking_preprod" }, "databaseUser": { "const": "booking_preprod" }, "writeReadback": { "const": true },
+            "sessionRows": { "const": 2 }, "revokedRows": { "const": 2 }, "fixtureOwnership": { "const": "username-and-smoke-email" }, "fixtureCleanup": { "const": "deleted-and-read-back" }
+          }
+        },
+        "telegramWidget": {
+          "type": "object", "additionalProperties": false,
+          "required": ["origin", "botUsername", "transport", "domainAccepted", "embedInitialized"],
+          "properties": {
+            "origin": { "const": "https://booking-preprod.happybooking.uk" },
+            "botUsername": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{1,28}bot$" },
+            "transport": { "const": "tls-validated-no-redirect-no-cache" },
+            "domainAccepted": { "const": true },
+            "embedInitialized": { "const": true }
+          }
+        },
+        "telegramLogin": {
+          "type": "object", "additionalProperties": false,
+          "required": ["signatureAlgorithm", "syntheticFixture", "sessionCreated", "authenticatedReadback", "databaseIdentityReadback", "logoutConfirmed", "revokedSessionRejected", "databaseRevocationReadback", "fixtureCleanup"],
+          "properties": {
+            "signatureAlgorithm": { "const": "sha256-bot-token+hmac-sha256" },
+            "syntheticFixture": { "const": true },
+            "sessionCreated": { "const": true },
+            "authenticatedReadback": { "const": true },
+            "databaseIdentityReadback": { "const": true },
+            "logoutConfirmed": { "const": true },
+            "revokedSessionRejected": { "const": true },
+            "databaseRevocationReadback": { "const": true },
+            "fixtureCleanup": { "const": "deleted-and-read-back" }
+          }
+        },
+        "telegramInbox": {
+          "type": "object", "additionalProperties": false,
+          "required": ["deliveryStatusCodes", "rowCount", "processedCount", "processedAtPresent", "sideEffectOperations"],
+          "properties": {
+            "deliveryStatusCodes": { "const": [200, 200] }, "rowCount": { "const": 1 }, "processedCount": { "const": 1 },
+            "processedAtPresent": { "const": true }, "sideEffectOperations": { "const": 0 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }
+  }
+}

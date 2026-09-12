@@ -2,6 +2,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import {
   Controller,
   Get,
+  Header,
   Inject,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -31,6 +32,9 @@ export class OpsStatusController {
   ) {}
 
   @Get('livez')
+  @Header('Cache-Control', 'no-store')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   @RawResponse()
   @ApiOkResponse({ type: OpsLivenessResponseDto })
   live() {
@@ -38,6 +42,9 @@ export class OpsStatusController {
   }
 
   @Get('readyz')
+  @Header('Cache-Control', 'no-store')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   @RawResponse()
   @ApiOkResponse({ type: OpsReadinessResponseDto })
   @ApiServiceUnavailableResponse({ type: OpsNotReadyResponseDto })
@@ -58,9 +65,9 @@ export class OpsStatusController {
           migrationFloor,
         );
         if (!match) throw new Error('configured migration floor is invalid');
-        const rows = (await this.dataSource.query(
+        const rows = await this.dataSource.query<Array<{ name: string }>>(
           'SELECT "name" FROM "migrations" ORDER BY "timestamp" DESC, "id" DESC LIMIT 1',
-        )) as Array<{ name: string }>;
+        );
         if (rows[0]?.name !== `${match[2].replace(/-/g, '')}${match[1]}`) {
           throw new Error('database migration floor does not match release');
         }
@@ -112,6 +119,9 @@ export class OpsStatusController {
   }
 
   @Get('__ops/version')
+  @Header('Cache-Control', 'no-store')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   @RawResponse()
   @ApiOkResponse({ type: OpsLivenessResponseDto })
   version() {

@@ -1,8 +1,10 @@
 import { ServiceUnavailableException } from '@nestjs/common';
+import { HEADERS_METADATA } from '@nestjs/common/constants';
 import { OpsStatusController } from './ops-status.controller';
 import { RAW_RESPONSE_METADATA } from '../common/decorators/raw-response.decorator';
 
 describe('OpsStatusController', () => {
+  const releaseGateHandlerNames = ['live', 'ready', 'version'] as const;
   const config = (values: Record<string, string>) => ({
     get: jest.fn((key: string) => values[key]),
   });
@@ -199,12 +201,28 @@ describe('OpsStatusController', () => {
   });
 
   it('marks release gate endpoints as raw transport contracts', () => {
-    for (const handler of [
-      OpsStatusController.prototype.live,
-      OpsStatusController.prototype.ready,
-      OpsStatusController.prototype.version,
-    ]) {
+    for (const handlerName of releaseGateHandlerNames) {
+      const handler = Reflect.get(
+        OpsStatusController.prototype,
+        handlerName,
+      ) as object;
       expect(Reflect.getMetadata(RAW_RESPONSE_METADATA, handler)).toBe(true);
+    }
+  });
+
+  it('prohibits intermediary and browser caching on every release gate endpoint', () => {
+    for (const handlerName of releaseGateHandlerNames) {
+      const handler = Reflect.get(
+        OpsStatusController.prototype,
+        handlerName,
+      ) as object;
+      expect(Reflect.getMetadata(HEADERS_METADATA, handler)).toEqual(
+        expect.arrayContaining([
+          { name: 'Cache-Control', value: 'no-store' },
+          { name: 'Pragma', value: 'no-cache' },
+          { name: 'Expires', value: '0' },
+        ]),
+      );
     }
   });
 });

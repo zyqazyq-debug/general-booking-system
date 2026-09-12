@@ -1,7 +1,7 @@
 import { ContractError, EXIT } from './contracts.mjs';
 import { LEGACY_OLD_BINDING } from './legacy-preprod.mjs';
 
-export const TRANSITIONS = Object.freeze({
+const V2_TRANSITIONS = Object.freeze({
   IDLE: ['LOCKED'],
   LOCKED: ['MANIFEST_VERIFIED', 'FAILED'],
   MANIFEST_VERIFIED: ['STAGED', 'FAILED'],
@@ -19,14 +19,37 @@ export const TRANSITIONS = Object.freeze({
   FAILED: [],
 });
 
+export const TRANSITIONS = Object.freeze({
+  IDLE: ['LOCKED'],
+  LOCKED: ['MANIFEST_VERIFIED', 'FAILED'],
+  MANIFEST_VERIFIED: ['STAGED', 'FAILED'],
+  STAGED: ['EXPAND_MIGRATED', 'FAILED'],
+  EXPAND_MIGRATED: ['CANDIDATE_STARTED', 'FAILED'],
+  CANDIDATE_STARTED: ['CANDIDATE_READY', 'FAILED'],
+  CANDIDATE_READY: ['SINGLETON_TRANSFERRED', 'FAILED'],
+  SINGLETON_TRANSFERRED: ['SWITCHED', 'ROLLBACK_PENDING', 'FAILED'],
+  SWITCHED: ['OBSERVING', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN'],
+  OBSERVING: ['COMMITTED', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN'],
+  COMMITTED: ['IDLE'],
+  ROLLBACK_PENDING: ['ROLLED_BACK', 'FAILED'],
+  ROLLED_BACK: ['CANDIDATE_STARTED', 'IDLE'],
+  AUTOMATIC_ROLLBACK_FORBIDDEN: ['FAILED'],
+  FAILED: ['FAILED_RECOVERED'],
+  FAILED_RECOVERED: ['IDLE'],
+});
+
 const SLOT = new Set(['blue', 'green']);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const RELEASE_ID = /^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ROOT_KEYS = new Set(['schema', 'environment', 'project', 'resources', 'runtimeEnvDigest', 'generation', 'fencingEpoch', 'phase', 'operationId', 'approvalId', 'lease', 'active', 'candidate', 'rollback', 'evidence', 'receiptChainHead', 'contractMigrationApplied', 'rollbackRehearsalCompleted', 'updatedAt']);
+const V3_ROOT_KEYS = new Set([...ROOT_KEYS, 'recovery', 'observationWindowMinutes', 'observationStartedAt']);
+const RECOVERY_KEYS = new Set(['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest', 'activeProbeDigest', 'priorFailedStateDigest']);
 const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest', 'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
 const POST_SWITCH_PHASES = new Set(['SWITCHED', 'OBSERVING', 'COMMITTED', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN']);
+export const DEFAULT_OBSERVATION_WINDOW_MINUTES = 30;
+export const MAX_OBSERVATION_WINDOW_MINUTES = 1440;
 
 export const ROLLBACK_MODE = Object.freeze({
   PRE_SWITCH_SINGLETON: 'pre-switch-singleton',
@@ -43,6 +66,18 @@ function requireIso(value, path) {
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
     throw new ContractError(`${path} must be a canonical ISO timestamp`);
   }
+}
+
+function requireObservationWindow(value, path = 'state.observationWindowMinutes') {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_OBSERVATION_WINDOW_MINUTES) {
+    throw new ContractError(`${path} must be an integer between 1 and ${MAX_OBSERVATION_WINDOW_MINUTES}`);
+  }
+  return value;
+}
+
+function observationWindowElapsed(state, now) {
+  if (!state.observationStartedAt) return false;
+  return Date.parse(now) - Date.parse(state.observationStartedAt) >= state.observationWindowMinutes * 60_000;
 }
 
 function validateIdentity(identity, path) {
@@ -81,8 +116,9 @@ function validateEvidence(evidence) {
 }
 
 export function validateDeployState(state) {
-  exactKeys(state, ROOT_KEYS, 'state');
-  if (state.schema !== 'booking.deploy-state/v2') throw new ContractError('state.schema is unsupported');
+  if (state?.schema === 'booking.deploy-state/v2') exactKeys(state, ROOT_KEYS, 'state');
+  else if (state?.schema === 'booking.deploy-state/v3') exactKeys(state, V3_ROOT_KEYS, 'state');
+  else throw new ContractError('state.schema is unsupported');
   if (!['preprod', 'production'].includes(state.environment)) throw new ContractError('state.environment is invalid');
   const resourcePrefix = state.environment === 'preprod' ? 'booking-preprod' : 'booking-prod';
   if (state.project !== resourcePrefix) throw new ContractError('state.project does not match environment');
@@ -97,7 +133,8 @@ export function validateDeployState(state) {
   if (!DIGEST.test(state.runtimeEnvDigest || '')) throw new ContractError('state.runtimeEnvDigest is invalid');
   if (!Number.isInteger(state.generation) || state.generation < 0) throw new ContractError('state.generation is invalid');
   if (!Number.isInteger(state.fencingEpoch) || state.fencingEpoch < 0) throw new ContractError('state.fencingEpoch is invalid');
-  if (!(state.phase in TRANSITIONS)) throw new ContractError('state.phase is invalid');
+  const transitions = state.schema === 'booking.deploy-state/v2' ? V2_TRANSITIONS : TRANSITIONS;
+  if (!(state.phase in transitions)) throw new ContractError('state.phase is invalid');
   validateIdentity(state.active, 'state.active');
   if (state.candidate !== null) validateIdentity(state.candidate, 'state.candidate');
   if (state.rollback !== null) validateIdentity(state.rollback, 'state.rollback');
@@ -110,6 +147,28 @@ export function validateDeployState(state) {
   requireIso(state.updatedAt, 'state.updatedAt');
   if (typeof state.contractMigrationApplied !== 'boolean') throw new ContractError('state.contractMigrationApplied must be boolean');
   if (typeof state.rollbackRehearsalCompleted !== 'boolean') throw new ContractError('state.rollbackRehearsalCompleted must be boolean');
+  if (state.schema === 'booking.deploy-state/v3' && state.recovery !== null) {
+    exactKeys(state.recovery, RECOVERY_KEYS, 'state.recovery');
+    for (const [key, value] of Object.entries(state.recovery)) {
+      if (!DIGEST.test(value || '')) throw new ContractError(`state.recovery.${key} is invalid`);
+    }
+  }
+  if (state.schema === 'booking.deploy-state/v3' && state.phase === 'FAILED_RECOVERED') {
+    if (!state.recovery) throw new ContractError('failed recovery phase requires immutable recovery evidence');
+  } else if (state.schema === 'booking.deploy-state/v3' && state.recovery !== null) {
+    throw new ContractError('recovery evidence is only valid in the failed recovery phase');
+  }
+  if (state.schema === 'booking.deploy-state/v3') {
+    requireObservationWindow(state.observationWindowMinutes);
+    if (state.observationStartedAt !== null) requireIso(state.observationStartedAt, 'state.observationStartedAt');
+    if (state.phase === 'OBSERVING' && state.observationStartedAt === null) {
+      throw new ContractError('observing state requires an immutable observation start');
+    }
+    if (['IDLE', 'LOCKED', 'MANIFEST_VERIFIED', 'STAGED', 'EXPAND_MIGRATED', 'CANDIDATE_STARTED', 'CANDIDATE_READY',
+      'SINGLETON_TRANSFERRED', 'SWITCHED', 'FAILED_RECOVERED'].includes(state.phase) && state.observationStartedAt !== null) {
+      throw new ContractError(`state.observationStartedAt is not allowed in phase ${state.phase}`);
+    }
+  }
 
   if (state.phase === 'IDLE') {
     if (state.operationId !== null || state.approvalId !== null || state.lease !== null || state.candidate !== null || state.rollback !== null) {
@@ -135,14 +194,16 @@ export function validateDeployState(state) {
   return state;
 }
 
-export function initialDeployState({ environment, project, resources, active, runtimeEnvDigest }, now) {
+export function initialDeployState({ environment, project, resources, active, runtimeEnvDigest,
+  observationWindowMinutes = DEFAULT_OBSERVATION_WINDOW_MINUTES }, now) {
   validateIdentity(active, 'active');
   requireIso(now, 'now');
   return validateDeployState({
-    schema: 'booking.deploy-state/v2', environment, project, resources: structuredClone(resources), runtimeEnvDigest, generation: 0, fencingEpoch: 0, phase: 'IDLE',
+    schema: 'booking.deploy-state/v3', environment, project, resources: structuredClone(resources), runtimeEnvDigest, generation: 0, fencingEpoch: 0, phase: 'IDLE',
     operationId: null, approvalId: null, lease: null, active: structuredClone(active), candidate: null, rollback: null,
     evidence: Object.fromEntries([...EVIDENCE_KEYS].map((key) => [key, null])),
     receiptChainHead: null, contractMigrationApplied: false, rollbackRehearsalCompleted: false, updatedAt: now,
+    recovery: null, observationWindowMinutes: requireObservationWindow(observationWindowMinutes), observationStartedAt: null,
   });
 }
 
@@ -172,11 +233,16 @@ export function acquireLease(state, input) {
   const nextEpoch = state.fencingEpoch + 1;
   const runtimeEnvDigest = input.runtimeEnvDigest || state.runtimeEnvDigest;
   if (!DIGEST.test(runtimeEnvDigest || '')) throw new ContractError('runtime environment digest is required', EXIT.IDENTITY);
+  const observationWindowMinutes = requireObservationWindow(
+    input.observationWindowMinutes ?? state.observationWindowMinutes ?? DEFAULT_OBSERVATION_WINDOW_MINUTES,
+    'observationWindowMinutes',
+  );
   return validateDeployState({
-    ...structuredClone(state), generation: state.generation + 1, fencingEpoch: nextEpoch, phase: 'LOCKED',
+    ...structuredClone(state), schema: 'booking.deploy-state/v3', generation: state.generation + 1, fencingEpoch: nextEpoch, phase: 'LOCKED',
     operationId: input.operationId, approvalId: input.approvalId,
     lease: { leaseId: input.leaseId, holderId: input.holderId, fencingEpoch: nextEpoch, acquiredAt: input.now, expiresAt: input.expiresAt },
     candidate: structuredClone(input.candidate), rollback: structuredClone(state.active), runtimeEnvDigest, updatedAt: input.now,
+    recovery: null, observationWindowMinutes, observationStartedAt: null,
   });
 }
 
@@ -206,14 +272,20 @@ export function renewLease(state, input) {
 
 export function assertTransition(state, nextPhase, expectedGeneration, expectedFencingEpoch = state.fencingEpoch) {
   assertCas(state, expectedGeneration, expectedFencingEpoch);
-  if (!TRANSITIONS[state.phase].includes(nextPhase)) throw new ContractError(`transition ${state.phase} -> ${nextPhase} is not allowed`, EXIT.SWITCH);
+  const allowed = state.schema === 'booking.deploy-state/v2' && state.phase === 'FAILED' && nextPhase === 'FAILED_RECOVERED'
+    ? true
+    : (state.schema === 'booking.deploy-state/v2' ? V2_TRANSITIONS : TRANSITIONS)[state.phase].includes(nextPhase);
+  if (!allowed) throw new ContractError(`transition ${state.phase} -> ${nextPhase} is not allowed`, EXIT.SWITCH);
   if (nextPhase === 'ROLLBACK_PENDING' && state.contractMigrationApplied) throw new ContractError('automatic rollback is forbidden after contract migration', EXIT.ROLLBACK);
   return true;
 }
 
 export function assertStaticTransition(state, nextPhase) {
   validateDeployState(state);
-  if (!TRANSITIONS[state.phase].includes(nextPhase)) throw new ContractError(`transition ${state.phase} -> ${nextPhase} is not statically allowed`, EXIT.SWITCH);
+  const allowed = state.schema === 'booking.deploy-state/v2' && state.phase === 'FAILED' && nextPhase === 'FAILED_RECOVERED'
+    ? true
+    : (state.schema === 'booking.deploy-state/v2' ? V2_TRANSITIONS : TRANSITIONS)[state.phase].includes(nextPhase);
+  if (!allowed) throw new ContractError(`transition ${state.phase} -> ${nextPhase} is not statically allowed`, EXIT.SWITCH);
   if (nextPhase === 'ROLLBACK_PENDING' && state.contractMigrationApplied) throw new ContractError('automatic rollback is forbidden after contract migration', EXIT.ROLLBACK);
   return true;
 }
@@ -243,6 +315,7 @@ export function transitionDeployState(state, input) {
     }
     next.evidence.stageReceiptDigest = input.stageReceiptDigest;
     if (state.phase === 'ROLLED_BACK') {
+      next.observationStartedAt = null;
       for (const key of ['candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest',
         'webhookReceiptDigest', 'observationReceiptDigest']) {
         next.evidence[key] = null;
@@ -268,14 +341,19 @@ export function transitionDeployState(state, input) {
     const promoted = next.candidate;
     next.candidate = null;
     next.active = promoted;
+    next.observationStartedAt = null;
   }
   if (input.to === 'OBSERVING') {
     if (!DIGEST.test(input.webhookReceiptDigest || '')) throw new ContractError('observation requires fenced webhook receipt evidence', EXIT.INGRESS);
     next.evidence.webhookReceiptDigest = input.webhookReceiptDigest;
+    next.observationStartedAt = input.now;
   }
   if (input.to === 'COMMITTED') {
     if (!next.rollbackRehearsalCompleted || !next.evidence.webhookReceiptDigest || !DIGEST.test(input.observationReceiptDigest || '')) {
       throw new ContractError('commit requires a completed rollback rehearsal, webhook, and post-switch public probe evidence', EXIT.READINESS);
+    }
+    if (!observationWindowElapsed(state, input.now)) {
+      throw new ContractError('commit requires the declared observation window to elapse', EXIT.READINESS);
     }
     next.evidence.observationReceiptDigest = input.observationReceiptDigest;
     next.rollbackRehearsalCompleted = false;
@@ -298,9 +376,34 @@ export function transitionDeployState(state, input) {
     // A singleton-only abort before ingress promotion is a recovery, not a
     // rollback rehearsal. Preserve an earlier completed full rehearsal, but do
     // not create one from the pre-switch path.
-    next.rollbackRehearsalCompleted = postSwitch || state.rollbackRehearsalCompleted;
+    next.rollbackRehearsalCompleted = (postSwitch && observationWindowElapsed(state, input.now)) || state.rollbackRehearsalCompleted;
+  }
+  if (input.to === 'FAILED_RECOVERED') {
+    if (!DIGEST.test(input.databaseRestoreReceiptDigest || '') || !DIGEST.test(input.telegramAbortReceiptDigest || '') ||
+        !DIGEST.test(input.activeRuntimeRestoreReceiptDigest || '') || !DIGEST.test(input.activeProbeDigest || '') ||
+        !DIGEST.test(input.priorFailedStateDigest || '')) {
+      throw new ContractError('failed recovery requires database, Telegram, active runtime, public probe, and prior failed-state evidence', EXIT.IDENTITY);
+    }
+    next.schema = 'booking.deploy-state/v3';
+    next.observationWindowMinutes = requireObservationWindow(
+      input.observationWindowMinutes ?? DEFAULT_OBSERVATION_WINDOW_MINUTES,
+      'observationWindowMinutes',
+    );
+    next.observationStartedAt = null;
+    next.recovery = {
+      databaseRestoreReceiptDigest: input.databaseRestoreReceiptDigest,
+      telegramAbortReceiptDigest: input.telegramAbortReceiptDigest,
+      activeRuntimeRestoreReceiptDigest: input.activeRuntimeRestoreReceiptDigest,
+      activeProbeDigest: input.activeProbeDigest,
+      priorFailedStateDigest: input.priorFailedStateDigest,
+    };
   }
   if (input.to === 'IDLE') {
+    // Terminal cleanup is an explicit v2 -> v3 migration boundary.  The
+    // terminal receipt is still derived from the current terminal state, so a
+    // legacy COMMITTED/ROLLED_BACK state continues to emit a v1 receipt while
+    // the newly persisted IDLE state uses the current v3 contract.
+    next.schema = 'booking.deploy-state/v3';
     next.operationId = null;
     next.approvalId = null;
     next.lease = null;
@@ -309,6 +412,14 @@ export function transitionDeployState(state, input) {
     next.evidence = Object.fromEntries([...EVIDENCE_KEYS].map((key) => [key, null]));
     next.contractMigrationApplied = false;
     next.rollbackRehearsalCompleted = false;
+    next.recovery = null;
+    if (state.schema === 'booking.deploy-state/v2') {
+      next.observationWindowMinutes = requireObservationWindow(
+        input.observationWindowMinutes ?? DEFAULT_OBSERVATION_WINDOW_MINUTES,
+        'observationWindowMinutes',
+      );
+    }
+    next.observationStartedAt = null;
   }
   return validateDeployState(next);
 }

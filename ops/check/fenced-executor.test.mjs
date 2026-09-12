@@ -7,7 +7,7 @@ import { sha256 } from '../release/lib/contracts.mjs';
 import { canonicalStatePath, initializeStateFile, mutateStateFile } from '../release/lib/deploy-state-store.mjs';
 import { resourceDirectory } from '../release/lib/fenced-resource-store.mjs';
 import { acquireLease, initialDeployState, takeoverExpiredLease, transitionDeployState } from '../release/lib/state-machine.mjs';
-import { runFencedAction, singletonSourceIdentity, verifyBaselineReceipt, verifyDockerImageBinding, verifyLegacyDockerImageBinding } from '../release/execute-fenced-action.mjs';
+import { runFencedAction, singletonSourceIdentity, telegramAbortDockerCommands, verifyBaselineReceipt, verifyDockerImageBinding, verifyLegacyDockerImageBinding } from '../release/execute-fenced-action.mjs';
 import { runManageDeployState } from '../release/manage-deploy-state.mjs';
 import { LEGACY_OLD_BINDING } from '../release/lib/legacy-preprod.mjs';
 import { runIngressHelper } from '../release/switch-preprod-ingress.mjs';
@@ -42,9 +42,33 @@ const MANIFEST = {
   runtime: { nodeMajor: 20, targetPlatform: 'linux/amd64' }, probes: { live: '/livez', ready: '/readyz', version: '/__ops/version' },
 };
 const CANDIDATE = { slot: 'blue', releaseId: MANIFEST.releaseId, gitSha: MANIFEST.source.gitSha, manifestDigest: sha256(MANIFEST) };
+const INGRESS_APPROVED_BINDINGS = {
+  [ACTIVE.releaseId]: { containerId: 'a'.repeat(64), backendContainerId: '1'.repeat(64), imageId: `sha256:${'a'.repeat(64)}`,
+    configImage: `registry.test/booking/gateway:${ACTIVE.releaseId}`, configHash: 'a'.repeat(64) },
+  [CANDIDATE.releaseId]: { containerId: 'b'.repeat(64), backendContainerId: '2'.repeat(64), imageId: GATEWAY_IMAGE_ID,
+    configImage: `registry.test/booking/gateway:${CANDIDATE.releaseId}`, configHash: 'b'.repeat(64) },
+};
+function ingressReadback({ approvalId = 'approval-1', leaseId = 'lease-1', holderId = 'owner-1', actionId,
+  fencingEpoch = 1, sequence = 1, proofDigit = '8' }) {
+  return { schema: 'booking.ingress-readback/v3', project: 'booking-preprod', hostname: 'booking-preprod.happybooking.uk',
+    edgeNetwork: 'booking-preprod-edge', logicalAlias: 'gateway-green', fixedRemoteService: 'http://gateway-green:8080', aliasState: 'desired',
+    upstream: 'gateway-blue:8080', releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest, operationId: 'op-1',
+    approvalId, leaseId, holderId, actionKind: 'preprod-switch-ingress', actionId, sequence, fencingEpoch,
+    rollbackUpstream: 'gateway-green:8080', rollbackReleaseId: ACTIVE.releaseId, rollbackManifestDigest: ACTIVE.manifestDigest,
+    sourceReleaseId: ACTIVE.releaseId, sourceManifestDigest: ACTIVE.manifestDigest, sourceUpstream: 'gateway-green:8080',
+    sourceContainerId: 'a'.repeat(64), sourceBackendContainerId: '1'.repeat(64), sourceImageId: `sha256:${'a'.repeat(64)}`,
+    sourceConfigImage: `registry.test/booking/gateway:${ACTIVE.releaseId}`, sourceConfigHash: 'a'.repeat(64),
+    targetContainerId: 'b'.repeat(64), targetBackendContainerId: '2'.repeat(64), targetImageId: GATEWAY_IMAGE_ID,
+    targetConfigImage: `registry.test/booking/gateway:${CANDIDATE.releaseId}`, targetConfigHash: 'b'.repeat(64),
+    cloudflaredContainerId: 'c'.repeat(64), cloudflaredImageId: `sha256:${'e'.repeat(64)}`,
+    cloudflaredStartedAt: '2026-09-09T15:05:00.000Z', proofDigest: `sha256:${proofDigit.repeat(64)}`,
+    guard: { mode: 'local-docker-network-alias', convergence: 'previous-desired-in-flight-readback',
+      fencedResources: ['ingress:booking-preprod', 'booking-preprod-edge'], exactIdMutation: true, cloudflareMutationAllowed: false, publicProbeRequired: true },
+    observedAt: '2026-09-09T15:05:01.000Z' };
+}
 const DEPLOYMENT = { environment: 'preprod', project: 'booking-preprod', resources: {
   edgeNetwork: 'booking-preprod-edge', dataNetwork: 'booking-preprod-data', databaseRef: 'database:booking-preprod', ingressRef: 'ingress:booking-preprod',
-}, active: ACTIVE, runtimeEnvDigest: sha256(RUNTIME_ENV_CONTENT) };
+}, active: ACTIVE, runtimeEnvDigest: sha256(RUNTIME_ENV_CONTENT), observationWindowMinutes: 1 };
 
 function preMigrationState(expiresAt = '2026-09-09T16:00:00.000Z') {
   let state = initialDeployState(DEPLOYMENT, '2026-09-09T15:00:00.000Z');
@@ -112,6 +136,14 @@ function successRunner() {
   return Promise.resolve({ exitCode: 0, signal: null, overflow: false, stdout: '[]', stderr: '' });
 }
 
+test('Telegram abort command force-removes only the fixed preproduction egress container before absence readback', () => {
+  const plan = telegramAbortDockerCommands('booking-preprod');
+  assert.deepEqual(plan.mutationArgv, ['container', 'rm', '--force', '<verified-container-id>']);
+  assert.deepEqual(plan.readbackArgv, ['ps', '-a', '--filter', 'name=^/booking-preprod-telegram-egress-1$',
+    '--format', '{{.ID}}|{{.Names}}']);
+  assert.throws(() => telegramAbortDockerCommands('booking-prod'), /not preproduction/);
+});
+
 function dataPlaneInspect(container, sourceOverride, labelOverride) {
   const postgres = container.includes('postgres');
   const source = sourceOverride || `/volume1/homes/realzyq/booking-preprod-data/${postgres ? 'postgres' : 'redis'}`;
@@ -132,7 +164,8 @@ function imageInspectOutput(component, imageId = component === 'backend' ? BACKE
 
 function candidateRuntimeInspect(component, releaseRoot, overrides = {}) {
   const backend = component === 'backend';
-  const labels = { 'com.docker.compose.project': 'booking-preprod', 'com.docker.compose.service': `${component}-blue` };
+  const labels = { 'com.docker.compose.project': 'booking-preprod', 'com.docker.compose.service': `${component}-blue`,
+    'com.docker.compose.config-hash': component === 'gateway' ? 'b'.repeat(64) : 'c'.repeat(64) };
   const env = backend ? [
     'NODE_ENV=production', 'TYPEORM_SYNCHRONIZE=false', 'POSTGRES_HOST=postgres', 'POSTGRES_DB=booking_preprod', 'REDIS_HOST=redis',
     `BOOKING_RELEASE_ID=${CANDIDATE.releaseId}`, `BOOKING_GIT_SHA=${CANDIDATE.gitSha}`, `BOOKING_MANIFEST_DIGEST=${CANDIDATE.manifestDigest}`,
@@ -289,7 +322,7 @@ const WEBHOOK_ENV = {
 
 function webhookReceipt(action) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     action,
     environment: 'preproduction',
     completedAt: '2026-09-09T15:05:12.000Z',
@@ -302,9 +335,12 @@ function webhookReceipt(action) {
       migrationFloor: MANIFEST.contracts.migration.expandFloor,
       migrationCatalogDigest: MANIFEST.contracts.migration.catalogDigest,
     },
-    webhook: { url: WEBHOOK_ENV.BOOKING_TELEGRAM_WEBHOOK_URL, pendingUpdateCount: 0 },
+    webhook: { url: WEBHOOK_ENV.BOOKING_TELEGRAM_WEBHOOK_URL, pendingUpdateCount: 0,
+      allowedUpdates: ['message', 'callback_query'],
+      deliveryError: { before: { date: null, message: null }, after: { date: null, message: null }, changedAfterSet: false } },
     verification: { candidateReady: true, getMeIdentityMatched: true,
-      ...(action === 'set' ? { setWebhookAccepted: true } : {}), readBackUrlMatched: true },
+      ...(action === 'set' ? { setWebhookAccepted: true } : {}), readBackUrlMatched: true,
+      allowedUpdatesMatched: true, noNewDeliveryError: true },
   };
 }
 
@@ -719,32 +755,27 @@ test('pre-switch rollback rejects ingress before planning or command execution w
 test('concrete ingress plan derives first and second promotion sequence plus immutable cycle binding from canonical state', async () => {
   let secondPromotion = rollbackPendingState();
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 10, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:04:10.000Z', to: 'ROLLED_BACK', rollbackReceiptDigest: `sha256:${'1'.repeat(64)}`,
+    now: '2026-09-09T15:04:50.000Z', to: 'ROLLED_BACK', rollbackReceiptDigest: `sha256:${'1'.repeat(64)}`,
     rollbackSingletonTransferReceiptDigest: `sha256:${'2'.repeat(64)}`, rolledBackProbeDigest: `sha256:${'3'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 11, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:04:20.000Z', to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'4'.repeat(64)}` });
+    now: '2026-09-09T15:05:00.000Z', to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'4'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 12, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:04:30.000Z', to: 'CANDIDATE_READY', candidateProbeDigest: `sha256:${'5'.repeat(64)}` });
+    now: '2026-09-09T15:05:10.000Z', to: 'CANDIDATE_READY', candidateProbeDigest: `sha256:${'5'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 13, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:04:40.000Z', to: 'SINGLETON_TRANSFERRED', rollbackPreSwitchProbeDigest: `sha256:${'6'.repeat(64)}`,
+    now: '2026-09-09T15:05:20.000Z', to: 'SINGLETON_TRANSFERRED', rollbackPreSwitchProbeDigest: `sha256:${'6'.repeat(64)}`,
     singletonTransferReceiptDigest: `sha256:${'7'.repeat(64)}` });
   for (const [state, sequence, actionId] of [[singletonTransferredState(), 1, 'switch-ingress-first'], [secondPromotion, 3, 'switch-ingress-second']]) {
     const { root } = await fixtureFromState(state);
     const releaseRoot = await concreteReleaseRoot();
     const invocations = [];
     let isolationChecks = 0;
-    const readback = { schema: 'booking.ingress-readback/v2', project: 'booking-preprod', hostname: 'booking-preprod.happybooking.uk',
-      upstream: 'gateway-blue:8080', releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest, operationId: 'op-1',
-      approvalId: 'approval-1', leaseId: 'lease-1', holderId: 'owner-1', actionKind: 'preprod-switch-ingress', actionId, sequence,
-      fencingEpoch: 1, rollbackUpstream: 'gateway-green:8080', rollbackReleaseId: ACTIVE.releaseId,
-      rollbackManifestDigest: ACTIVE.manifestDigest, proofDigest: `sha256:${'8'.repeat(64)}`, remoteVersion: sequence,
-      remoteConfigDigest: `sha256:${'9'.repeat(64)}`, guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false,
-        opportunisticIfMatch: true, exclusiveWriteRequired: true }, observedAt: '2026-09-09T15:05:01.000Z' };
+    const readback = ingressReadback({ actionId, sequence });
     try {
       const receipt = await runFencedAction(args({ action: 'preprod-switch-ingress', 'expected-generation': String(state.generation),
         'resource-id': 'ingress:booking-preprod', 'action-id': actionId }), { deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST,
         ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-        candidateRuntimeVerifier: async () => { isolationChecks += 1; return { verified: true }; }, now: at('2026-09-09T15:05:00.000Z'),
+        ingressApprovedBindings: INGRESS_APPROVED_BINDINGS,
+        candidateRuntimeVerifier: async () => { isolationChecks += 1; return { verified: true }; }, now: at('2026-09-09T15:06:00.000Z'),
         commandRunner: async (_executable, argv) => { invocations.push(argv); return { exitCode: 0, signal: null, overflow: false,
           stdout: JSON.stringify(readback), stderr: '' }; } });
       const mutation = invocations.find((argv) => argv.includes('--execute'));
@@ -757,85 +788,76 @@ test('concrete ingress plan derives first and second promotion sequence plus imm
       assert.equal(mutation[mutation.indexOf('--rollback-upstream') + 1], 'gateway-green:8080');
       assert.equal(mutation[mutation.indexOf('--rollback-release') + 1], ACTIVE.releaseId);
       assert.equal(mutation[mutation.indexOf('--rollback-manifest-digest') + 1], ACTIVE.manifestDigest);
-      await assert.rejects(runIngressHelper(mutation, { tokenFile: join(releaseRoot, 'missing-token'), proofFile: join(releaseRoot, 'proof.json'),
-        proofArchiveDirectory: join(releaseRoot, 'proofs'), lockFile: join(releaseRoot, 'ingress.lock'), allowInsecureTestPaths: true }),
-      sequence === 1 ? /token file is unavailable/ : /first ingress proof must begin at sequence one/);
+      assert.equal(mutation[mutation.indexOf('--source-image-id') + 1], INGRESS_APPROVED_BINDINGS[ACTIVE.releaseId].imageId);
+      assert.equal(mutation[mutation.indexOf('--source-config-hash') + 1], INGRESS_APPROVED_BINDINGS[ACTIVE.releaseId].configHash);
+      assert.equal(mutation[mutation.indexOf('--target-image-id') + 1], INGRESS_APPROVED_BINDINGS[CANDIDATE.releaseId].imageId);
+      assert.equal(mutation[mutation.indexOf('--target-config-hash') + 1], INGRESS_APPROVED_BINDINGS[CANDIDATE.releaseId].configHash);
+      await assert.rejects(runIngressHelper(mutation, { proofFile: join(releaseRoot, 'proof.json'), pendingFile: join(releaseRoot, 'pending.json'),
+        proofArchiveDirectory: join(releaseRoot, 'proofs'), lockFile: join(releaseRoot, 'ingress.lock'), allowInsecureTestPaths: true,
+        runDocker: async () => { throw new Error('no Docker fixture'); } }), /Docker|container|first ingress proof/);
       assert.equal(receipt.verification.runtime.proofDigest, readback.proofDigest);
-      assert.equal(receipt.verification.runtime.remoteConfigDigest, readback.remoteConfigDigest);
+      assert.equal(receipt.verification.runtime.fixedRemoteService, 'http://gateway-green:8080');
+      assert.deepEqual(receipt.resourceIds, ['ingress:booking-preprod', 'booking-preprod-edge']);
       assert.equal(isolationChecks, 2);
     } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
   }
 });
 
-test('concrete ingress readback rejects action identity or cycle baseline drift', async () => {
-  for (const field of ['actionId', 'rollbackManifestDigest']) {
+test('concrete ingress readback rejects action, cycle baseline, approved Image, or config-hash drift', async () => {
+  for (const field of ['actionId', 'rollbackManifestDigest', 'sourceImageId', 'targetConfigHash']) {
     const state = singletonTransferredState();
     const { root } = await fixtureFromState(state);
     const releaseRoot = await concreteReleaseRoot();
     const actionId = `switch-ingress-bad-${field}`;
-    const readback = { schema: 'booking.ingress-readback/v2', project: 'booking-preprod', hostname: 'booking-preprod.happybooking.uk',
-      upstream: 'gateway-blue:8080', releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest, operationId: 'op-1',
-      approvalId: 'approval-1', leaseId: 'lease-1', holderId: 'owner-1', actionKind: 'preprod-switch-ingress', actionId, sequence: 1,
-      fencingEpoch: 1, rollbackUpstream: 'gateway-green:8080', rollbackReleaseId: ACTIVE.releaseId,
-      rollbackManifestDigest: ACTIVE.manifestDigest, proofDigest: `sha256:${'8'.repeat(64)}`, remoteVersion: 1,
-      remoteConfigDigest: `sha256:${'9'.repeat(64)}`, guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false,
-        opportunisticIfMatch: false, exclusiveWriteRequired: true }, observedAt: '2026-09-09T15:05:01.000Z' };
-    readback[field] = field === 'actionId' ? 'foreign-action' : `sha256:${'0'.repeat(64)}`;
+    const readback = ingressReadback({ actionId });
+    readback[field] = field === 'actionId' ? 'foreign-action' : field === 'targetConfigHash' ? '0'.repeat(64) : `sha256:${'0'.repeat(64)}`;
     try {
       await assert.rejects(runFencedAction(args({ action: 'preprod-switch-ingress', 'expected-generation': '7',
         'resource-id': 'ingress:booking-preprod', 'action-id': actionId }), { deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST,
         ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-        candidateRuntimeVerifier: async () => ({ verified: true }), now: at('2026-09-09T15:05:00.000Z'),
+        ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }), now: at('2026-09-09T15:05:00.000Z'),
         commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(readback), stderr: '' }) }),
       /ingress readback identity mismatch/);
     } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
   }
 });
 
-test('takeover recovers an ingress PUT completed before executor receipt only through prior proof and fresh remote readbacks', async () => {
+test('takeover adopts a completed local alias transfer across both ingress resources through exact readback', async () => {
   const { root, statePath } = await fixtureFromState(singletonTransferredState());
   const releaseRoot = await concreteReleaseRoot();
   const runtimeEnvFile = join(root, '.runtime.env');
   await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
   const oldActionId = 'switch-before-crash';
   const newActionId = 'switch-after-takeover';
-  const ingressReadback = (approvalId, leaseId, holderId, actionId, fencingEpoch, proofDigit) => ({
-    schema: 'booking.ingress-readback/v2', project: 'booking-preprod', hostname: 'booking-preprod.happybooking.uk',
-    upstream: 'gateway-blue:8080', releaseId: CANDIDATE.releaseId, manifestDigest: CANDIDATE.manifestDigest, operationId: 'op-1',
-    approvalId, leaseId, holderId, actionKind: 'preprod-switch-ingress', actionId, sequence: 1, fencingEpoch,
-    rollbackUpstream: 'gateway-green:8080', rollbackReleaseId: ACTIVE.releaseId, rollbackManifestDigest: ACTIVE.manifestDigest,
-    proofDigest: `sha256:${proofDigit.repeat(64)}`, remoteVersion: fencingEpoch + 10, remoteConfigDigest: `sha256:${'9'.repeat(64)}`,
-    guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false, opportunisticIfMatch: true, exclusiveWriteRequired: true },
-    observedAt: '2026-09-09T15:05:01.000Z',
-  });
-  const oldProof = ingressReadback('approval-1', 'lease-1', 'owner-1', oldActionId, 1, '8');
+  const oldProof = ingressReadback({ approvalId: 'approval-1', leaseId: 'lease-1', holderId: 'owner-1', actionId: oldActionId, fencingEpoch: 1, proofDigit: '8' });
   try {
     const oldReceipt = await runFencedAction(args({ action: 'preprod-switch-ingress', 'expected-generation': '7',
       'resource-id': 'ingress:booking-preprod', 'action-id': oldActionId }), { deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST,
       ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }),
+      ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }),
       now: at('2026-09-09T15:05:00.000Z'), commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false,
         stdout: JSON.stringify(oldProof), stderr: '' }) });
     await unlink(join(dirname(statePath), 'executor', 'receipts', `000000000001-preprod-switch-ingress-${oldActionId}.json`));
     const resourcePath = join(resourceDirectory(statePath, 'ingress:booking-preprod'), 'resource-state.json');
-    const resource = JSON.parse(await readFile(resourcePath, 'utf8'));
-    await writeFile(resourcePath, `${JSON.stringify({ ...resource, pendingAction: { action: oldReceipt.action,
-      actionId: oldActionId, requestDigest: oldReceipt.requestDigest, approvalId: oldReceipt.approvalId,
-      leaseId: oldReceipt.leaseId, holderId: oldReceipt.holderId, generation: oldReceipt.generation,
-      fencingEpoch: oldReceipt.fencingEpoch, commandDigest: oldReceipt.commandDigest },
-    receiptChainHead: oldReceipt.resources[0].previousReceiptDigest })}\n`);
+    const edgeResourcePath = join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json');
+    const groupPath = join(dirname(statePath), 'executor', 'action-groups', `000000000001-preprod-switch-ingress-${oldActionId}.json`);
+    const group = JSON.parse(await readFile(groupPath, 'utf8'));
+    group.phase = 'EXECUTING'; group.completedResourceIds = []; group.receiptDigest = null;
+    delete group.receiptFromPhase; delete group.supersededReceiptDigests;
+    await writeFile(groupPath, `${JSON.stringify(group)}\n`);
+    for (const path of [resourcePath, edgeResourcePath]) {
+      const resource = JSON.parse(await readFile(path, 'utf8'));
+      const prior = oldReceipt.resources.find((item) => item.resourceId === resource.resourceId);
+      await writeFile(path, `${JSON.stringify({ ...resource, pendingAction: { action: oldReceipt.action,
+        actionId: oldActionId, requestDigest: oldReceipt.requestDigest, approvalId: oldReceipt.approvalId,
+        leaseId: oldReceipt.leaseId, holderId: oldReceipt.holderId, generation: oldReceipt.generation,
+        fencingEpoch: oldReceipt.fencingEpoch, commandDigest: oldReceipt.commandDigest, groupDigest: group.groupDigest },
+      receiptChainHead: prior.previousReceiptDigest })}\n`);
+    }
     const taken = await runManageDeployState({ action: 'takeover', execute: 'true', environment: 'preprod', project: 'booking-preprod',
       'approval-id': 'approval-2', 'expected-generation': '7', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
       'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2', 'lease-duration-ms': '1800000' },
     { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs: Date.parse('2026-09-09T16:01:00.000Z') });
-    const newProof = ingressReadback('approval-2', 'lease-2', 'owner-2', newActionId, 2, '7');
-    const notApplied = { schema: 'booking.ingress-pending-recovery/v1', outcome: 'not-applied', project: 'booking-preprod',
-      hostname: 'booking-preprod.happybooking.uk', operationId: 'op-1', actionKind: 'preprod-switch-ingress',
-      actionId: oldActionId, sequence: 1, fencingEpoch: 1, expectedPreviousUpstream: 'gateway-green:8080',
-      remoteVersion: 3, remoteConfigDigest: `sha256:${'6'.repeat(64)}`, previousProofDigest: null,
-      guard: { mode: 'double-read-version-and-digest', atomicRemoteCas: false,
-        opportunisticIfMatch: true, exclusiveWriteRequired: true },
-      observedAt: '2026-09-09T16:02:00.000Z' };
     const pendingAfterCrash = JSON.parse(await readFile(resourcePath, 'utf8'));
     for (const mismatch of ['action', 'request']) {
       const badPending = { ...pendingAfterCrash.pendingAction,
@@ -846,11 +868,11 @@ test('takeover recovers an ingress PUT completed before executor receipt only th
         'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
         'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': newActionId }), { deployStateRoot: root, releaseRoot,
         releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-        candidateRuntimeVerifier: async () => ({ verified: true }),
+        ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }),
         now: at('2026-09-09T16:02:00.000Z'), commandRunner: async (_executable, argv) => {
           if (!argv.includes('--readback')) mutationAttempted = true;
           return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(oldProof), stderr: '' };
-        } }), /prior pending ingress (recovery identity|request digest)/);
+      } }), /prior pending ingress (recovery identity|request digest|resource identity)/);
       assert.equal(mutationAttempted, false);
     }
     await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
@@ -859,100 +881,86 @@ test('takeover recovers an ingress PUT completed before executor receipt only th
       'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
       'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'switch-ambiguous-after-takeover' }), { deployStateRoot: root, releaseRoot,
       releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }),
+      ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }),
       now: at('2026-09-09T16:01:20.000Z'), commandRunner: async (_executable, argv) => {
         if (!argv.includes('--readback') && !argv.includes('--recover-pending')) ambiguousMutations += 1;
         return { exitCode: 20, signal: null, overflow: false, stdout: '', stderr: 'ambiguous remote state' };
       } }), /external action failed/);
     assert.equal(ambiguousMutations, 0, 'ambiguous recovery evidence must fail closed before mutation');
     assert.deepEqual(JSON.parse(await readFile(resourcePath, 'utf8')), pendingAfterCrash);
+    const edgePendingAfterCrash = JSON.parse(await readFile(edgeResourcePath, 'utf8'));
+    const notAppliedActionId = 'switch-not-applied-after-takeover';
+    const currentProof = ingressReadback({ approvalId: 'approval-2', leaseId: 'lease-2', holderId: 'owner-2',
+      actionId: notAppliedActionId, fencingEpoch: 2, proofDigit: '9' });
+    const notAppliedProof = { schema: 'booking.ingress-pending-recovery/v2', outcome: 'not-applied', project: 'booking-preprod',
+      hostname: 'booking-preprod.happybooking.uk', edgeNetwork: 'booking-preprod-edge', logicalAlias: 'gateway-green',
+      fixedRemoteService: 'http://gateway-green:8080', aliasState: 'previous', operationId: 'op-1',
+      actionKind: 'preprod-switch-ingress', actionId: oldActionId, sequence: 1, fencingEpoch: 1,
+      previousProofDigest: null, guard: { mode: 'local-docker-network-alias', convergence: 'previous-desired-in-flight-readback',
+        fencedResources: ['ingress:booking-preprod', 'booking-preprod-edge'], cloudflareMutationAllowed: false },
+      observedAt: '2026-09-09T16:01:25.000Z' };
+    let desired = false; let notAppliedMutations = 0; let partialCrash = true;
+    const notAppliedRuntime = { deployStateRoot: root, releaseRoot, releaseManifest: MANIFEST,
+      ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
+      ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }),
+      now: at('2026-09-09T16:01:25.000Z'), commandRunner: async (_executable, argv) => {
+        if (argv.includes('--recover-pending')) return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(notAppliedProof), stderr: '' };
+        if (argv.includes('--readback')) return desired
+          ? { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(currentProof), stderr: '' }
+          : { exitCode: 60, signal: null, overflow: false, stdout: '', stderr: 'previous' };
+        notAppliedMutations += 1; desired = true;
+        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(currentProof), stderr: '' };
+      } };
+    const notAppliedArgs = args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
+      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': notAppliedActionId });
+    await assert.rejects(runFencedAction(notAppliedArgs, { ...notAppliedRuntime,
+      afterIngressResourceSupersede: async ({ supersededCount }) => {
+        if (partialCrash && supersededCount === 1) { partialCrash = false; throw new Error('crash after partial ingress supersede'); }
+      } }), /crash after partial ingress supersede/);
+    const notAppliedReceipt = await runFencedAction(notAppliedArgs, notAppliedRuntime);
+    assert.equal(notAppliedReceipt.verification.adoption.mode, 'prior-pending-proven-not-applied-and-retried');
+    assert.equal(notAppliedMutations, 1, 'mixed old/current pending recovery must dispatch the new alias transfer exactly once');
+    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
+    await writeFile(edgeResourcePath, `${JSON.stringify(edgePendingAfterCrash)}\n`);
     let appliedReadbacks = 0;
     let appliedMutations = 0;
     const appliedRecoveryActionId = 'switch-applied-after-takeover';
-    const appliedRecovery = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
+    const appliedArgs = args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
       'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
-      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': appliedRecoveryActionId }), { deployStateRoot: root, releaseRoot,
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': appliedRecoveryActionId });
+    const appliedRuntime = { deployStateRoot: root, releaseRoot,
       releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }),
+      ingressApprovedBindings: INGRESS_APPROVED_BINDINGS, candidateRuntimeVerifier: async () => ({ verified: true }),
       now: at('2026-09-09T16:01:30.000Z'), commandRunner: async (_executable, argv) => {
         if (argv.includes('--readback')) appliedReadbacks += 1;
         else appliedMutations += 1;
         return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(oldProof), stderr: '' };
-      } });
-    assert.equal(appliedReadbacks, 1);
+      } };
+    let crashAfterPass = true;
+    await assert.rejects(runFencedAction(appliedArgs, { ...appliedRuntime,
+      afterIngressPassWrite: async () => { if (crashAfterPass) { crashAfterPass = false; throw new Error('crash after ingress pass'); } } }),
+    /crash after ingress pass/);
+    let crashAfterOneAdoption = true;
+    await assert.rejects(runFencedAction(appliedArgs, { ...appliedRuntime,
+      afterPublishedPassResourceRecovery: async ({ recoveredCount }) => {
+        if (crashAfterOneAdoption && recoveredCount === 1) { crashAfterOneAdoption = false; throw new Error('crash after one ingress adoption'); }
+      } }), /crash after one ingress adoption/);
+    const appliedRecovery = await runFencedAction(appliedArgs, appliedRuntime);
+    assert.ok(appliedReadbacks >= 3);
     assert.equal(appliedMutations, 0, 'proven-applied prior ingress must be adopted without another mutation');
     assert.equal(appliedRecovery.executionOutputDigest, sha256(''));
     assert.equal(appliedRecovery.verification.runtime.actionId, oldActionId);
     assert.equal(appliedRecovery.verification.adoption.mode, 'prior-pending-proven-applied-read-only');
+    assert.equal(appliedRecovery.verification.adoption.priorReceiptMode, 'missing');
     const appliedCompleted = JSON.parse(await readFile(resourcePath, 'utf8'));
     assert.equal(appliedCompleted.highestAcceptedFencingEpoch, 2);
     assert.equal(appliedCompleted.pendingAction, null);
     assert.equal(appliedCompleted.receiptChainHead, appliedRecovery.receiptDigest);
-    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
-    let appliedReplayMutations = 0;
-    const appliedReplay = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
-      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
-      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': appliedRecoveryActionId }), { deployStateRoot: root, releaseRoot,
-      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }),
-      now: at('2026-09-09T16:01:45.000Z'), commandRunner: async (_executable, argv) => {
-        if (!argv.includes('--readback')) appliedReplayMutations += 1;
-        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(oldProof), stderr: '' };
-      } });
-    assert.equal(appliedReplay.receiptDigest, appliedRecovery.receiptDigest);
-    assert.equal(appliedReplayMutations, 0, 'receipt/resource crash recovery must remain read-only');
-    const appliedReplayCompleted = JSON.parse(await readFile(resourcePath, 'utf8'));
-    assert.equal(appliedReplayCompleted.pendingAction, null);
-    assert.equal(appliedReplayCompleted.receiptChainHead, appliedRecovery.receiptDigest);
-    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
-    let readbacks = 0;
-    let mutations = 0;
-    let recoveryChecks = 0;
-    const recovered = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
-      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
-      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': newActionId }), { deployStateRoot: root, releaseRoot,
-      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }),
-      now: at('2026-09-09T16:02:00.000Z'), commandRunner: async (_executable, argv) => {
-        if (argv.includes('--readback')) {
-          readbacks += 1;
-          if (readbacks === 1) return { exitCode: 20, signal: null, overflow: false, stdout: '', stderr: 'no proof' };
-          return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(newProof), stderr: '' };
-        }
-        if (argv.includes('--recover-pending')) {
-          recoveryChecks += 1;
-          return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(notApplied), stderr: '' };
-        }
-        mutations += 1;
-        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(newProof), stderr: '' };
-      } });
-    assert.equal(readbacks, 2);
-    assert.equal(mutations, 1);
-    assert.equal(recoveryChecks, 1);
-    assert.equal(recovered.verification.adoption.mode, 'prior-pending-proven-not-applied-and-retried');
-    const completed = JSON.parse(await readFile(resourcePath, 'utf8'));
-    assert.equal(completed.highestAcceptedFencingEpoch, 2);
-    assert.equal(completed.pendingAction, null);
-    assert.equal(completed.receiptChainHead, recovered.receiptDigest);
-
-    // Simulate a crash after the new-fence receipt is durable but before the
-    // prior-epoch pending resource is advanced to that receipt.
-    await writeFile(resourcePath, `${JSON.stringify(pendingAfterCrash)}\n`);
-    let replayMutations = 0;
-    const replayed = await runFencedAction(args({ action: 'preprod-switch-ingress', 'approval-id': 'approval-2',
-      'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'resource-id': 'ingress:booking-preprod',
-      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': newActionId }), { deployStateRoot: root, releaseRoot,
-      releaseManifest: MANIFEST, ingressExecutable: '/trusted/switch-preprod-ingress', dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
-      candidateRuntimeVerifier: async () => ({ verified: true }), now: at('2026-09-09T16:03:00.000Z'),
-      commandRunner: async (_executable, argv) => {
-        if (!argv.includes('--readback')) replayMutations += 1;
-        return { exitCode: 0, signal: null, overflow: false, stdout: JSON.stringify(newProof), stderr: '' };
-      } });
-    assert.equal(replayed.receiptDigest, recovered.receiptDigest);
-    assert.equal(replayMutations, 0);
-    const replayCompleted = JSON.parse(await readFile(resourcePath, 'utf8'));
-    assert.equal(replayCompleted.pendingAction, null);
-    assert.equal(replayCompleted.receiptChainHead, recovered.receiptDigest);
+    const completedEdge = JSON.parse(await readFile(edgeResourcePath, 'utf8'));
+    assert.equal(completedEdge.highestAcceptedFencingEpoch, 2);
+    assert.equal(completedEdge.pendingAction, null);
+    assert.equal(completedEdge.receiptChainHead, appliedRecovery.receiptDigest);
   } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
 });
 
@@ -1084,6 +1092,10 @@ test('concrete Synology plan stages only the inactive blue slot and leaves route
       'the host Compose process must consume only the fixed root-owned control environment',
     );
     assert.equal(receipt.verification.artifacts.routeContractDigest, MANIFEST.artifacts.gateway.routeContractDigest);
+    assert.equal(receipt.verification.artifacts.gateway.imageId, GATEWAY_IMAGE_ID);
+    assert.equal(receipt.verification.artifacts.runtimeBindings.gateway.configHash, 'b'.repeat(64));
+    assert.equal(receipt.verification.artifacts.gatewayConfigImage, `${MANIFEST.artifacts.gateway.image}:${CANDIDATE.releaseId}`);
+    assert.match(receipt.verification.artifacts.containerIds.gateway, /^[0-9a-f]{64}$/);
   } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
 });
 
@@ -1206,6 +1218,141 @@ test('takeover adopts completed singleton mutation by independent readback and e
       'rollback-pre-switch-probe-digest': activeProbe.receiptDigest, 'singleton-transfer-receipt-digest': adopted.receiptDigest },
     managerRuntime(Date.parse('2026-09-09T16:04:00.000Z')));
     assert.equal(transitioned.phase, 'SINGLETON_TRANSFERRED');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('takeover reconciles missing, fail, and pass prior receipts for a fully pending multi-resource mutation without repeating it', async (t) => {
+  for (const receiptMode of ['missing', 'fail', 'pass']) await t.test(receiptMode, async () => {
+    const { root, statePath } = await fixtureFromState(candidateReadyState());
+    const runtimeEnvFile = join(root, '.runtime.env');
+    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    let mutations = 0;
+    const plan = () => ({ executable: '/trusted/singletons', argv: ['transfer'], cwd: '/trusted/release',
+      readback: { executable: '/trusted/singletons', argv: ['readback'], verify: () => ({ exactTargetOnly: true }) } });
+    const runner = async (_executable, argv) => { if (argv[0] === 'transfer') mutations += 1; return successRunner(); };
+    const oldArgs = args({ action: 'preprod-transfer-singletons', 'expected-generation': '6',
+      'resource-id': 'booking-preprod-edge', 'action-id': `partial-${receiptMode}-old` });
+    try {
+      const prior = await runFencedAction(oldArgs, { deployStateRoot: root,
+        now: at('2026-09-09T15:05:00.000Z'), planBuilder: plan, commandRunner: runner });
+      const receiptPath = join(dirname(statePath), 'executor', 'receipts',
+        `000000000001-preprod-transfer-singletons-${oldArgs['action-id']}.json`);
+      const pending = { action: prior.action, actionId: prior.actionId, approvalId: prior.approvalId,
+        leaseId: prior.leaseId, holderId: prior.holderId, generation: prior.generation, fencingEpoch: prior.fencingEpoch,
+        commandDigest: prior.commandDigest, requestDigest: prior.requestDigest };
+      for (const resource of prior.resources) {
+        const path = join(resourceDirectory(statePath, resource.resourceId), 'resource-state.json');
+        const value = JSON.parse(await readFile(path, 'utf8'));
+        await writeFile(path, `${JSON.stringify({ ...value, pendingAction: pending,
+          receiptChainHead: resource.previousReceiptDigest })}\n`);
+      }
+      if (receiptMode === 'missing') await unlink(receiptPath);
+      if (receiptMode === 'fail') {
+        const { receiptDigest: _discard, ...body } = prior;
+        const failedBody = { ...body, status: 'fail', verification: { error: 'crash-matrix-fixture' } };
+        await writeFile(receiptPath, `${JSON.stringify({ ...failedBody, receiptDigest: sha256(failedBody) })}\n`);
+      }
+      const taken = await runManageDeployState({ action: 'takeover', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+        'approval-id': 'approval-2', 'expected-generation': '6', 'expected-fencing-epoch': '1',
+        'manifest-digest': CANDIDATE.manifestDigest, 'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2',
+        'lease-duration-ms': '1800000' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+        nowMs: Date.parse('2026-09-09T16:01:00.000Z') });
+      const recovered = await runFencedAction({ ...oldArgs, 'approval-id': 'approval-2',
+        'expected-generation': String(taken.generation), 'expected-fencing-epoch': '2', 'lease-id': 'lease-2',
+        'holder-id': 'owner-2', 'action-id': `partial-${receiptMode}-new` }, { deployStateRoot: root,
+        now: at('2026-09-09T16:02:00.000Z'), planBuilder: plan, commandRunner: runner });
+      assert.equal(mutations, 1);
+      assert.equal(recovered.verification.adoption.mode, 'prior-partial-proven-applied-read-only');
+      assert.equal(recovered.verification.adoption.priorReceiptMode, receiptMode);
+      for (const resourceId of recovered.resourceIds) {
+        const value = JSON.parse(await readFile(join(resourceDirectory(statePath, resourceId), 'resource-state.json'), 'utf8'));
+        assert.equal(value.pendingAction, null);
+        assert.equal(value.receiptChainHead, recovered.receiptDigest);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+test('takeover reconciles a mixed old/current-epoch partial accept without repeating the singleton mutation', async () => {
+  const { root, statePath } = await fixtureFromState(candidateReadyState());
+  const runtimeEnvFile = join(root, '.runtime.env');
+  await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
+  let mutations = 0;
+  const plan = () => ({ executable: '/trusted/singletons', argv: ['transfer'], cwd: '/trusted/release',
+    readback: { executable: '/trusted/singletons', argv: ['readback'], verify: () => ({ exactTargetOnly: true }) } });
+  const runner = async (_executable, argv) => { if (argv[0] === 'transfer') mutations += 1; return successRunner(); };
+  const oldArgs = args({ action: 'preprod-transfer-singletons', 'expected-generation': '6',
+    'resource-id': 'booking-preprod-edge', 'action-id': 'mixed-epoch-old' });
+  try {
+    const prior = await runFencedAction(oldArgs, { deployStateRoot: root,
+      now: at('2026-09-09T15:05:00.000Z'), planBuilder: plan, commandRunner: runner });
+    const oldPending = { action: prior.action, actionId: prior.actionId, approvalId: prior.approvalId,
+      leaseId: prior.leaseId, holderId: prior.holderId, generation: prior.generation, fencingEpoch: prior.fencingEpoch,
+      commandDigest: prior.commandDigest, requestDigest: prior.requestDigest };
+    for (const resource of prior.resources) {
+      const path = join(resourceDirectory(statePath, resource.resourceId), 'resource-state.json');
+      const value = JSON.parse(await readFile(path, 'utf8'));
+      await writeFile(path, `${JSON.stringify({ ...value, pendingAction: oldPending,
+        receiptChainHead: resource.previousReceiptDigest })}\n`);
+    }
+    const taken = await runManageDeployState({ action: 'takeover', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+      'approval-id': 'approval-2', 'expected-generation': '6', 'expected-fencing-epoch': '1',
+      'manifest-digest': CANDIDATE.manifestDigest, 'operation-id': 'op-1', 'lease-id': 'lease-2', 'holder-id': 'owner-2',
+      'lease-duration-ms': '1800000' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+      nowMs: Date.parse('2026-09-09T16:01:00.000Z') });
+    const currentArgs = { ...oldArgs, 'approval-id': 'approval-2', 'expected-generation': String(taken.generation),
+      'expected-fencing-epoch': '2', 'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'mixed-epoch-current' };
+    const current = await runFencedAction(currentArgs, { deployStateRoot: root,
+      now: at('2026-09-09T16:02:00.000Z'), planBuilder: plan, commandRunner: runner });
+    const currentPending = { action: current.action, actionId: current.actionId, approvalId: current.approvalId,
+      leaseId: current.leaseId, holderId: current.holderId, generation: current.generation, fencingEpoch: current.fencingEpoch,
+      commandDigest: current.commandDigest, requestDigest: current.requestDigest };
+    for (let index = 0; index < current.resources.length; index += 1) {
+      const resource = current.resources[index];
+      const path = join(resourceDirectory(statePath, resource.resourceId), 'resource-state.json');
+      const value = JSON.parse(await readFile(path, 'utf8'));
+      const useCurrent = index === 0;
+      await writeFile(path, `${JSON.stringify({ ...value, highestAcceptedFencingEpoch: useCurrent ? 2 : 1,
+        pendingAction: useCurrent ? currentPending : oldPending,
+        receiptChainHead: useCurrent ? resource.previousReceiptDigest : prior.resources[index].previousReceiptDigest })}\n`);
+    }
+    await unlink(join(dirname(statePath), 'executor', 'receipts',
+      '000000000002-preprod-transfer-singletons-mixed-epoch-current.json'));
+    const recovered = await runFencedAction(currentArgs, { deployStateRoot: root,
+      now: at('2026-09-09T16:03:00.000Z'), planBuilder: plan, commandRunner: runner });
+    assert.equal(recovered.status, 'pass');
+    assert.equal(mutations, 1);
+    for (const resourceId of recovered.resourceIds) {
+      const value = JSON.parse(await readFile(join(resourceDirectory(statePath, resourceId), 'resource-state.json'), 'utf8'));
+      assert.equal(value.highestAcceptedFencingEpoch, 2);
+      assert.equal(value.pendingAction, null);
+      assert.equal(value.receiptChainHead, recovered.receiptDigest);
+    }
+    // Recreate every crash cut after the immutable PASS publication and after
+    // each per-resource adoption CAS. The PASS vector must finish the suffix
+    // without invoking the singleton mutation again.
+    for (let completedCount = 0; completedCount < recovered.resources.length; completedCount += 1) {
+      for (let index = 0; index < recovered.resources.length; index += 1) {
+        const item = recovered.resources[index];
+        const path = join(resourceDirectory(statePath, item.resourceId), 'resource-state.json');
+        const value = JSON.parse(await readFile(path, 'utf8'));
+        const completed = index < completedCount;
+        await writeFile(path, `${JSON.stringify({ ...value, highestAcceptedFencingEpoch: completed ? 2 : 1,
+          pendingAction: completed ? null : oldPending,
+          receiptChainHead: completed ? recovered.receiptDigest : item.previousReceiptDigest })}\n`);
+      }
+      const replayed = await runFencedAction(currentArgs, { deployStateRoot: root,
+        now: at(`2026-09-09T16:${String(4 + completedCount).padStart(2, '0')}:00.000Z`),
+        planBuilder: plan, commandRunner: runner });
+      assert.equal(replayed.receiptDigest, recovered.receiptDigest);
+      assert.equal(mutations, 1);
+      for (const resourceId of recovered.resourceIds) {
+        const value = JSON.parse(await readFile(join(resourceDirectory(statePath, resourceId), 'resource-state.json'), 'utf8'));
+        assert.equal(value.highestAcceptedFencingEpoch, 2);
+        assert.equal(value.pendingAction, null);
+        assert.equal(value.receiptChainHead, recovered.receiptDigest);
+      }
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1382,32 +1529,52 @@ test('runtime env rejects non-0600 permissions and symbolic-link substitution', 
   }
 });
 
-test('post-switch observation executor invokes only the fixed public HTTPS probe contract', async () => {
+test('post-switch observation executor invokes the fixed public business-smoke contract', async () => {
   const state = transitionDeployState(switchedState(), { expectedGeneration: 8, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
     now: '2026-09-09T15:03:50.000Z', to: 'OBSERVING', webhookReceiptDigest: `sha256:${'d'.repeat(64)}` });
   const { root } = await fixtureFromState(state);
   const releaseRoot = await concreteReleaseRoot();
   const invocations = [];
   let isolationChecks = 0;
-  const output = JSON.stringify({ status: 'pass', origin: 'https://booking-preprod.happybooking.uk', releaseId: CANDIDATE.releaseId,
+  const actionId = 'observe-public-1';
+  const traceHex = sha256(`${state.operationId}:${actionId}:${state.generation}:1`).slice(7);
+  const marker = `g4_${traceHex.slice(0, 24)}`;
+  const updateId = Number(8_000_000_000_000_000n + (BigInt(`0x${traceHex.slice(24, 38)}`) % 100_000_000_000_000n));
+  const output = JSON.stringify({ schema: 'booking.preprod-business-smoke/v2', status: 'pass', origin: 'https://booking-preprod.happybooking.uk', releaseId: CANDIDATE.releaseId,
     gitSha: CANDIDATE.gitSha, manifestDigest: CANDIDATE.manifestDigest, slot: CANDIDATE.slot,
     configSchema: MANIFEST.contracts.configSchema, migrationFloor: MANIFEST.contracts.migration.expandFloor,
     migrationCatalogDigest: MANIFEST.contracts.migration.catalogDigest, telegramBotMode: 'webhook', telegramWebhookEnabled: true,
-    telegramWebhookUrl: 'https://booking-preprod.happybooking.uk/telegram/webhook' });
+    telegramWebhookUrl: 'https://booking-preprod.happybooking.uk/telegram/webhook',
+    fixture: { marker, updateId, operationId: state.operationId, actionId, generation: state.generation, fencingEpoch: 1 },
+    checks: { publicIdentity: { status: 'pass' }, rootUi: { statusCode: 200, bodyDigest: `sha256:${'7'.repeat(64)}` },
+      sessionChain: { registered: true, loggedIn: true, rotated: true, authenticatedReadback: true, loggedOut: true, revokedReadback: true },
+      shortLinks: { referral: { statusCode: 302, location: `/#/pages/login/register?ref=G4${marker.slice(3, 15).toUpperCase()}` },
+        share: { statusCode: 302, location: `/#/pages/booking/detail?slug=${marker}` } },
+      database: { database: 'booking_preprod', databaseUser: 'booking_preprod', writeReadback: true, sessionRows: 2, revokedRows: 2, fixtureOwnership: 'username-and-smoke-email', fixtureCleanup: 'deleted-and-read-back' },
+      telegramWidget: { origin: 'https://booking-preprod.happybooking.uk', botUsername: TELEGRAM_BOT_USERNAME,
+        transport: 'tls-validated-no-redirect-no-cache', domainAccepted: true, embedInitialized: true },
+      telegramLogin: { signatureAlgorithm: 'sha256-bot-token+hmac-sha256', syntheticFixture: true, sessionCreated: true,
+        authenticatedReadback: true, databaseIdentityReadback: true, logoutConfirmed: true, revokedSessionRejected: true,
+        databaseRevocationReadback: true, fixtureCleanup: 'deleted-and-read-back' },
+      telegramInbox: { deliveryStatusCodes: [200, 200], rowCount: 1, processedCount: 1, processedAtPresent: true, sideEffectOperations: 0 } } });
   try {
     const receipt = await runFencedAction(args({ action: 'preprod-probe-observation', 'expected-generation': '9',
-      'resource-id': 'probe:booking-preprod:observation', 'action-id': 'observe-public-1' }), { deployStateRoot: root, releaseRoot,
+      'resource-id': 'probe:booking-preprod:observation', 'action-id': actionId }), { deployStateRoot: root, releaseRoot,
       releaseManifest: MANIFEST, dockerExecutable: '/trusted/docker', env: MIGRATION_ENV,
       candidateRuntimeVerifier: async () => { isolationChecks += 1; return { verified: true }; }, now: at('2026-09-09T15:05:00.000Z'),
       commandRunner: async (executable, argv) => { invocations.push({ executable, argv });
         return { exitCode: 0, signal: null, overflow: false, stdout: output, stderr: '' }; } });
     assert.equal(invocations.length, 2);
     for (const invocation of invocations) {
-      assert.match(String(invocation.argv[0]), /probe-fenced-public\.mjs$/);
+      assert.match(String(invocation.argv[0]), /probe-fenced-business\.mjs$/);
       assert.equal(invocation.argv.includes('--base-url'), false);
       assert.equal(invocation.argv.some((item) => String(item).includes('127.0.0.1')), false);
+      assert.equal(invocation.argv[invocation.argv.indexOf('--operation-id') + 1], state.operationId);
+      assert.equal(invocation.argv[invocation.argv.indexOf('--action-id') + 1], actionId);
     }
     assert.equal(receipt.verification.runtime.origin, 'https://booking-preprod.happybooking.uk');
+    assert.equal(receipt.verification.runtime.checks.telegramInbox.rowCount, 1);
+    assert.doesNotMatch(JSON.stringify(receipt), /password|access[_-]?token|refresh[_-]?token|authorization|webhook[_-]?secret|cookie/i);
     assert.equal(isolationChecks, 2);
   } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
 });
@@ -1847,6 +2014,11 @@ test('a crash after pass receipt but before pending clear is recovered only afte
     const finalResource = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(finalResource.pendingAction, null);
     assert.equal(finalResource.receiptChainHead, recovered.receiptDigest);
+    const group = JSON.parse(await readFile(join(dirname(statePath), 'executor', 'action-groups',
+      '000000000001-preprod-stage-stage-1.json'), 'utf8'));
+    assert.equal(group.phase, 'COMPLETED');
+    assert.equal(group.receiptDigest, recovered.receiptDigest);
+    assert.ok(group.supersededReceiptDigests.includes(receipt.receiptDigest));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1938,6 +2110,65 @@ test('failed or interrupted actions leave a durable receipt and unresolved pendi
     const resource = JSON.parse(await readFile(join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json'), 'utf8'));
     assert.equal(resource.pendingAction.actionId, 'stage-1');
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-after-failure' }), { deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder, commandRunner: successRunner }), /unresolved pending action/);
+    let repeatedMutations = 0;
+    const recovered = await runFencedAction(args(), { deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder,
+      commandRunner: async (_executable, argv) => { if (argv.includes('up')) repeatedMutations += 1; return successRunner(); } });
+    assert.equal(repeatedMutations, 0);
+    assert.equal(recovered.status, 'pass');
+    assert.equal(recovered.verification.reconcile.mode, 'same-fence-proven-applied-read-only');
+    assert.equal(recovered.verification.reconcile.priorReceiptMode, 'fail');
+    const closed = JSON.parse(await readFile(join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json'), 'utf8'));
+    assert.equal(closed.pendingAction, null);
+    assert.equal(closed.receiptChainHead, recovered.receiptDigest);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('same-fence MUTATING without dispatch evidence consumes exactly one command attempt after NOT_APPLIED readback', async () => {
+  const { root, statePath } = await fixture();
+  let desired = false;
+  let mutations = 0;
+  const recoverablePlan = () => ({ executable: '/trusted/docker', argv: ['compose', 'up'], cwd: '/trusted/release',
+    readback: { executable: '/trusted/docker', argv: ['compose', 'ps'], verify: () => {
+      if (!desired) throw new Error('NOT_APPLIED');
+      return { desired: true };
+    } } });
+  const runner = async (_executable, argv) => {
+    if (argv.at(-1) === 'up') { mutations += 1; desired = true; }
+    return { exitCode: 0, signal: null, overflow: false, stdout: desired ? 'desired' : 'absent', stderr: '' };
+  };
+  try {
+    const receipt = await runFencedAction(args({ 'action-id': 'stage-before-dispatch-crash' }), {
+      deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'), planBuilder: recoverablePlan, commandRunner: runner,
+    });
+    const receiptPath = join(dirname(statePath), 'executor', 'receipts',
+      '000000000001-preprod-stage-stage-before-dispatch-crash.json');
+    const groupPath = join(dirname(statePath), 'executor', 'action-groups',
+      '000000000001-preprod-stage-stage-before-dispatch-crash.json');
+    const resourcePath = join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json');
+    const group = JSON.parse(await readFile(groupPath, 'utf8'));
+    const resource = JSON.parse(await readFile(resourcePath, 'utf8'));
+    group.phase = 'MUTATING';
+    group.completedResourceIds = [];
+    group.receiptDigest = null;
+    group.updatedAt = '2026-09-09T15:05:30.000Z';
+    delete group.receiptFromPhase;
+    delete group.supersededReceiptDigests;
+    resource.pendingAction = { action: receipt.action, actionId: receipt.actionId, requestDigest: receipt.requestDigest,
+      approvalId: receipt.approvalId, leaseId: receipt.leaseId, holderId: receipt.holderId, generation: receipt.generation,
+      fencingEpoch: receipt.fencingEpoch, commandDigest: receipt.commandDigest, groupDigest: group.groupDigest };
+    resource.receiptChainHead = receipt.resources[0].previousReceiptDigest;
+    await writeFile(groupPath, `${JSON.stringify(group)}\n`);
+    await writeFile(resourcePath, `${JSON.stringify(resource)}\n`);
+    await unlink(receiptPath);
+    desired = false;
+    mutations = 0;
+    const recovered = await runFencedAction(args({ 'action-id': 'stage-before-dispatch-crash' }), {
+      deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder: recoverablePlan, commandRunner: runner,
+    });
+    assert.equal(recovered.status, 'pass');
+    assert.equal(mutations, 1);
+    const completedGroup = JSON.parse(await readFile(groupPath, 'utf8'));
+    assert.equal(completedGroup.phase, 'COMPLETED');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

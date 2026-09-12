@@ -1,5 +1,5 @@
 {
-  "schema": "booking.deploy-state/v2",
+  "schema": "booking.deploy-state/v3",
   "environment": "preprod",
   "project": "booking-preprod",
   "resources": {
@@ -41,5 +41,8 @@
   "receiptChainHead": null,
   "contractMigrationApplied": false,
   "rollbackRehearsalCompleted": false,
+  "observationWindowMinutes": 30,
+  "observationStartedAt": null,
+  "recovery": null,
   "updatedAt": "2026-09-07T16:00:00.000Z"
 }

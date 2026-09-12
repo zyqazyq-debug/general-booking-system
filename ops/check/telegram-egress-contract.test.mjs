@@ -40,6 +40,7 @@ test('egress overlay forbids shared proxy, host networking, ports and privileges
   assert.match(compose, /preprod-telegram:\s*\n\s*name: booking-preprod-telegram\s*\n\s*internal: true/);
   assert.match(compose, /TELEGRAM_PROXY_URL: socks5h:\/\/telegram-egress:1080/);
   assert.doesNotMatch(compose, /192\.168\.3\.5:7893|network_mode:|privileged:|^\s+ports:/m);
+  assert.doesNotMatch(compose, /^\s+(?:cpus|pids_limit):/m, 'do not declare limits this Synology kernel cannot enforce');
   assert.match(compose, /order-worker-(blue|green):/);
   assert.match(dockerfile, /ARG TELEGRAM_EGRESS_BASE_IMAGE=debian:bookworm-20260824-slim@sha256:[0-9a-f]{64}/);
   assert.match(dockerfile, /CLOUDFLARE_WARP_VERSION=2026\.7\.1377\.0/);

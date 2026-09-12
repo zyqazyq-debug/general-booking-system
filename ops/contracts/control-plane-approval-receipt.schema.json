@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://happybooking.uk/contracts/control-plane-approval-receipt.schema.json",
+  "title": "Independent control-plane bundle approval receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "environment", "project", "installId", "gitSha", "approvalId", "tupleDigest", "approverIdentity", "publicKeyDigest", "hostIdentityDigest", "expectedActiveInventoryDigest", "activeInventoryObservedAt", "approvedAt", "receiptDigest"],
+  "properties": {
+    "schema": { "const": "booking.preprod.control-plane-approval-receipt/v2" },
+    "status": { "const": "approved" },
+    "environment": { "const": "preprod" },
+    "project": { "const": "booking-preprod" },
+    "installId": { "type": "string", "pattern": "^booking-control-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "approvalId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$" },
+    "tupleDigest": { "$ref": "#/$defs/digest" },
+    "approverIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$" },
+    "publicKeyDigest": { "$ref": "#/$defs/digest" },
+    "hostIdentityDigest": { "$ref": "#/$defs/digest" },
+    "expectedActiveInventoryDigest": { "$ref": "#/$defs/digest" },
+    "activeInventoryObservedAt": { "type": "string", "format": "date-time" },
+    "approvedAt": { "type": "string", "format": "date-time" },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

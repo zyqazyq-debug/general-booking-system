@@ -38,7 +38,6 @@ const BASE_MOUNTS = [
 const INGRESS_MOUNTS = [
   'type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress,dst=/usr/local/libexec/happybooking/switch-preprod-ingress,readonly',
   'type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly',
-  'type=bind,src=/etc/happybooking/secrets/cloudflare-preprod-api-token,dst=/etc/happybooking/secrets/cloudflare-preprod-api-token,readonly',
 ];
 
 const BACKUP_RW_MOUNTS = [
@@ -70,6 +69,12 @@ test('control-plane launcher builds the fixed hardened Docker plan for the state
   assert.ok(argv.includes('type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker,dst=/var/packages/ContainerManager/target/usr/bin/docker,readonly'));
   assert.ok(argv.includes('type=bind,src=/var/packages/ContainerManager/target/usr/bin/docker-compose,dst=/root/.docker/cli-plugins/docker-compose,readonly'));
   assert.ok(argv.includes('type=bind,src=/usr/local/libexec/happybooking/control-plane,dst=/usr/local/libexec/happybooking/control-plane,readonly'));
+  assert.ok(argv.includes('--read-only'));
+  assert.equal(argv[argv.indexOf('--cap-drop') + 1], 'ALL');
+  assert.equal(argv[argv.indexOf('--security-opt') + 1], 'no-new-privileges:true');
+  assert.equal(argv[argv.indexOf('--tmpfs') + 1], '/tmp:rw,nosuid,nodev,noexec,size=64m');
+  assert.equal(argv.includes('--pids-limit'), false, 'Synology without a PID controller must not receive --pids-limit');
+  assert.equal(argv[argv.indexOf('--pid') + 1], 'host', 'lock owner PIDs must be interpreted in the host PID namespace');
   assert.equal(argv.some((value) => value.includes('src=/etc/happybooking/secrets,dst=')), false);
   assert.equal(argv.some((value) => value.includes('src=/usr/local/libexec/happybooking,dst=')), false);
   assert.deepEqual(mounts(argv), BASE_MOUNTS);
@@ -89,7 +94,17 @@ test('control-plane launcher maps only the fenced executor and preserves argumen
   assert.deepEqual(mounts(argv), BASE_MOUNTS, 'staging must not depend on Cloudflare helper or token files');
 });
 
-test('only forward and rollback ingress receive the self-contained helper and token mounts', () => {
+test('stale-lock recovery uses a separate fixed container identity so a stopped owner can be inspected', () => {
+  const result = dryRun(['recover-stale-fencing-lock', '--action', 'recover-deploy-lock', '--execute', 'true',
+    '--environment', 'preprod', '--project', 'booking-preprod', '--expected-state-digest', `sha256:${'a'.repeat(64)}`,
+    '--expected-lock-digest', `sha256:${'b'.repeat(64)}`]);
+  assert.equal(result.status, 0, result.stderr);
+  const argv = result.stdout.trim().split(/\r?\n/);
+  assert.equal(argv[argv.indexOf('--name') + 1], 'booking-preprod-lock-recovery');
+  assert.ok(argv.includes('/usr/local/libexec/happybooking/control-plane/ops/release/recover-stale-fencing-lock.mjs'));
+});
+
+test('only forward and rollback ingress receive the self-contained local alias helper without a Cloudflare API token mount', () => {
   for (const action of ['preprod-switch-ingress', 'preprod-rollback-ingress']) {
     const result = dryRun(['execute-fenced-action', '--action', action, ...common,
       '--operation-id', 'op-1', '--lease-id', 'lease-1', '--holder-id', 'owner-1',
@@ -208,6 +223,12 @@ test('launcher source has no eval, shell command mode, mutable image, or caller-
   assert.match(source, /--read-only/);
   assert.match(source, /--cap-drop ALL/);
   assert.match(source, /--security-opt no-new-privileges:true/);
+  assert.match(source, /--tmpfs \/tmp:rw,nosuid,nodev,noexec,size=64m/);
+  assert.doesNotMatch(source, /--pids-limit/);
+  assert.doesNotMatch(source, /--cpus(?:\s|=)/);
   assert.match(source, /--pull never/);
   assert.doesNotMatch(source, /docker\s+(?:container\s+)?rm|\$HOST_DOCKER"\s+rm/);
+  assert.match(source, /mkdir "\$RUNTIME_LOCK"/);
+  assert.match(source, /\[ ! -e "\$INSTALL_LOCK" \] \|\| fail/);
+  assert.doesNotMatch(source, /exec "\$HOST_DOCKER"/);
 });

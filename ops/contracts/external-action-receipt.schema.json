@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": ["schema", "environment", "project", "action", "actionId", "operationId", "approvalId", "generation", "fencingEpoch", "leaseId", "holderId", "manifestDigest", "releaseIdentity", "resourceIds", "runtimeEnvDigest", "commandDigest", "requestDigest", "startedAt", "completedAt", "status", "executionOutputDigest", "readbackOutputDigest", "verification", "resources", "receiptDigest"],
   "properties": {
-    "schema": { "const": "booking.external-action-receipt/v1" },
+    "schema": { "enum": ["booking.external-action-receipt/v1", "booking.external-action-receipt/v2", "booking.external-action-receipt/v3"] },
     "environment": { "const": "preprod" },
     "project": { "const": "booking-preprod" },
-    "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-prepare-telegram-egress", "preprod-stage", "preprod-probe-candidate", "preprod-probe-active", "preprod-probe-observation", "preprod-probe-rollback", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-switch-ingress", "preprod-rollback-ingress", "preprod-rollback-singletons"] },
+    "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-prepare-telegram-egress", "preprod-abort-telegram-egress", "preprod-attest-database-restore", "preprod-restore-active-runtime", "preprod-probe-recovered-active", "preprod-stage", "preprod-probe-candidate", "preprod-probe-active", "preprod-probe-observation", "preprod-probe-rollback", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-switch-ingress", "preprod-rollback-ingress", "preprod-rollback-singletons"] },
     "actionId": { "$ref": "#/$defs/identifier" },
     "operationId": { "$ref": "#/$defs/identifier" },
     "approvalId": { "$ref": "#/$defs/identifier" },
@@ -43,6 +43,30 @@
     },
     "receiptDigest": { "$ref": "#/$defs/digest" }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "schema": { "const": "booking.external-action-receipt/v1" },
+        "action": { "enum": ["preprod-baseline-ledger", "preprod-expand-migrate", "preprod-prepare-telegram-egress", "preprod-stage", "preprod-probe-candidate", "preprod-probe-active", "preprod-probe-observation", "preprod-probe-rollback", "preprod-transfer-singletons", "preprod-set-webhook", "preprod-rollback-singletons"] }
+      }
+    },
+    {
+      "properties": {
+        "schema": { "const": "booking.external-action-receipt/v2" },
+        "action": { "enum": ["preprod-abort-telegram-egress", "preprod-attest-database-restore", "preprod-restore-active-runtime", "preprod-probe-recovered-active"] }
+      }
+    },
+    {
+      "properties": {
+        "schema": { "const": "booking.external-action-receipt/v3" },
+        "action": { "enum": ["preprod-switch-ingress", "preprod-rollback-ingress"] },
+        "resourceIds": {
+          "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+          "contains": { "const": "booking-preprod-edge" }
+        }
+      }
+    }
+  ],
   "$defs": {
     "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }

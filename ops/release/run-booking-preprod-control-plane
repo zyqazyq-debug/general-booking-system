@@ -11,11 +11,12 @@ STATE_ROOT='/var/lib/happybooking'
 PREPROD_ROOT='/volume1/happybooking/booking-preprod'
 CONTROL_ROOT='/usr/local/libexec/happybooking/control-plane'
 CONTROL_ENV='/etc/happybooking/secrets/booking-preprod-control-plane.env'
-TOKEN_FILE='/etc/happybooking/secrets/cloudflare-preprod-api-token'
 EVIDENCE_ROOT='/volume1/happybooking/booking-preprod/.g4'
 COSIGN='/usr/local/bin/cosign'
 TRUST_ROOT='/etc/happybooking/trust'
 LEGACY_RELEASE='booking-20260908T202714Z-317be4dec675'
+INSTALL_LOCK='/usr/local/libexec/.happybooking-control-plane-install.lock'
+RUNTIME_LOCK='/usr/local/libexec/.happybooking-control-plane-runtime.lock'
 
 fail() {
   printf '%s\n' "booking-preprod control-plane launcher rejected the request" >&2
@@ -45,11 +46,15 @@ shift
 case "$entrypoint" in
   manage-deploy-state)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/manage-deploy-state.mjs'
-    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest active-slot active-release active-git-sha active-manifest-digest candidate-slot candidate-release candidate-git-sha candidate-manifest-digest edge-network data-network database-ref ingress-ref operation-id lease-id holder-id lease-duration-ms to baseline-receipt-digest expand-migration-receipt-digest stage-receipt-digest candidate-probe-digest rollback-pre-switch-probe-digest singleton-transfer-receipt-digest switch-receipt-digest webhook-receipt-digest observation-receipt-digest rollback-receipt-digest rollback-singleton-transfer-receipt-digest rolled-back-probe-digest '
+    allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest active-slot active-release active-git-sha active-manifest-digest candidate-slot candidate-release candidate-git-sha candidate-manifest-digest edge-network data-network database-ref ingress-ref operation-id lease-id holder-id lease-duration-ms to baseline-receipt-digest expand-migration-receipt-digest stage-receipt-digest candidate-probe-digest rollback-pre-switch-probe-digest singleton-transfer-receipt-digest switch-receipt-digest webhook-receipt-digest observation-receipt-digest rollback-receipt-digest rollback-singleton-transfer-receipt-digest rolled-back-probe-digest database-restore-receipt-digest telegram-abort-receipt-digest active-runtime-restore-receipt-digest active-probe-digest '
     ;;
   execute-fenced-action)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/execute-fenced-action.mjs'
     allowed=' action execute environment project approval-id expected-generation expected-fencing-epoch manifest-digest operation-id lease-id holder-id resource-id action-id '
+    ;;
+  recover-stale-fencing-lock)
+    script='/usr/local/libexec/happybooking/control-plane/ops/release/recover-stale-fencing-lock.mjs'
+    allowed=' action execute environment project expected-state-digest expected-lock-digest resource-id '
     ;;
   generate-database-backup-receipt)
     script='/usr/local/libexec/happybooking/control-plane/ops/release/generate-database-backup-receipt.mjs'
@@ -116,7 +121,8 @@ done
 [ "$execute" = 'true' ] || fail
 case "$entrypoint:$action" in
   manage-deploy-state:init|manage-deploy-state:acquire|manage-deploy-state:takeover|manage-deploy-state:renew|manage-deploy-state:transition) ;;
-  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-prepare-telegram-egress|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-probe-candidate|execute-fenced-action:preprod-probe-active|execute-fenced-action:preprod-probe-observation|execute-fenced-action:preprod-probe-rollback|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
+  execute-fenced-action:preprod-baseline-ledger|execute-fenced-action:preprod-expand-migrate|execute-fenced-action:preprod-prepare-telegram-egress|execute-fenced-action:preprod-abort-telegram-egress|execute-fenced-action:preprod-attest-database-restore|execute-fenced-action:preprod-restore-active-runtime|execute-fenced-action:preprod-probe-recovered-active|execute-fenced-action:preprod-stage|execute-fenced-action:preprod-probe-candidate|execute-fenced-action:preprod-probe-active|execute-fenced-action:preprod-probe-observation|execute-fenced-action:preprod-probe-rollback|execute-fenced-action:preprod-transfer-singletons|execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-set-webhook|execute-fenced-action:preprod-rollback-ingress|execute-fenced-action:preprod-rollback-singletons) ;;
+  recover-stale-fencing-lock:recover-deploy-lock|recover-stale-fencing-lock:recover-resource-lock) ;;
   generate-database-backup-receipt:create)
     [ "$identity" = 'old' ] || fail
     [ "$release_id" = "$LEGACY_RELEASE" ] || fail
@@ -145,7 +151,7 @@ ingress_mounts=''
 evidence_mounts=''
 case "$entrypoint:$action" in
   execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollback-ingress)
-  ingress_mounts=' --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress,dst=/usr/local/libexec/happybooking/switch-preprod-ingress,readonly --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly --mount type=bind,src=/etc/happybooking/secrets/cloudflare-preprod-api-token,dst=/etc/happybooking/secrets/cloudflare-preprod-api-token,readonly'
+  ingress_mounts=' --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress,dst=/usr/local/libexec/happybooking/switch-preprod-ingress,readonly --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly'
   ;;
 esac
 case "$entrypoint" in
@@ -160,11 +166,18 @@ esac
 # Rebuild positional parameters from the validated, whitespace-free alphabet.
 # No caller-provided executable or path reaches this vector.
 set -- $forwarded
+control_container_name='booking-preprod-control-plane'
+if [ "$entrypoint" = 'recover-stale-fencing-lock' ]; then
+  # A stopped stale owner may still reserve the normal fixed name. Recovery
+  # therefore runs under a separate fixed identity and can inspect the owner
+  # name/ID without colliding with or deleting it.
+  control_container_name='booking-preprod-lock-recovery'
+fi
 set -- \
-  run --rm --pull never --name booking-preprod-control-plane \
-  --network host --user 0:0 --read-only \
+  run --rm --pull never --name "$control_container_name" \
+  --network host --pid host --user 0:0 --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true \
-  --pids-limit 256 --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
   --env-file "$CONTROL_ENV" \
   --env BOOKING_DEPLOY_STATE_ROOT=/var/lib/happybooking/deploy-state \
   --env HOME=/root \
@@ -209,6 +222,11 @@ esac
 [ -f "$CONTROL_ENV" ] && [ -r "$CONTROL_ENV" ] || fail
 [ -f "$CONTROL_ROOT/ops/release/manage-deploy-state.mjs" ] || fail
 [ -f "$CONTROL_ROOT/ops/release/execute-fenced-action.mjs" ] || fail
+case "$entrypoint:$action" in
+execute-fenced-action:preprod-probe-observation)
+  [ -f "$CONTROL_ROOT/ops/release/probe-fenced-business.mjs" ] || fail
+  ;;
+esac
 case "$entrypoint" in
 generate-database-backup-receipt)
   [ -d "$EVIDENCE_ROOT/backups" ] && [ -d "$EVIDENCE_ROOT/receipts" ] || fail
@@ -221,10 +239,15 @@ generate-schema-diff-receipt)
 esac
 case "$entrypoint:$action" in
 execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollback-ingress)
-  [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ] || fail
   [ -f /usr/local/libexec/happybooking/switch-preprod-ingress ] || fail
   [ -f /usr/local/libexec/happybooking/switch-preprod-ingress.mjs ] || fail
   ;;
 esac
 
-exec "$HOST_DOCKER" "$@"
+mkdir "$RUNTIME_LOCK" 2>/dev/null || fail
+cleanup_runtime_lock() {
+  rmdir "$RUNTIME_LOCK" 2>/dev/null || true
+}
+trap cleanup_runtime_lock EXIT HUP INT TERM
+[ ! -e "$INSTALL_LOCK" ] || fail
+"$HOST_DOCKER" "$@"

@@ -40,6 +40,12 @@ const ready = {
   telegramWebhookUrl:
     'https://booking-preprod.happybooking.uk/telegram/webhook',
 };
+const webhookInfo = {
+  url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
+  pending_update_count: 0,
+  max_connections: 40,
+  allowed_updates: ['message', 'callback_query'],
+};
 
 describe('one-shot Telegram webhook operation', () => {
   beforeEach(() => jest.resetAllMocks());
@@ -167,11 +173,13 @@ describe('one-shot Telegram webhook operation', () => {
       .mockResolvedValueOnce({
         data: {
           ok: true,
-          result: {
-            url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
-            pending_update_count: 0,
-            max_connections: 40,
-          },
+          result: webhookInfo,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: webhookInfo,
         },
       });
     mockedAxios.post.mockResolvedValueOnce({
@@ -200,16 +208,17 @@ describe('one-shot Telegram webhook operation', () => {
         url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
         secret_token: 'webhook_secret_value',
         drop_pending_updates: false,
+        allowed_updates: ['message', 'callback_query'],
       },
       { proxy: false, timeout: 15_000 },
     );
     expect(mockedAxios.get).toHaveBeenNthCalledWith(
-      3,
+      4,
       expect.stringMatching(/\/getWebhookInfo$/),
       { proxy: false, timeout: 15_000 },
     );
     expect(receipt).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       action: 'set',
       environment: 'preproduction',
       completedAt: '2026-09-09T01:02:03.000Z',
@@ -226,12 +235,20 @@ describe('one-shot Telegram webhook operation', () => {
         url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
         pendingUpdateCount: 0,
         maxConnections: 40,
+        allowedUpdates: ['message', 'callback_query'],
+        deliveryError: {
+          before: { date: null, message: null },
+          after: { date: null, message: null },
+          changedAfterSet: false,
+        },
       },
       verification: {
         candidateReady: true,
         getMeIdentityMatched: true,
         setWebhookAccepted: true,
         readBackUrlMatched: true,
+        allowedUpdatesMatched: true,
+        noNewDeliveryError: true,
       },
     });
     expect(JSON.stringify(receipt)).not.toContain('secret');
@@ -250,10 +267,7 @@ describe('one-shot Telegram webhook operation', () => {
       .mockResolvedValueOnce({
         data: {
           ok: true,
-          result: {
-            url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
-            pending_update_count: 0,
-          },
+          result: webhookInfo,
         },
       });
 
@@ -269,6 +283,8 @@ describe('one-shot Telegram webhook operation', () => {
       candidateReady: true,
       getMeIdentityMatched: true,
       readBackUrlMatched: true,
+      allowedUpdatesMatched: true,
+      noNewDeliveryError: true,
     });
   });
 
@@ -284,9 +300,15 @@ describe('one-shot Telegram webhook operation', () => {
       .mockResolvedValueOnce({
         data: {
           ok: true,
+          result: webhookInfo,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
           result: {
+            ...webhookInfo,
             url: 'https://unexpected.example/telegram/webhook',
-            pending_update_count: 0,
           },
         },
       });
@@ -327,10 +349,13 @@ describe('one-shot Telegram webhook operation', () => {
       .mockResolvedValueOnce({
         data: {
           ok: true,
-          result: {
-            url: 'https://booking-preprod.happybooking.uk/telegram/webhook',
-            pending_update_count: 0,
-          },
+          result: webhookInfo,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: webhookInfo,
         },
       });
     mockedAxios.post.mockResolvedValueOnce({
@@ -349,10 +374,161 @@ describe('one-shot Telegram webhook operation', () => {
     const getMeAgent = mockedAxios.get.mock.calls[1][1]?.httpsAgent;
     const setWebhookAgent = mockedAxios.post.mock.calls[0][2]?.httpsAgent;
     const getInfoAgent = mockedAxios.get.mock.calls[2][1]?.httpsAgent;
+    const readBackAgent = mockedAxios.get.mock.calls[3][1]?.httpsAgent;
     expect(getMeAgent).toBeInstanceOf(HttpsProxyAgent);
     expect(setWebhookAgent).toBe(getMeAgent);
     expect(getInfoAgent).toBe(getMeAgent);
+    expect(readBackAgent).toBe(getMeAgent);
     expect(mockedAxios.get.mock.calls[1][1]?.proxy).toBe(false);
+  });
+
+  it('preserves historical delivery errors as evidence without blocking an idempotent set', async () => {
+    const historical = {
+      ...webhookInfo,
+      last_error_date: 1_789_000_000,
+      last_error_message: 'historical upstream timeout',
+    };
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, result: historical } })
+      .mockResolvedValueOnce({ data: { ok: true, result: historical } });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+
+    const receipt = await setTelegramWebhook(argv, env);
+    expect(receipt.webhook.deliveryError).toEqual({
+      before: { date: 1_789_000_000, message: 'historical upstream timeout' },
+      after: { date: 1_789_000_000, message: 'historical upstream timeout' },
+      changedAfterSet: false,
+    });
+  });
+
+  it('fails when a delivery error appears or changes after this setWebhook call', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: {
+            ...webhookInfo,
+            last_error_date: 1_789_000_000,
+            last_error_message: 'old error',
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: {
+            ...webhookInfo,
+            last_error_date: 1_789_000_001,
+            last_error_message: 'new error',
+          },
+        },
+      });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+
+    await expect(setTelegramWebhook(argv, env)).rejects.toThrow(
+      'NEW_WEBHOOK_DELIVERY_ERROR_AFTER_SET',
+    );
+
+    jest.resetAllMocks();
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, result: webhookInfo } })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: {
+            ...webhookInfo,
+            last_error_date: 1_789_000_002,
+            last_error_message: 'first error',
+          },
+        },
+      });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+    await expect(setTelegramWebhook(argv, env)).rejects.toThrow(
+      'NEW_WEBHOOK_DELIVERY_ERROR_AFTER_SET',
+    );
+  });
+
+  it('fails closed when Telegram does not read back the exact allowed update list', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, result: webhookInfo } })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { ...webhookInfo, allowed_updates: ['message'] },
+        },
+      });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+
+    await expect(setTelegramWebhook(argv, env)).rejects.toThrow(
+      'WEBHOOK_READ_BACK_MISMATCH',
+    );
+  });
+
+  it('never archives a delivery diagnostic that echoes the Bot API token', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: ready })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: { id: 123456, username: 'booking_preprod_bot' },
+        },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, result: webhookInfo } })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          result: {
+            ...webhookInfo,
+            last_error_date: 1_789_000_003,
+            last_error_message: `diagnostic ${env.TELEGRAM_BOT_TOKEN}`,
+          },
+        },
+      });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: { ok: true, result: true },
+    });
+
+    const failure = await setTelegramWebhook(argv, env).catch(
+      (error: Error) => error,
+    );
+    expect(failure.message).toBe('INVALID_WEBHOOK_ERROR_METADATA');
+    expect(failure.message).not.toContain(env.TELEGRAM_BOT_TOKEN);
   });
 
   it('rejects invalid proxy configuration without disclosing credentials or calling HTTP', async () => {

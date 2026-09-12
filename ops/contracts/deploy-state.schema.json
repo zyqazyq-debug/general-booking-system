@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "environment", "project", "resources", "runtimeEnvDigest", "generation", "fencingEpoch", "phase", "operationId", "approvalId", "lease", "active", "candidate", "rollback", "evidence", "receiptChainHead", "contractMigrationApplied", "rollbackRehearsalCompleted", "updatedAt"],
   "properties": {
-    "schema": { "const": "booking.deploy-state/v2" },
+    "schema": { "enum": ["booking.deploy-state/v2", "booking.deploy-state/v3"] },
     "environment": { "enum": ["preprod", "production"] },
     "project": { "enum": ["booking-preprod", "booking-prod"] },
     "resources": {
@@ -24,7 +24,7 @@
     "fencingEpoch": { "type": "integer", "minimum": 0 },
     "phase": {
       "description": "ROLLBACK_PENDING is singleton-only before an ingress switch and a full ingress-plus-singleton rollback after a switch.",
-      "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"]
+      "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED", "FAILED_RECOVERED"]
     },
     "operationId": { "type": ["string", "null"], "minLength": 1 },
     "approvalId": { "type": ["string", "null"], "minLength": 1 },
@@ -51,8 +51,51 @@
     "receiptChainHead": { "$ref": "#/$defs/nullableDigest" },
     "contractMigrationApplied": { "type": "boolean" },
     "rollbackRehearsalCompleted": { "type": "boolean" },
+    "observationWindowMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+    "observationStartedAt": { "type": ["string", "null"], "format": "date-time" },
+    "recovery": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["databaseRestoreReceiptDigest", "telegramAbortReceiptDigest", "activeRuntimeRestoreReceiptDigest", "activeProbeDigest", "priorFailedStateDigest"],
+          "properties": {
+            "databaseRestoreReceiptDigest": { "$ref": "#/$defs/digest" },
+            "telegramAbortReceiptDigest": { "$ref": "#/$defs/digest" },
+            "activeRuntimeRestoreReceiptDigest": { "$ref": "#/$defs/digest" },
+            "activeProbeDigest": { "$ref": "#/$defs/digest" },
+            "priorFailedStateDigest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      ]
+    },
     "updatedAt": { "type": "string", "format": "date-time" }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "schema": { "const": "booking.deploy-state/v2" },
+        "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
+        "recovery": false
+      }
+    },
+    {
+      "required": ["recovery", "observationWindowMinutes", "observationStartedAt"],
+      "properties": {
+        "schema": { "const": "booking.deploy-state/v3" },
+        "recovery": {},
+        "observationWindowMinutes": {},
+        "observationStartedAt": {}
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "phase": { "const": "FAILED_RECOVERED" } } },
+      "then": { "required": ["recovery"], "properties": { "recovery": { "type": "object" } } },
+      "else": { "properties": { "recovery": { "type": "null" } } }
+    }
+  ],
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "releaseIdentity": {

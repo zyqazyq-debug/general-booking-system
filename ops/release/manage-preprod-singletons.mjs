@@ -368,7 +368,7 @@ export async function runSingletonAction(args, runtime = {}) {
     if (containers.some((item) => item.service?.startsWith('order-worker-') && isRunning(item))) throw new ContractError('a worker remained running before target activation', EXIT.SINGLETON);
     if (targetSupported) {
       const started = await runner(docker, ['compose', '--env-file', controlEnvFile, '--project-name', PROJECT,
-        ...composeFiles.flatMap((file) => ['--file', file]), 'up', '--no-build', '--no-deps', '--wait', targetService], options);
+        ...composeFiles.flatMap((file) => ['--file', file]), 'up', '--no-build', '--pull', 'never', '--no-deps', '--wait', targetService], options);
       assertResult(started, 'failed to start target singleton worker');
     }
   }

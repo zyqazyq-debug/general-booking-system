@@ -6,22 +6,51 @@
   "additionalProperties": false,
   "required": ["schema", "environment", "project", "generation", "fencingEpoch", "operationId", "approvalId", "terminalPhase", "previousReceiptDigest", "terminalStateDigest", "activeIdentity", "evidence", "receiptDigest"],
   "properties": {
-    "schema": { "const": "booking.deploy-receipt/v1" },
+    "schema": { "enum": ["booking.deploy-receipt/v1", "booking.deploy-receipt/v2"] },
     "environment": { "enum": ["preprod", "production"] },
     "project": { "enum": ["booking-preprod", "booking-prod"] },
     "generation": { "type": "integer", "minimum": 1 },
     "fencingEpoch": { "type": "integer", "minimum": 1 },
     "operationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "approvalId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "terminalPhase": { "enum": ["COMMITTED", "ROLLED_BACK"] },
+    "terminalPhase": { "enum": ["COMMITTED", "ROLLED_BACK", "FAILED_RECOVERED"] },
     "previousReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
     "terminalStateDigest": { "$ref": "#/$defs/digest" },
     "activeIdentity": { "$ref": "deploy-state.schema.json#/$defs/releaseIdentity" },
     "evidence": { "$ref": "deploy-state.schema.json#/$defs/evidence" },
+    "recovery": { "$ref": "#/$defs/recovery" },
     "receiptDigest": { "$ref": "#/$defs/digest" }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "schema": { "const": "booking.deploy-receipt/v1" },
+        "terminalPhase": { "enum": ["COMMITTED", "ROLLED_BACK"] },
+        "recovery": false
+      }
+    },
+    {
+      "required": ["recovery"],
+      "properties": {
+        "schema": { "const": "booking.deploy-receipt/v2" },
+        "terminalPhase": { "const": "FAILED_RECOVERED" },
+        "recovery": { "$ref": "#/$defs/recovery" }
+      }
+    }
+  ],
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "nullableDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+    "nullableDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "recovery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["databaseRestoreReceiptDigest", "telegramAbortReceiptDigest", "activeRuntimeRestoreReceiptDigest", "activeProbeDigest", "priorFailedStateDigest"],
+      "properties": {
+        "databaseRestoreReceiptDigest": { "$ref": "#/$defs/digest" },
+        "telegramAbortReceiptDigest": { "$ref": "#/$defs/digest" },
+        "activeRuntimeRestoreReceiptDigest": { "$ref": "#/$defs/digest" },
+        "activeProbeDigest": { "$ref": "#/$defs/digest" },
+        "priorFailedStateDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
   }
 }

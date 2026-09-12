@@ -27,15 +27,16 @@ It never performs an infrastructure change. See
 `node --test ops/check/deploy-state-cas.test.mjs` before using it in a G4
 rehearsal.
 
-The Cloudflare ingress helper has a network-free mock suite:
+The NAS-local ingress helper has a Docker-free mock suite:
 
 ```powershell
 node --test ops/check/switch-preprod-ingress.test.mjs
 ```
 
-The suite proves scope pinning, unrelated-config preservation, version/digest
-drift rejection, fenced proof readback, and credential non-disclosure. It does
-not contact Cloudflare and is not evidence that a live tunnel changed.
+The suite proves exact gateway/cloudflared identity and hardening, local alias
+transfer, crash-point convergence, foreign/drift freeze, fenced proof readback,
+and the absence of a Cloudflare token dependency. It does not contact a Docker
+daemon or Cloudflare and is not evidence of live public reachability.
 
 The NAS control-plane launcher also has a Docker-free argument-plan suite:
 

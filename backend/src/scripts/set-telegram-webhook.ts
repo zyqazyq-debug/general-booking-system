@@ -17,6 +17,9 @@ type TelegramWebhookInfo = {
   url: string;
   pending_update_count: number;
   max_connections?: number;
+  allowed_updates?: string[];
+  last_error_date?: number;
+  last_error_message?: string;
 };
 
 type TelegramResponse<T> = {
@@ -53,7 +56,7 @@ export type TelegramWebhookArguments = {
 };
 
 export type TelegramWebhookReceipt = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   action: 'set' | 'verify';
   environment: 'preproduction' | 'production';
   completedAt: string;
@@ -73,13 +76,26 @@ export type TelegramWebhookReceipt = {
     url: string;
     pendingUpdateCount: number;
     maxConnections?: number;
+    allowedUpdates: readonly ['message', 'callback_query'];
+    deliveryError: {
+      before: TelegramDeliveryErrorSnapshot;
+      after: TelegramDeliveryErrorSnapshot;
+      changedAfterSet: false;
+    };
   };
   verification: {
     candidateReady: true;
     getMeIdentityMatched: true;
     setWebhookAccepted?: true;
     readBackUrlMatched: true;
+    allowedUpdatesMatched: true;
+    noNewDeliveryError: true;
   };
+};
+
+export type TelegramDeliveryErrorSnapshot = {
+  date: number | null;
+  message: string | null;
 };
 
 export class TelegramWebhookOperationError extends Error {
@@ -100,6 +116,7 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RELEASE_ID_PATTERN = /^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$/;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const MIGRATION_FLOOR_PATTERN = /^[0-9]{10,}-[A-Za-z0-9][A-Za-z0-9-]*$/;
+const ALLOWED_UPDATES = Object.freeze(['message', 'callback_query'] as const);
 
 function parseNamedArguments(argv: string[]): Record<string, string> {
   const parsed: Record<string, string> = {};
@@ -245,6 +262,47 @@ function verifiedResult<T>(value: unknown, code: string): T {
   return response.result;
 }
 
+function deliveryErrorSnapshot(
+  info: TelegramWebhookInfo,
+  sensitiveToken: string,
+): TelegramDeliveryErrorSnapshot {
+  const date = info.last_error_date;
+  const message = info.last_error_message;
+  if (
+    (date !== undefined && (!Number.isSafeInteger(date) || date < 0)) ||
+    (message !== undefined &&
+      (typeof message !== 'string' ||
+        message.length > 4096 ||
+        message.includes(sensitiveToken)))
+  ) {
+    throw new TelegramWebhookOperationError('INVALID_WEBHOOK_ERROR_METADATA');
+  }
+  return {
+    date: date ?? null,
+    message: message ?? null,
+  };
+}
+
+function assertWebhookReadBack(
+  info: TelegramWebhookInfo,
+  expectedUrl: string,
+  sensitiveToken: string,
+): TelegramDeliveryErrorSnapshot {
+  if (
+    info.url !== expectedUrl ||
+    !Number.isSafeInteger(info.pending_update_count) ||
+    info.pending_update_count < 0 ||
+    (info.max_connections !== undefined &&
+      (!Number.isSafeInteger(info.max_connections) ||
+        info.max_connections < 1 ||
+        info.max_connections > 100)) ||
+    JSON.stringify(info.allowed_updates) !== JSON.stringify(ALLOWED_UPDATES)
+  ) {
+    throw new TelegramWebhookOperationError('WEBHOOK_READ_BACK_MISMATCH');
+  }
+  return deliveryErrorSnapshot(info, sensitiveToken);
+}
+
 export async function setTelegramWebhook(
   argv: string[],
   input: EnvMap = process.env,
@@ -324,6 +382,16 @@ export async function setTelegramWebhook(
       throw new TelegramWebhookOperationError('BOT_IDENTITY_MISMATCH');
     }
 
+    const beforeInfoResponse = await axios.get(`${apiBase}/getWebhookInfo`, {
+      ...telegramHttp.axios,
+      timeout: 15_000,
+    });
+    const beforeInfo = verifiedResult<TelegramWebhookInfo>(
+      beforeInfoResponse.data,
+      'GET_WEBHOOK_INFO_REJECTED',
+    );
+    const beforeError = deliveryErrorSnapshot(beforeInfo, token);
+
     if (args.action === 'set') {
       const setResponse = await axios.post(
         `${apiBase}/setWebhook`,
@@ -331,6 +399,7 @@ export async function setTelegramWebhook(
           url: args.url,
           secret_token: secret,
           drop_pending_updates: false,
+          allowed_updates: ALLOWED_UPDATES,
         },
         { ...telegramHttp.axios, timeout: 15_000 },
       );
@@ -342,24 +411,32 @@ export async function setTelegramWebhook(
       }
     }
 
-    const infoResponse = await axios.get(`${apiBase}/getWebhookInfo`, {
-      ...telegramHttp.axios,
-      timeout: 15_000,
-    });
-    const info = verifiedResult<TelegramWebhookInfo>(
-      infoResponse.data,
-      'GET_WEBHOOK_INFO_REJECTED',
-    );
-    if (
-      info.url !== args.url ||
-      !Number.isSafeInteger(info.pending_update_count) ||
-      info.pending_update_count < 0
-    ) {
-      throw new TelegramWebhookOperationError('WEBHOOK_READ_BACK_MISMATCH');
+    const info =
+      args.action === 'set'
+        ? verifiedResult<TelegramWebhookInfo>(
+            (
+              await axios.get(`${apiBase}/getWebhookInfo`, {
+                ...telegramHttp.axios,
+                timeout: 15_000,
+              })
+            ).data,
+            'GET_WEBHOOK_INFO_REJECTED',
+          )
+        : beforeInfo;
+    const afterError = assertWebhookReadBack(info, args.url, token);
+    const changedDeliveryError =
+      args.action === 'set' &&
+      (afterError.date !== null || afterError.message !== null) &&
+      (afterError.date !== beforeError.date ||
+        afterError.message !== beforeError.message);
+    if (changedDeliveryError) {
+      throw new TelegramWebhookOperationError(
+        'NEW_WEBHOOK_DELIVERY_ERROR_AFTER_SET',
+      );
     }
 
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       action: args.action,
       environment: args.environment,
       completedAt: now().toISOString(),
@@ -378,12 +455,20 @@ export async function setTelegramWebhook(
         ...(Number.isSafeInteger(info.max_connections)
           ? { maxConnections: info.max_connections }
           : {}),
+        allowedUpdates: ALLOWED_UPDATES,
+        deliveryError: {
+          before: beforeError,
+          after: afterError,
+          changedAfterSet: false,
+        },
       },
       verification: {
         candidateReady: true,
         getMeIdentityMatched: true,
         ...(args.action === 'set' ? { setWebhookAccepted: true as const } : {}),
         readBackUrlMatched: true,
+        allowedUpdatesMatched: true,
+        noNewDeliveryError: true,
       },
     };
   } catch (error) {

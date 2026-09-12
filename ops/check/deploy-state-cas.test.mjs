@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { ContractError, EXIT, sha256 } from '../release/lib/contracts.mjs';
-import { canonicalStatePath, initializeStateFile, mutateStateFile } from '../release/lib/deploy-state-store.mjs';
+import { canonicalStatePath, initializeStateFile, mutateStateFile, recoverStaleDeployStateLock } from '../release/lib/deploy-state-store.mjs';
 import { MIN_LEASE_DURATION_MS, runManageDeployState } from '../release/manage-deploy-state.mjs';
 import { acquireLease, initialDeployState, takeoverExpiredLease, transitionDeployState, validateDeployState } from '../release/lib/state-machine.mjs';
 import { runFencedAction } from '../release/execute-fenced-action.mjs';
-import { resourceDirectory } from '../release/lib/fenced-resource-store.mjs';
+import { recoverStaleResourceLocks, resourceDirectory } from '../release/lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from '../release/lib/legacy-preprod.mjs';
+import { runStaleFencingLockRecovery } from '../release/recover-stale-fencing-lock.mjs';
 
 const ACTIVE = { slot: 'blue', releaseId: 'booking-20260907T150000Z-abcdef0', gitSha: 'a'.repeat(40), manifestDigest: `sha256:${'6'.repeat(64)}` };
 const CANDIDATE = { slot: 'green', releaseId: 'booking-20260907T160000Z-0123456', gitSha: 'b'.repeat(40), manifestDigest: `sha256:${'7'.repeat(64)}` };
@@ -20,7 +21,7 @@ const RUNTIME_ENV_CONTENT = 'FIXTURE_ONLY=true\n';
 const DEPLOYMENT = {
   environment: 'preprod', project: 'booking-preprod',
   resources: { edgeNetwork: 'booking-preprod-edge', dataNetwork: 'booking-preprod-data', databaseRef: 'database:booking-preprod', ingressRef: 'ingress:booking-preprod' },
-  active: ACTIVE, runtimeEnvDigest: sha256(RUNTIME_ENV_CONTENT),
+  active: ACTIVE, runtimeEnvDigest: sha256(RUNTIME_ENV_CONTENT), observationWindowMinutes: 1,
 };
 
 function acquired() {
@@ -57,7 +58,7 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   assert.throws(() => step(state, 'ROLLED_BACK', { rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') }),
     /post-switch rollback requires.*ingress receipt/);
   assert.throws(() => step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rolledBackProbeDigest: D('3') }), (error) => error.exitCode === EXIT.ROLLBACK);
-  state = step(state, 'ROLLED_BACK', { rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
+  state = step(state, 'ROLLED_BACK', { now: '2026-09-07T15:31:00.000Z', rollbackReceiptDigest: D('2'), rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
   assert.deepEqual(state.active, ACTIVE);
   assert.equal(state.rollbackRehearsalCompleted, true);
   state = step(state, 'IDLE');
@@ -128,6 +129,42 @@ test('expand migration remains rollback-compatible while a real contract migrati
   assert.throws(() => step(afterContract, 'ROLLBACK_PENDING'), (error) => error.exitCode === EXIT.ROLLBACK);
 });
 
+test('observation timing never blocks emergency rollback but only a completed window qualifies rehearsal and commit', () => {
+  const reachObserving = () => {
+    let state = acquired();
+    state = step(state, 'MANIFEST_VERIFIED');
+    state = step(state, 'STAGED');
+    state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+    state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+    state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
+    state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
+    state = step(state, 'SWITCHED', { switchReceiptDigest: D('1') });
+    return step(state, 'OBSERVING', { now: '2026-09-07T15:30:00.000Z', webhookReceiptDigest: D('6') });
+  };
+
+  let emergency = reachObserving();
+  emergency = step(emergency, 'ROLLBACK_PENDING', { now: '2026-09-07T15:30:10.000Z' });
+  emergency = step(emergency, 'ROLLED_BACK', { now: '2026-09-07T15:30:20.000Z', rollbackReceiptDigest: D('2'),
+    rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
+  assert.equal(emergency.rollbackRehearsalCompleted, false, 'an immediate safety rollback must remain available without qualifying as rehearsal');
+
+  let qualified = reachObserving();
+  qualified = step(qualified, 'ROLLBACK_PENDING', { now: '2026-09-07T15:30:10.000Z' });
+  qualified = step(qualified, 'ROLLED_BACK', { now: '2026-09-07T15:31:00.000Z', rollbackReceiptDigest: D('2'),
+    rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
+  assert.equal(qualified.rollbackRehearsalCompleted, true);
+
+  qualified = step(qualified, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7'), now: '2026-09-07T15:32:00.000Z' });
+  qualified = step(qualified, 'CANDIDATE_READY', { candidateProbeDigest: D('8'), now: '2026-09-07T15:33:00.000Z' });
+  qualified = step(qualified, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4'), now: '2026-09-07T15:34:00.000Z' });
+  qualified = step(qualified, 'SWITCHED', { switchReceiptDigest: D('1'), now: '2026-09-07T15:35:00.000Z' });
+  qualified = step(qualified, 'OBSERVING', { webhookReceiptDigest: D('6'), now: '2026-09-07T15:36:00.000Z' });
+  assert.throws(() => step(qualified, 'COMMITTED', { observationReceiptDigest: D('b'), now: '2026-09-07T15:36:59.999Z' }),
+    /observation window/);
+  qualified = step(qualified, 'COMMITTED', { observationReceiptDigest: D('b'), now: '2026-09-07T15:37:00.000Z' });
+  assert.equal(qualified.phase, 'COMMITTED');
+});
+
 test('atomic file store serializes writers and leaves parseable state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'booking-state-'));
   const path = join(directory, 'deploy-state.json');
@@ -181,6 +218,134 @@ test('all existing lock identities are fail-closed', async () => {
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('explicit deployment lock recovery requires expired lease, dead PID, and exact immutable byte digests', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'booking-state-lock-recovery-'));
+  const path = join(directory, 'deploy-state.json');
+  const nowMs = Date.parse('2026-09-07T16:00:01.000Z');
+  try {
+    const stateBytes = `${JSON.stringify(acquired(), null, 2)}\n`;
+    const lockBytes = `${JSON.stringify({ pid: 1, ownerContainerId: 'a'.repeat(12), ownerContainerName: 'booking-preprod-control-plane',
+      acquiredAt: '2026-09-07T15:00:00.000Z', nonce: 'dead-lock-1' })}\n`;
+    await writeFile(path, stateBytes);
+    await writeFile(`${path}.lock`, lockBytes);
+    const dead = async () => false;
+    await assert.rejects(recoverStaleDeployStateLock(path, {
+      expectedLockDigest: D('f'), expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    }), /digest mismatch/);
+    assert.equal(await readFile(`${path}.lock`, 'utf8'), lockBytes);
+    await assert.rejects(recoverStaleDeployStateLock(path, {
+      expectedLockDigest: sha256(lockBytes), expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: async () => true,
+    }), /still alive/);
+    const receipt = await recoverStaleDeployStateLock(path, {
+      expectedLockDigest: sha256(lockBytes), expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    });
+    assert.equal(receipt.kind, 'deployment');
+    assert.equal(receipt.lockDigest, sha256(lockBytes));
+    await assert.rejects(readFile(`${path}.lock`, 'utf8'), /ENOENT/);
+    const names = await readdir(join(directory, 'executor', 'lock-recoveries'));
+    assert.deepEqual(names, [`deploy-${receipt.receiptDigest.slice(7)}.json`]);
+    const replay = await recoverStaleDeployStateLock(path, {
+      expectedLockDigest: sha256(lockBytes), expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    });
+    assert.equal(replay.receiptDigest, receipt.receiptDigest);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('explicit resource lock group recovery is all-digests-bound and crash-continuable only from its receipt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'booking-resource-lock-recovery-'));
+  const path = join(directory, 'deploy-state.json');
+  const nowMs = Date.parse('2026-09-07T16:00:01.000Z');
+  try {
+    const stateBytes = `${JSON.stringify(acquired(), null, 2)}\n`;
+    await writeFile(path, stateBytes);
+    const ids = ['booking-preprod-edge', 'booking-preprod-data'];
+    const recoveries = [];
+    for (const [index, resourceId] of ids.entries()) {
+      const resourceRoot = resourceDirectory(path, resourceId);
+      await mkdir(resourceRoot, { recursive: true });
+      const bytes = `${JSON.stringify({ pid: 1, ownerContainerId: `${index + 1}`.repeat(12), ownerContainerName: 'booking-preprod-control-plane',
+        acquiredAt: '2026-09-07T15:00:00.000Z', nonce: `dead-resource-${index}` })}\n`;
+      await writeFile(join(resourceRoot, 'resource-state.lock'), bytes);
+      recoveries.push({ resourceId, lockDigest: sha256(bytes) });
+    }
+    const dead = async () => false;
+    await assert.rejects(recoverStaleResourceLocks(path, [{ ...recoveries[0], lockDigest: D('f') }, recoveries[1]], {
+      expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    }), /digest mismatch/);
+    const receipt = await recoverStaleResourceLocks(path, recoveries, {
+      expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    });
+    assert.equal(receipt.kind, 'resource-group');
+    for (const resourceId of ids) await assert.rejects(readFile(join(resourceDirectory(path, resourceId), 'resource-state.lock')), /ENOENT/);
+    const replay = await recoverStaleResourceLocks(path, recoveries, {
+      expectedStateDigest: sha256(stateBytes), nowMs, ownerContainerProbe: dead,
+    });
+    assert.equal(replay.receiptDigest, receipt.receiptDigest);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('strict stale-lock CLI proves the recorded control container is absent through a live Docker daemon', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'booking-lock-cli-'));
+  try {
+    const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
+    const stateBytes = `${JSON.stringify(acquired(), null, 2)}\n`;
+    const lockBytes = `${JSON.stringify({ pid: 1, ownerContainerId: 'b'.repeat(12), ownerContainerName: 'booking-preprod-control-plane',
+      acquiredAt: '2026-09-07T15:00:00.000Z', nonce: 'cli-dead-lock' })}\n`;
+    await writeFile(statePath, stateBytes);
+    await writeFile(`${statePath}.lock`, lockBytes);
+    const calls = [];
+    const receipt = await runStaleFencingLockRecovery({ action: 'recover-deploy-lock', execute: 'true',
+      environment: 'preprod', project: 'booking-preprod', 'expected-state-digest': sha256(stateBytes),
+      'expected-lock-digest': sha256(lockBytes) }, { deployStateRoot: root,
+      nowMs: Date.parse('2026-09-07T16:00:01.000Z'), commandRunner: async (_file, argv) => {
+        calls.push(argv);
+        return argv[0] === 'info' ? { exitCode: 0, stdout: '24.0.2\n', stderr: '' }
+          : { exitCode: 1, stdout: '', stderr: 'not found' };
+      } });
+    assert.equal(receipt.kind, 'deployment');
+    assert.deepEqual(calls.map((argv) => argv[0]), ['container', 'info', 'container', 'container']);
+    await assert.rejects(runStaleFencingLockRecovery({ action: 'recover-deploy-lock', execute: 'true',
+      environment: 'production', project: 'booking-prod', 'expected-state-digest': sha256(stateBytes),
+      'expected-lock-digest': sha256(lockBytes) }), /outside preproduction/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('stale-lock CLI distinguishes stopped owners, daemon restart, name-ID mismatch, and PID reuse', async (t) => {
+  const runCase = async (label, lockOverrides, commandRunner, expected) => t.test(label, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'booking-lock-owner-proof-'));
+    try {
+      const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
+      const stateBytes = `${JSON.stringify(acquired(), null, 2)}\n`;
+      const lock = { pid: 1, ownerContainerId: 'b'.repeat(12), ownerContainerName: 'booking-preprod-control-plane', acquiredAt: '2026-09-07T15:00:00.000Z',
+        nonce: `owner-${label.replaceAll(' ', '-')}`, ...lockOverrides };
+      const lockBytes = `${JSON.stringify(lock)}\n`;
+      await writeFile(statePath, stateBytes);
+      await writeFile(`${statePath}.lock`, lockBytes);
+      const promise = runStaleFencingLockRecovery({ action: 'recover-deploy-lock', execute: 'true', environment: 'preprod',
+        project: 'booking-preprod', 'expected-state-digest': sha256(stateBytes), 'expected-lock-digest': sha256(lockBytes) }, {
+        deployStateRoot: root, nowMs: Date.parse('2026-09-07T16:00:01.000Z'), commandRunner,
+      });
+      if (expected instanceof RegExp) await assert.rejects(promise, expected);
+      else assert.equal((await promise).kind, expected);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  const inspectValue = (id, name = 'booking-preprod-control-plane', running = false) => ({ exitCode: 0, stderr: '',
+    stdout: JSON.stringify({ Id: id, Name: `/${name}`, Running: running }) });
+  await runCase('stopped owner', {}, async () => inspectValue('b'.repeat(64), undefined, false), 'deployment');
+  await runCase('running owner', {}, async () => inspectValue('b'.repeat(64), undefined, true), /still alive/);
+  await runCase('name ID mismatch', {}, async () => inspectValue('c'.repeat(64)), /recorded HOSTNAME ID/);
+  await runCase('wrong owner name', {}, async () => inspectValue('b'.repeat(64), 'foreign-control'), /fixed control-plane identity/);
+  await runCase('wrong recorded owner name', { ownerContainerName: 'foreign-control' }, async () => inspectValue('b'.repeat(64)),
+  /lock identity is invalid/);
+  await runCase('missing recorded owner name', { ownerContainerName: undefined }, async () => inspectValue('b'.repeat(64)),
+  /lock identity is invalid/);
+  await runCase('daemon restart unavailable', {}, async (_file, argv) => argv[0] === 'info'
+    ? { exitCode: 1, stdout: '', stderr: 'restarting' } : { exitCode: 1, stdout: '', stderr: 'not found' },
+  /daemon cannot prove/);
+  await runCase('PID namespace reuse', { pid: process.pid }, async (_file, argv) => argv[0] === 'info'
+    ? { exitCode: 0, stdout: '24.0.2\n', stderr: '' } : { exitCode: 1, stdout: '', stderr: 'not found' }, 'deployment');
+});
+
 test('canonical CLI derives path and time, and rejects caller path/time or unbounded lease', async () => {
   const root = await mkdtemp(join(tmpdir(), 'booking-canonical-root-'));
   const runtimeEnvFile = join(root, '.runtime.env');
@@ -191,6 +356,7 @@ test('canonical CLI derives path and time, and rejects caller path/time or unbou
     'expected-generation': '0', 'expected-fencing-epoch': '0', 'manifest-digest': legacyActive.manifestDigest,
     'active-slot': legacyActive.slot, 'active-release': legacyActive.releaseId, 'active-git-sha': legacyActive.gitSha, 'active-manifest-digest': legacyActive.manifestDigest,
     'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod', 'ingress-ref': 'ingress:booking-preprod',
+    'observation-window-minutes': '1',
   };
   try {
     await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
@@ -206,6 +372,7 @@ test('canonical CLI derives path and time, and rejects caller path/time or unbou
       'expected-generation': '0', 'expected-fencing-epoch': '0', 'manifest-digest': CANDIDATE.manifestDigest,
       'candidate-slot': CANDIDATE.slot, 'candidate-release': CANDIDATE.releaseId, 'candidate-git-sha': CANDIDATE.gitSha, 'candidate-manifest-digest': CANDIDATE.manifestDigest,
       'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', 'lease-duration-ms': String(MIN_LEASE_DURATION_MS - 1),
+      'observation-window-minutes': '1',
     };
     await assert.rejects(runManageDeployState(acquire, { ...runtimeBase, nowMs: Date.parse('2026-09-07T15:01:00.000Z') }), /lease-duration-ms must be between/);
     const changedRuntime = 'FIXTURE_ONLY=changed\n';
@@ -235,7 +402,7 @@ test('absent-state bootstrap rejects every active identity except the exact fixe
         'manifest-digest': active.manifestRawDigest, 'active-slot': active.slot, 'active-release': active.releaseId,
         'active-git-sha': active.gitSha, 'active-manifest-digest': active.manifestRawDigest,
         'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod',
-        'ingress-ref': 'ingress:booking-preprod' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
+        'ingress-ref': 'ingress:booking-preprod', 'observation-window-minutes': '1' }, { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true,
         nowMs: Date.parse('2026-09-09T10:00:00.000Z') }), /exact fixed legacy release/);
       const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
       await assert.rejects(readFile(statePath), /ENOENT/);
@@ -261,12 +428,12 @@ test('legacy baseline and expand migration form one canonical predecessor chain 
       'manifest-digest': legacyActive.manifestDigest, 'active-slot': legacyActive.slot, 'active-release': legacyActive.releaseId,
       'active-git-sha': legacyActive.gitSha, 'active-manifest-digest': legacyActive.manifestDigest,
       'edge-network': 'booking-preprod-edge', 'data-network': 'booking-preprod-data', 'database-ref': 'database:booking-preprod',
-      'ingress-ref': 'ingress:booking-preprod' }, managerRuntime(Date.parse('2026-09-09T10:00:00.000Z')));
+      'ingress-ref': 'ingress:booking-preprod', 'observation-window-minutes': '1' }, managerRuntime(Date.parse('2026-09-09T10:00:00.000Z')));
     assert.equal(init.phase, 'IDLE');
     const locked = await runManageDeployState({ ...base, action: 'acquire', 'expected-generation': '0', 'expected-fencing-epoch': '0',
       'manifest-digest': CHAIN_CANDIDATE.manifestDigest, 'candidate-slot': CHAIN_CANDIDATE.slot, 'candidate-release': CHAIN_CANDIDATE.releaseId,
       'candidate-git-sha': CHAIN_CANDIDATE.gitSha, 'candidate-manifest-digest': CHAIN_CANDIDATE.manifestDigest, 'operation-id': 'op-1',
-      'lease-id': 'lease-1', 'holder-id': 'owner-1', 'lease-duration-ms': '1800000' },
+      'lease-id': 'lease-1', 'holder-id': 'owner-1', 'lease-duration-ms': '1800000', 'observation-window-minutes': '1' },
     managerRuntime(Date.parse('2026-09-09T10:01:00.000Z')));
     assert.equal(locked.phase, 'LOCKED');
     const transition = async (generation, to, extra = {}) => runManageDeployState({ ...base, action: 'transition',

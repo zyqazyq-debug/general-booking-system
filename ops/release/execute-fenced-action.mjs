@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 import { createReadStream } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { canonicalJson, ContractError, EXIT, gateResult, parseArgs, readJsonFile, sha256, validateReleaseManifest } from './lib/contracts.mjs';
 import { composeBundleDigest, digestFile, directoryDigest } from './lib/artifacts.mjs';
 import { canonicalStatePath, withDeployStateLock } from './lib/deploy-state-store.mjs';
-import { acceptResourceEpoch, acquireResourceLocks, adoptPriorEpochPendingAction, completeResourceAction, inspectLockedResourceState, readCanonicalExecutorReceiptByDigest, readExecutorReceipt, readExecutorRecoveryReceiptByDigest, recoverResourceAction, releaseResourceLocks, supersedePriorEpochPendingAction, writeExecutorReceipt, writeExecutorRecoveryReceipt } from './lib/fenced-resource-store.mjs';
+import { schemaForAction } from './lib/external-action-contract.mjs';
+import { acceptResourceActionGroup, acceptResourceEpoch, acquireResourceLocks, adoptPriorEpochPendingAction, completeResourceAction,
+  completeResourceActionGroup, finalizeRecoveredResourceActionGroup, inspectLockedResourceState,
+  markResourceActionGroupExecuting, markResourceActionGroupMutating, markResourceActionGroupReceipt,
+  readCanonicalExecutorReceiptByDigest, readCompletedExecutorReceiptByDigest, readExecutorReceipt, readExecutorRecoveryReceiptByDigest,
+  readResourceActionGroup, reconcileResourceActionGroupReceipt,
+  recoverResourceAction, releaseResourceLocks, resourceDirectory, resumeResourceActionGroupBeforeDispatch,
+  supersedePriorEpochPendingAction, writeExecutorReceipt,
+  writeExecutorRecoveryReceipt } from './lib/fenced-resource-store.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
 import { ROLLBACK_MODE, rollbackModeForState } from './lib/state-machine.mjs';
 import { verifyRegistrySupplyChainRuntime } from './lib/registry-runtime-gate.mjs';
@@ -17,6 +26,7 @@ import { TELEGRAM_PROXY_URL, verifyTelegramEgressReceipt } from './verify-telegr
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const DOCKER_CONTAINER_ID = /^[0-9a-f]{64}$/;
 const ALLOWED_FIELDS = new Set([
   'action', 'execute', 'environment', 'project', 'approval-id', 'expected-generation', 'expected-fencing-epoch',
   'manifest-digest', 'operation-id', 'lease-id', 'holder-id', 'resource-id', 'action-id',
@@ -25,6 +35,10 @@ const ACTIONS = Object.freeze({
   'preprod-baseline-ledger': { phases: ['STAGED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'compose-baseline' },
   'preprod-expand-migrate': { phases: ['STAGED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'compose-migrate' },
   'preprod-prepare-telegram-egress': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'telegram', resources: ['telegram'], kind: 'compose-egress' },
+  'preprod-abort-telegram-egress': { phases: ['FAILED'], primary: 'telegram', resources: ['telegram'], kind: 'failed-egress-abort' },
+  'preprod-attest-database-restore': { phases: ['FAILED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'failed-database-attestation' },
+  'preprod-restore-active-runtime': { phases: ['FAILED'], primary: 'edgeNetwork', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram', 'ingressRef'], kind: 'failed-active-runtime-restore', identity: 'active' },
+  'preprod-probe-recovered-active': { phases: ['FAILED'], primary: 'activeProbe', resources: ['activeProbe'], kind: 'release-probe', identity: 'active' },
   'preprod-stage': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'edgeNetwork', resources: ['edgeNetwork'], kind: 'compose-stage' },
   'preprod-probe-candidate': { phases: ['CANDIDATE_STARTED'], primary: 'candidateProbe', resources: ['candidateProbe'], kind: 'release-probe' },
   'preprod-probe-active': { phases: ['CANDIDATE_READY'], primary: 'activeProbe', resources: ['activeProbe'], kind: 'release-probe', identity: 'active' },
@@ -32,10 +46,32 @@ const ACTIONS = Object.freeze({
   'preprod-probe-rollback': { phases: ['ROLLBACK_PENDING'], primary: 'rollbackProbe', resources: ['rollbackProbe'], kind: 'release-probe', identity: 'rollback' },
   'preprod-transfer-singletons': { phases: ['CANDIDATE_READY'], primary: 'edgeNetwork', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram'], kind: 'singleton-transfer' },
   'preprod-set-webhook': { phases: ['SWITCHED', 'OBSERVING'], primary: 'telegram', resources: ['telegram', 'databaseRef', 'dataNetwork'], kind: 'compose-webhook', identity: 'active' },
-  'preprod-switch-ingress': { phases: ['SINGLETON_TRANSFERRED'], primary: 'ingressRef', resources: ['ingressRef'], kind: 'ingress-helper' },
-  'preprod-rollback-ingress': { phases: ['ROLLBACK_PENDING'], primary: 'ingressRef', resources: ['ingressRef'], kind: 'ingress-helper', identity: 'rollback' },
+  'preprod-switch-ingress': { phases: ['SINGLETON_TRANSFERRED'], primary: 'ingressRef', resources: ['ingressRef', 'edgeNetwork'], kind: 'ingress-helper' },
+  'preprod-rollback-ingress': { phases: ['ROLLBACK_PENDING'], primary: 'ingressRef', resources: ['ingressRef', 'edgeNetwork'], kind: 'ingress-helper', identity: 'rollback' },
   'preprod-rollback-singletons': { phases: ['ROLLBACK_PENDING'], primary: 'edgeNetwork', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram'], kind: 'singleton-transfer', identity: 'rollback' },
 });
+
+const RETRYABLE_READ_ONLY_PROBES = new Set([
+  'preprod-probe-candidate',
+  'preprod-probe-active',
+  'preprod-probe-observation',
+  'preprod-probe-rollback',
+  'preprod-probe-recovered-active',
+]);
+
+export function parseRootOwnedForensicManifest(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new ContractError('failed database restore forensic manifest is empty', EXIT.IDENTITY);
+  const entries = new Map();
+  for (const line of value.trim().split(/\r?\n/)) {
+    const match = /^([^|/]+)\|([0-7]{3,4})\|root\|root\|(\d+)\|([0-9a-f]{64})\s+(.+)$/.exec(line);
+    if (!match || entries.has(match[1]) || match[1] !== match[5].split('/').at(-1)) {
+      throw new ContractError('failed database restore forensic manifest entry is invalid', EXIT.IDENTITY);
+    }
+    entries.set(match[1], { mode: Number.parseInt(match[2], 8), uid: 0, gid: 0,
+      size: Number(match[3]), digest: `sha256:${match[4]}` });
+  }
+  return entries;
+}
 
 function releaseFor(state, spec) {
   if (spec.identity === 'active') return state.active;
@@ -277,22 +313,47 @@ function parseLastJson(stdout, message, exitCode) {
   return value;
 }
 
+function hasExactObjectKeys(value, keys) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) &&
+    canonicalJson(Object.keys(value).sort()) === canonicalJson([...keys].sort()));
+}
+
 function verifyWebhookReceipt(stdout, expected, action) {
   const value = parseLastJson(stdout, 'Telegram webhook action did not emit a JSON readback receipt', EXIT.INGRESS);
-  if (value?.schemaVersion !== 1 || value?.action !== action || value?.environment !== 'preproduction' ||
+  const deliveryError = value?.webhook?.deliveryError;
+  const validErrorSnapshot = (snapshot) => hasExactObjectKeys(snapshot, ['date', 'message']) &&
+    (snapshot.date === null || (Number.isSafeInteger(snapshot.date) && snapshot.date >= 0)) &&
+    (snapshot.message === null || (typeof snapshot.message === 'string' && snapshot.message.length <= 4096));
+  const webhookKeys = ['url', 'pendingUpdateCount', 'allowedUpdates', 'deliveryError'];
+  if (Object.hasOwn(value?.webhook || {}, 'maxConnections')) webhookKeys.push('maxConnections');
+  const verificationKeys = ['candidateReady', 'getMeIdentityMatched', 'readBackUrlMatched', 'allowedUpdatesMatched', 'noNewDeliveryError'];
+  if (action === 'set') verificationKeys.push('setWebhookAccepted');
+  if (!hasExactObjectKeys(value, ['schemaVersion', 'action', 'environment', 'completedAt', 'bot', 'candidate', 'webhook', 'verification']) ||
+      !hasExactObjectKeys(value?.bot, ['id', 'username']) ||
+      !hasExactObjectKeys(value?.candidate, ['releaseId', 'gitSha', 'manifestDigest', 'configSchema', 'migrationFloor', 'migrationCatalogDigest']) ||
+      !hasExactObjectKeys(value?.webhook, webhookKeys) || !hasExactObjectKeys(value?.verification, verificationKeys) ||
+      value?.schemaVersion !== 2 || value?.action !== action || value?.environment !== 'preproduction' ||
       value?.verification?.candidateReady !== true || value?.verification?.getMeIdentityMatched !== true ||
       (action === 'set' && value?.verification?.setWebhookAccepted !== true) ||
       (action === 'verify' && Object.hasOwn(value?.verification || {}, 'setWebhookAccepted')) ||
-      value?.verification?.readBackUrlMatched !== true || value?.candidate?.releaseId !== expected.releaseId ||
+      value?.verification?.readBackUrlMatched !== true || value?.verification?.allowedUpdatesMatched !== true ||
+      value?.verification?.noNewDeliveryError !== true || value?.candidate?.releaseId !== expected.releaseId ||
       value?.candidate?.gitSha !== expected.gitSha || value?.candidate?.manifestDigest !== expected.manifestDigest ||
       value?.candidate?.configSchema !== expected.configSchema || value?.candidate?.migrationFloor !== expected.migrationFloor ||
       value?.candidate?.migrationCatalogDigest !== expected.migrationCatalogDigest ||
       String(value?.webhook?.url || '') !== expected.webhookUrl || !Number.isSafeInteger(value?.bot?.id) ||
+      !Number.isSafeInteger(value?.webhook?.pendingUpdateCount) || value.webhook.pendingUpdateCount < 0 ||
+      (Object.hasOwn(value.webhook, 'maxConnections') &&
+        (!Number.isSafeInteger(value.webhook.maxConnections) || value.webhook.maxConnections < 1 || value.webhook.maxConnections > 100)) ||
+      canonicalJson(value?.webhook?.allowedUpdates) !== canonicalJson(['message', 'callback_query']) ||
+      !hasExactObjectKeys(deliveryError, ['before', 'after', 'changedAfterSet']) || deliveryError.changedAfterSet !== false ||
+      !validErrorSnapshot(deliveryError.before) || !validErrorSnapshot(deliveryError.after) ||
       typeof value?.bot?.username !== 'string' || (expected.botId !== null && value.bot.id !== expected.botId) ||
       (expected.botUsername !== null && value.bot.username !== expected.botUsername) || !Number.isFinite(Date.parse(value?.completedAt))) {
     throw new ContractError('Telegram webhook readback receipt is incomplete', EXIT.INGRESS);
   }
-  return { botId: value.bot?.id, botUsername: value.bot?.username, webhookUrl: value.webhook?.url };
+  return { botId: value.bot?.id, botUsername: value.bot?.username, webhookUrl: value.webhook?.url,
+    allowedUpdates: value.webhook.allowedUpdates, deliveryError: value.webhook.deliveryError };
 }
 
 export function verifyBaselineReceipt(stdout, expected = null, action = 'apply') {
@@ -384,6 +445,208 @@ function parseContainerImage(stdout, component) {
   return value;
 }
 
+function exactStringSet(values, expected) {
+  return Array.isArray(values) && canonicalJson([...values].sort()) === canonicalJson([...expected].sort());
+}
+
+function environmentMap(values, component) {
+  const result = new Map();
+  if (!Array.isArray(values)) throw new ContractError(`${component} legacy environment is malformed`, EXIT.IDENTITY);
+  for (const item of values) {
+    const index = typeof item === 'string' ? item.indexOf('=') : -1;
+    if (index < 1 || result.has(item.slice(0, index))) throw new ContractError(`${component} legacy environment is malformed`, EXIT.IDENTITY);
+    result.set(item.slice(0, index), item.slice(index + 1));
+  }
+  return result;
+}
+
+export function verifyLegacyActiveRuntimeInspect(stdout, state, binding = LEGACY_ACTIVE_RUNTIME_BINDING, requireHealthy = true,
+  allowStopped = false) {
+  let values;
+  try { values = JSON.parse(stdout); } catch { throw new ContractError('legacy active runtime inspect readback is not JSON', EXIT.IDENTITY); }
+  if (!Array.isArray(values) || values.length !== 2) throw new ContractError('legacy active runtime inspect must contain exactly two fixed containers', EXIT.IDENTITY);
+  const byId = new Map(values.map((value) => [value?.Id, value]));
+  const result = {};
+  for (const component of ['backend', 'gateway']) {
+    const expected = binding[component];
+    const value = byId.get(expected.id);
+    const labels = value?.Config?.Labels;
+    const host = value?.HostConfig;
+    const networkNames = value?.NetworkSettings?.Networks && typeof value.NetworkSettings.Networks === 'object'
+      ? Object.keys(value.NetworkSettings.Networks).sort() : [];
+    const expectedNetworks = component === 'backend' ? [state.resources.dataNetwork, state.resources.edgeNetwork].sort() : [state.resources.edgeNetwork];
+    const expectedUser = component === 'backend' ? '' : '101';
+    const expectedCapAdd = component === 'backend' ? null : ['NET_BIND_SERVICE'];
+    if (!value || value.Name !== `/booking-preprod-${expected.service}-1` || value.Image !== expected.imageId ||
+        value.Config?.Image !== expected.image || labels?.['com.docker.compose.project'] !== state.project ||
+        labels?.['com.docker.compose.service'] !== expected.service || labels?.['com.docker.compose.config-hash'] !== expected.configHash ||
+        typeof value.State?.Running !== 'boolean' || (!allowStopped && value.State.Running !== true) ||
+        (requireHealthy && (value.State.Running !== true || value.State?.Health?.Status !== 'healthy')) ||
+        value.Config?.User !== expectedUser || host?.ReadonlyRootfs !== true || host?.Privileged !== false ||
+        canonicalJson(host?.CapDrop) !== canonicalJson(['ALL']) || canonicalJson(host?.CapAdd ?? null) !== canonicalJson(expectedCapAdd) ||
+        canonicalJson(host?.SecurityOpt) !== canonicalJson(['no-new-privileges:true']) || host?.PidMode !== '' || host?.IpcMode !== 'private' ||
+        host?.Devices !== null || canonicalJson(networkNames) !== canonicalJson(expectedNetworks)) {
+      throw new ContractError(`${component} fixed legacy container identity or isolation drifted`, EXIT.IDENTITY);
+    }
+    for (const network of expectedNetworks) {
+      const aliasKey = network === state.resources.edgeNetwork ? 'edge' : 'data';
+      const expectedAliases = expected.networkAliases?.[aliasKey] || [expected.service];
+      if (!exactStringSet(value.NetworkSettings.Networks[network]?.Aliases, expectedAliases)) {
+        throw new ContractError(`${component} fixed legacy network alias drifted`, EXIT.IDENTITY);
+      }
+    }
+    const mounts = (value.Mounts || []).map((mount) => ({ type: mount.Type, source: mount.Source || '', destination: mount.Destination,
+      rw: mount.RW, propagation: mount.Propagation || '' })).sort((left, right) => left.destination.localeCompare(right.destination));
+    if (component === 'backend') {
+      const env = environmentMap(value.Config.Env, component);
+      if (mounts.length !== 0 || canonicalJson(host.PortBindings || {}) !== canonicalJson({}) ||
+          env.get('TELEGRAM_BOT_MODE') !== 'polling' || env.get('TELEGRAM_ENABLE_WEBHOOK') !== 'false') {
+        throw new ContractError('backend fixed legacy mount, port, or Telegram delivery mode drifted', EXIT.IDENTITY);
+      }
+    } else {
+      const expectedMounts = [
+        { type: 'tmpfs', source: '', destination: '/tmp', rw: true, propagation: '' },
+        { type: 'bind', source: binding.nginx.source, destination: binding.nginx.destination, rw: false, propagation: 'rprivate' },
+        { type: 'tmpfs', source: '', destination: '/var/cache/nginx', rw: true, propagation: '' },
+        { type: 'tmpfs', source: '', destination: '/var/run', rw: true, propagation: '' },
+      ].sort((left, right) => left.destination.localeCompare(right.destination));
+      const expectedPorts = { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '18082' }] };
+      if (canonicalJson(mounts) !== canonicalJson(expectedMounts) || canonicalJson(host.PortBindings) !== canonicalJson(expectedPorts)) {
+        throw new ContractError('gateway fixed legacy mounts or loopback binding drifted', EXIT.IDENTITY);
+      }
+    }
+    result[component] = { containerId: expected.id, imageId: expected.imageId, configHash: expected.configHash,
+      service: expected.service, networks: networkNames, running: value.State.Running, health: value.State?.Health?.Status || null };
+  }
+  return result;
+}
+
+export function verifyLegacyDockerStartOutput(value, binding = LEGACY_ACTIVE_RUNTIME_BINDING) {
+  const observed = value.trim().split(/\r?\n/).filter(Boolean);
+  const expected = [binding.backend, binding.gateway];
+  if (observed.length !== expected.length || expected.some((container) => !observed.some((item) =>
+    [container.id, container.id.slice(0, 12), `booking-preprod-${container.service}-1`].includes(item)))) {
+    throw new ContractError('docker start did not report exactly the two fixed legacy containers', EXIT.IDENTITY);
+  }
+  return { startedExistingContainerIds: expected.map((container) => container.id) };
+}
+
+function parseSelectiveContainerInspect(value) {
+  try {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[')) return JSON.parse(trimmed);
+    return trimmed.split(/\r?\n/).map((line) => JSON.parse(line));
+  } catch {
+    throw new ContractError('fixed legacy supporting container readback is not JSON', EXIT.IDENTITY);
+  }
+}
+
+export function verifyLegacyNetworkTopology(networkStdout, supportingContainersStdout, state, fixedContainers,
+  binding = LEGACY_ACTIVE_RUNTIME_BINDING) {
+  let networks;
+  try {
+    networks = JSON.parse(networkStdout);
+  } catch {
+    throw new ContractError('fixed legacy network topology readback is not JSON', EXIT.IDENTITY);
+  }
+  const supportingContainers = parseSelectiveContainerInspect(supportingContainersStdout);
+  if (!Array.isArray(networks) || networks.length !== 2 || supportingContainers.length !== 3 ||
+      typeof fixedContainers?.backend?.running !== 'boolean' || typeof fixedContainers?.gateway?.running !== 'boolean') {
+    throw new ContractError('fixed legacy network topology readback has an invalid shape', EXIT.IDENTITY);
+  }
+  const byName = new Map(networks.map((network) => [network?.Name, network]));
+  if (byName.size !== 2 || !byName.has(state.resources.edgeNetwork) || !byName.has(state.resources.dataNetwork)) {
+    throw new ContractError('fixed legacy network identity drifted', EXIT.IDENTITY);
+  }
+  const expectedNames = {
+    backend: `booking-preprod-${binding.backend.service}-1`,
+    gateway: `booking-preprod-${binding.gateway.service}-1`,
+    postgres: 'booking-preprod-postgres-1',
+    redis: 'booking-preprod-redis-1',
+    cloudflared: binding.cloudflared.name,
+  };
+  const expectedMembership = new Map([
+    [state.resources.edgeNetwork, new Map()],
+    [state.resources.dataNetwork, new Map()],
+  ]);
+  if (fixedContainers.backend.running) {
+    expectedMembership.get(state.resources.edgeNetwork).set(binding.backend.id, expectedNames.backend);
+    expectedMembership.get(state.resources.dataNetwork).set(binding.backend.id, expectedNames.backend);
+  }
+  if (fixedContainers.gateway.running) {
+    expectedMembership.get(state.resources.edgeNetwork).set(binding.gateway.id, expectedNames.gateway);
+  }
+  const supportingIds = new Map();
+  for (const { service, networkName } of [
+    { service: 'postgres', networkName: state.resources.dataNetwork },
+    { service: 'redis', networkName: state.resources.dataNetwork },
+    { service: 'cloudflared', networkName: state.resources.edgeNetwork },
+  ]) {
+    const matches = Object.entries(byName.get(networkName)?.Containers || {})
+      .filter(([, endpoint]) => endpoint?.Name === expectedNames[service]);
+    if (matches.length !== 1 || !/^[0-9a-f]{64}$/.test(matches[0][0])) {
+      throw new ContractError(`fixed legacy ${service} network endpoint identity drifted`, EXIT.IDENTITY);
+    }
+    supportingIds.set(service, matches[0][0]);
+    expectedMembership.get(networkName).set(matches[0][0], expectedNames[service]);
+  }
+  for (const [networkName, expected] of expectedMembership) {
+    const observed = byName.get(networkName)?.Containers;
+    const entries = observed && typeof observed === 'object' && !Array.isArray(observed) ? Object.entries(observed) : [];
+    if (entries.length !== expected.size || entries.some(([containerId, endpoint]) =>
+      expected.get(containerId) !== endpoint?.Name)) {
+      throw new ContractError(`fixed legacy ${networkName} endpoint membership drifted`, EXIT.IDENTITY);
+    }
+  }
+  const byId = new Map(supportingContainers.map((container) => [container?.Id, container]));
+  if (byId.size !== 3) throw new ContractError('fixed legacy supporting container identities are duplicated', EXIT.IDENTITY);
+  for (const service of ['postgres', 'redis']) {
+    const containerId = supportingIds.get(service);
+    const container = byId.get(containerId);
+    const containerNetworks = container?.Networks || container?.NetworkSettings?.Networks;
+    const labels = container?.Labels || container?.Config?.Labels;
+    const running = container?.Running ?? container?.State?.Running;
+    const networkNames = containerNetworks && typeof containerNetworks === 'object' ? Object.keys(containerNetworks) : [];
+    if (!container || container.Name !== `/${expectedNames[service]}` || running !== true ||
+        labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== service ||
+        !exactStringSet(networkNames, [state.resources.dataNetwork]) ||
+        !exactStringSet(containerNetworks[state.resources.dataNetwork]?.Aliases, [service])) {
+      throw new ContractError(`fixed legacy ${service} network endpoint aliases or ownership drifted`, EXIT.IDENTITY);
+    }
+  }
+  const cloudflaredId = supportingIds.get('cloudflared');
+  const cloudflared = byId.get(cloudflaredId);
+  const cloudflaredNetworks = cloudflared?.Networks || cloudflared?.NetworkSettings?.Networks;
+  const cloudflaredNetworkNames = cloudflaredNetworks && typeof cloudflaredNetworks === 'object' ? Object.keys(cloudflaredNetworks) : [];
+  const cloudflaredPorts = cloudflared?.PortBindings ?? cloudflared?.HostConfig?.PortBindings;
+  const cloudflaredMounts = (cloudflared?.Mounts || []).map((mount) => ({ type: mount.Type, source: mount.Source || '',
+    destination: mount.Destination, rw: mount.RW, propagation: mount.Propagation || '' }));
+  const expectedCloudflaredCmd = binding.cloudflared.cmd || ['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run'];
+  const expectedCloudflaredMount = binding.cloudflared.tokenMount || { type: 'bind',
+    source: '/etc/happybooking/secrets/cloudflare-preprod-tunnel-token', destination: '/run/secrets/tunnel-token', rw: false, propagation: 'rprivate' };
+  if (!cloudflared || cloudflared.Name !== `/${binding.cloudflared.name}` || cloudflared.Image !== binding.cloudflared.imageId ||
+      (cloudflared.ConfigImage ?? cloudflared.Config?.Image) !== binding.cloudflared.image ||
+      (cloudflared.User ?? cloudflared.Config?.User) !== binding.cloudflared.user ||
+      (cloudflared.Running ?? cloudflared.State?.Running) !== true ||
+      (cloudflared.ReadonlyRootfs ?? cloudflared.HostConfig?.ReadonlyRootfs) !== true ||
+      (cloudflared.Privileged ?? cloudflared.HostConfig?.Privileged) !== false ||
+      canonicalJson(cloudflared.CapDrop ?? cloudflared.HostConfig?.CapDrop) !== canonicalJson(['ALL']) ||
+      !exactStringSet(cloudflared.SecurityOpt ?? cloudflared.HostConfig?.SecurityOpt, ['no-new-privileges:true']) ||
+      canonicalJson(cloudflared.Cmd ?? cloudflared.Config?.Cmd) !== canonicalJson(expectedCloudflaredCmd) ||
+      canonicalJson(cloudflaredMounts) !== canonicalJson([expectedCloudflaredMount]) ||
+      !exactStringSet(cloudflaredNetworkNames, [state.resources.edgeNetwork]) ||
+      !exactStringSet(cloudflaredNetworks[state.resources.edgeNetwork]?.Aliases, [cloudflaredId.slice(0, 12)]) ||
+      (cloudflaredPorts !== null && (typeof cloudflaredPorts !== 'object' || Object.keys(cloudflaredPorts).length !== 0))) {
+    throw new ContractError('fixed legacy cloudflared identity, network, alias, or port binding drifted', EXIT.IDENTITY);
+  }
+  return {
+    networks: [...expectedMembership].map(([network, members]) => ({ network,
+      endpoints: [...members].map(([containerId, name]) => ({ containerId, name })) })),
+    supportingContainerIds: Object.fromEntries(supportingIds),
+  };
+}
+
 function verifyCandidateContainerRuntime(component, stdout, state, releaseIdentity, paths, candidatePort) {
   const lines = stdout.trim().split(/\r?\n/);
   if (lines.length !== 14) throw new ContractError(`${component} candidate runtime inspect readback is malformed`, EXIT.IDENTITY);
@@ -393,7 +656,8 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
     user, privileged, pidMode, ipcMode, devices] = lines.map((line) => JSON.parse(line)); }
   catch { throw new ContractError(`${component} candidate runtime inspect readback is malformed`, EXIT.IDENTITY); }
   const service = `${component}-${releaseIdentity.slot}`;
-  if (labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== service || readOnly !== true ||
+  const configHash = labels?.['com.docker.compose.config-hash'];
+  if (labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== service || !/^[0-9a-f]{64}$/.test(configHash || '') || readOnly !== true ||
       JSON.stringify(capDrop) !== JSON.stringify(['ALL']) || !Array.isArray(securityOpt) || !securityOpt.includes('no-new-privileges:true') ||
       user !== (component === 'backend' ? 'node' : '101') || privileged !== false || pidMode !== '' || ipcMode !== '' ||
       !Array.isArray(devices) || devices.length !== 0) {
@@ -438,7 +702,7 @@ function verifyCandidateContainerRuntime(component, stdout, state, releaseIdenti
   } else if ((Array.isArray(capAdd) && capAdd.length) || (portBindings && Object.keys(portBindings).length)) {
     throw new ContractError('backend candidate must not expose host ports or added capabilities', EXIT.IDENTITY);
   }
-  return { component, service, networks: networkNames, readOnlyRoot: true, mounts: expectedMounts.map((item) => item.destination),
+  return { component, service, configHash, networks: networkNames, readOnlyRoot: true, mounts: expectedMounts.map((item) => item.destination),
     hostPort: component === 'gateway' ? `127.0.0.1:${candidatePort}` : null };
 }
 
@@ -940,9 +1204,214 @@ async function buildPlan(state, args, runtime) {
     }
     return { backend: imageEvidence.backend, containers };
   };
+  if (spec.kind === 'failed-egress-abort') {
+    const binding = runtime.failedRestoreBinding || FAILED_RESTORE_BINDING;
+    if (state.operationId !== binding.operationId || releaseIdentity.manifestDigest !== binding.manifestDigest) {
+      throw new ContractError('Telegram abort is not bound to this failed operation', EXIT.IDENTITY);
+    }
+    const { containerName, mutationArgv, readbackArgv } = telegramAbortDockerCommands(state.project);
+    const verifyAbsent = (value) => {
+      if (value.trim() !== '') throw new ContractError('failed Telegram egress container still exists', EXIT.SINGLETON);
+      return { composeProject: state.project, composeService: 'telegram-egress', containerAbsent: true };
+    };
+    const verifyRemoved = (value) => {
+      if (!DOCKER_CONTAINER_ID.test(value.trim())) throw new ContractError('Telegram egress abort did not return the removed container ID', EXIT.SINGLETON);
+      return { removedContainerId: value.trim(), forcedRemoval: true };
+    };
+    const expectedConfigImage = `${manifest.artifacts.telegramEgress.image}@${manifest.artifacts.telegramEgress.digest}`;
+    const verifyExactContainer = (value) => {
+      let observed;
+      try { observed = JSON.parse(value); } catch { throw new ContractError('Telegram egress abort inspect is malformed', EXIT.IDENTITY); }
+      if (!DOCKER_CONTAINER_ID.test(observed?.Id || '') || observed?.Name !== `/${containerName}` ||
+          !DIGEST.test(observed.Image || '') || observed.ConfigImage !== expectedConfigImage ||
+          observed.Labels?.['com.docker.compose.project'] !== state.project ||
+          observed.Labels?.['com.docker.compose.service'] !== 'telegram-egress') {
+        throw new ContractError('Telegram egress abort target identity drifted', EXIT.IDENTITY);
+      }
+      return { containerName, containerId: observed.Id, imageId: observed.Image, configImage: observed.ConfigImage,
+        composeProject: observed.Labels['com.docker.compose.project'], composeService: observed.Labels['com.docker.compose.service'] };
+    };
+    return guardPlan({ executable: docker, argv: mutationArgv, cwd: paths.releaseDirectory, env: trustedEnvironment.env,
+      environmentBinding: trustedEnvironment.environmentBinding,
+      artifactBinding: { recovery: { kind: 'telegram-egress-abort', operationId: state.operationId,
+        priorAction: 'preprod-prepare-telegram-egress', priorActionId: binding.priorTelegramActionId,
+        priorFencingEpoch: binding.priorTelegramFencingEpoch, priorFailureReceiptDigest: binding.priorTelegramFailureReceiptDigest } },
+      preflight: { executable: docker, argv: ['container', 'inspect', '--format',
+        '{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},"ConfigImage":{{json .Config.Image}},"Labels":{{json .Config.Labels}}}', containerName],
+        verify: verifyExactContainer },
+      verifyExecution: verifyRemoved,
+      readback: { executable: docker, argv: readbackArgv, verify: verifyAbsent } });
+  }
+  if (spec.kind === 'failed-database-attestation') {
+    const binding = runtime.failedRestoreBinding || FAILED_RESTORE_BINDING;
+    if (state.operationId !== binding.operationId || releaseIdentity.manifestDigest !== binding.manifestDigest) {
+      throw new ContractError('failed database recovery action is not bound to this failed operation', EXIT.IDENTITY);
+    }
+    if (!Number.isInteger(binding.forensicFencingEpoch) || state.fencingEpoch <= binding.forensicFencingEpoch) {
+      throw new ContractError('failed database recovery requires a newer fencing epoch than the fixed restore evidence', EXIT.SINGLETON);
+    }
+    const attestForensicRestore = async ({ runner, env, timeoutMs, revalidateLease }) => {
+      const directory = await realpath(binding.forensicDirectory).catch(() => {
+        throw new ContractError('fixed failed database restore evidence is unavailable', EXIT.DATABASE);
+      });
+      const directoryMetadata = await stat(directory);
+      if (directory !== binding.forensicDirectory || !directoryMetadata.isDirectory() ||
+          (!runtime.allowNonRootEvidence && process.platform !== 'win32' && (directoryMetadata.uid !== 0 || (directoryMetadata.mode & 0o077) !== 0))) {
+        throw new ContractError('fixed failed database restore evidence must be a canonical root-only directory', EXIT.IDENTITY);
+      }
+      const manifestPath = join(directory, 'forensic-manifest.txt');
+      const manifestMetadata = await stat(manifestPath).catch(() => {
+        throw new ContractError('failed database restore forensic manifest is unavailable', EXIT.DATABASE);
+      });
+      const expectedManifestDigest = binding.forensicManifestDigest;
+      if (!manifestMetadata.isFile() || (!runtime.allowNonRootEvidence && process.platform !== 'win32' &&
+          (manifestMetadata.uid !== 0 || (manifestMetadata.mode & 0o077) !== 0)) || await digestFile(manifestPath) !== expectedManifestDigest) {
+        throw new ContractError('failed database restore forensic manifest identity mismatch', EXIT.IDENTITY);
+      }
+      const manifest = await readFile(manifestPath, 'utf8');
+      const entries = parseRootOwnedForensicManifest(manifest);
+      const observedNames = (await readdir(directory)).sort();
+      const expectedNames = [...entries.keys(), 'forensic-manifest.txt'].sort();
+      if (canonicalJson(observedNames) !== canonicalJson(expectedNames)) {
+        throw new ContractError('failed database restore evidence directory contains unmanifested entries', EXIT.IDENTITY);
+      }
+      for (const name of ['restore-summary.txt', 'deploy-state.json', 'source-evidence-digests.txt',
+        'live-after-table-digests.txt', 'live-after-sequence-values.txt', 'live-after-large-objects.sha256']) {
+        if (!entries.has(name)) throw new ContractError(`failed database restore evidence omits ${name}`, EXIT.IDENTITY);
+      }
+      for (const [name, entry] of entries) {
+        const path = join(directory, name);
+        const canonical = await realpath(path).catch(() => { throw new ContractError(`failed database restore evidence ${name} is unavailable`, EXIT.DATABASE); });
+        const metadata = await stat(canonical);
+        if (canonical !== path || !metadata.isFile() || metadata.size !== entry.size || (metadata.mode & 0o777) !== entry.mode ||
+            (!runtime.allowNonRootEvidence && process.platform !== 'win32' && (metadata.uid !== entry.uid || metadata.gid !== entry.gid || entry.uid !== 0 || (entry.mode & 0o077) !== 0)) ||
+            await digestFile(canonical) !== entry.digest) {
+          throw new ContractError(`failed database restore evidence ${name} does not match its forensic manifest`, EXIT.IDENTITY);
+        }
+      }
+      const summary = new Map();
+      for (const line of (await readFile(join(directory, 'restore-summary.txt'), 'utf8')).trim().split(/\r?\n/)) {
+        const index = line.indexOf('=');
+        if (index < 1 || summary.has(line.slice(0, index))) throw new ContractError('failed database restore summary is malformed', EXIT.IDENTITY);
+        summary.set(line.slice(0, index), line.slice(index + 1));
+      }
+      const expected = {
+        schema: 'booking.preprod-database-restore/v1', environment: 'preprod', project: state.project,
+        operationId: state.operationId, fencingEpoch: String(binding.forensicFencingEpoch), sourceBackupDigest: binding.sourceBackupDigest,
+        quarantineDatabase: 'booking_preprod_failed_op06', postRestoreDatabase: 'booking_preprod',
+        migrationTableAbsent: 'true', legacyDataDigestMatch: 'true', legacySequenceDigestMatch: 'true', largeObjectDigestMatch: 'true',
+      };
+      if (summary.size !== Object.keys(expected).length || Object.entries(expected).some(([key, value]) => summary.get(key) !== value)) {
+        throw new ContractError('failed database restore summary does not match the canonical recovery identity', EXIT.IDENTITY);
+      }
+      const frozenState = JSON.parse(await readFile(join(directory, 'deploy-state.json'), 'utf8'));
+      if (frozenState.phase !== 'FAILED' || frozenState.operationId !== state.operationId ||
+          frozenState.fencingEpoch !== binding.forensicFencingEpoch || frozenState.fencingEpoch >= state.fencingEpoch ||
+          frozenState.generation !== binding.forensicStateGeneration || frozenState.approvalId !== binding.forensicApprovalId ||
+          frozenState.candidate?.manifestDigest !== releaseIdentity.manifestDigest) {
+        throw new ContractError('failed database restore evidence deployment state binding is invalid', EXIT.IDENTITY);
+      }
+      const sourceLines = (await readFile(join(directory, 'source-evidence-digests.txt'), 'utf8')).trim().split(/\r?\n/);
+      const freezeManifestPath = '/volume1/happybooking/booking-preprod/.g4/forensics/g4.fc79097-op06-freeze-compare-20260910T1057Z/forensic-manifest.txt';
+      const postExpandPath = '/volume1/happybooking/booking-preprod/.g4/forensics/g4.fc79097-op06-freeze-compare-20260910T1057Z/g4.fc79097c5756.06-post-expand.dump';
+      const expectedSourceLines = [
+        `${binding.freezeManifestDigest.slice(7)}  ${freezeManifestPath}`,
+        `${binding.postExpandBackupDigest.slice(7)}  ${postExpandPath}`,
+      ];
+      if (canonicalJson(sourceLines) !== canonicalJson(expectedSourceLines) || await digestFile(freezeManifestPath) !== binding.freezeManifestDigest ||
+          await digestFile(postExpandPath) !== binding.postExpandBackupDigest) {
+        throw new ContractError('failed database restore source evidence is not bound to the frozen comparison', EXIT.IDENTITY);
+      }
+      const runDocker = async (argv, label) => {
+        const currentTimeoutMs = typeof revalidateLease === 'function' ? revalidateLease().timeoutMs : timeoutMs;
+        const result = await runner(docker, argv, { cwd: paths.releaseDirectory, env, timeoutMs: currentTimeoutMs });
+        assertResult(result, EXIT.DATABASE);
+        return result.stdout;
+      };
+      const running = (await runDocker(['ps', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.Names}}'], 'preprod runtime'))
+        .trim().split(/\r?\n/).filter(Boolean).sort();
+      if (canonicalJson(running) !== canonicalJson(['booking-preprod-postgres-1', 'booking-preprod-redis-1'])) {
+        throw new ContractError('preproduction writers are not frozen for database restore attestation', EXIT.DATABASE);
+      }
+      const admin = (sql, database = 'postgres') => runDocker(['exec', 'booking-preprod-postgres-1', 'psql', '-v', 'ON_ERROR_STOP=1',
+        '-U', 'booking_preprod', '-d', database, '-Atc', sql], 'database attestation');
+      const databases = (await admin("select datname||'|'||oid::text||'|'||datallowconn::text from pg_database where datname in ('booking_preprod','booking_preprod_failed_op06','booking_preprod_g4_op06_post_check','booking_preprod_g4_op06_old_check') order by datname"))
+        .trim().split(/\r?\n/).filter(Boolean);
+      const expectedDatabases = ['booking_preprod|17915|true', 'booking_preprod_failed_op06|16384|false',
+        'booking_preprod_g4_op06_post_check|17914|true'];
+      if (canonicalJson(databases) !== canonicalJson(expectedDatabases)) throw new ContractError('database restore identity set or connection policy drifted', EXIT.DATABASE);
+      if ((await admin("select count(*) from pg_stat_activity where datname in ('booking_preprod','booking_preprod_failed_op06','booking_preprod_g4_op06_post_check') and pid<>pg_backend_pid()" )).trim() !== '0') {
+        throw new ContractError('database restore attestation requires zero preproduction database sessions', EXIT.DATABASE);
+      }
+      if ((await admin("select (to_regclass('public.migrations') is null)::int", 'booking_preprod')).trim() !== '1') {
+        throw new ContractError('restored database unexpectedly retains the migrations ledger', EXIT.DATABASE);
+      }
+      const expectedTables = await readFile(join(directory, 'live-after-table-digests.txt'), 'utf8');
+      const tableLines = [];
+      for (const line of expectedTables.trim().split(/\r?\n/)) {
+        const [table] = line.split('|');
+        if (!/^[a-z_][a-z0-9_]*$/.test(table)) throw new ContractError('forensic table identity is invalid', EXIT.IDENTITY);
+        const columns = (await admin(`select string_agg(format('%I',column_name),',' order by ordinal_position) from information_schema.columns where table_schema='public' and table_name='${table}'`, 'booking_preprod')).trim();
+        if (!columns) throw new ContractError(`restored table ${table} has no canonical columns`, EXIT.DATABASE);
+        const count = (await admin(`select count(*) from public."${table}"`, 'booking_preprod')).trim();
+        const rows = await admin(`COPY (SELECT row_to_json(t)::text FROM (SELECT ${columns} FROM public."${table}") t) TO STDOUT`, 'booking_preprod');
+        const sortedRows = rows.trim() ? rows.trim().split(/\r?\n/)
+          .sort((left, right) => Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))) : [];
+        const digest = sha256(sortedRows.length ? `${sortedRows.join('\n')}\n` : '');
+        tableLines.push(`${table}|${count}|${digest.slice(7)}`);
+      }
+      const liveTableEvidence = `${tableLines.join('\n')}\n`;
+      if (liveTableEvidence !== expectedTables || sha256(liveTableEvidence) !== binding.liveTableEvidenceDigest) {
+        throw new ContractError('restored live table evidence differs from the verified swap result', EXIT.DATABASE);
+      }
+      const expectedSequences = await readFile(join(directory, 'live-after-sequence-values.txt'), 'utf8');
+      const sequenceLines = [];
+      for (const line of expectedSequences.trim().split(/\r?\n/)) {
+        const [sequence] = line.split('|');
+        if (!/^[a-z_][a-z0-9_]*$/.test(sequence)) throw new ContractError('forensic sequence identity is invalid', EXIT.IDENTITY);
+        const value = (await admin(`select last_value::text||'|'||is_called::text from public."${sequence}"`, 'booking_preprod')).trim();
+        sequenceLines.push(`${sequence}|${value}`);
+      }
+      const liveSequenceEvidence = `${sequenceLines.join('\n')}\n`;
+      if (liveSequenceEvidence !== expectedSequences || sha256(liveSequenceEvidence) !== binding.liveSequenceEvidenceDigest) {
+        throw new ContractError('restored live sequence evidence differs from the verified swap result', EXIT.DATABASE);
+      }
+      const largeObjects = await admin("COPY (select loid::text||'|'||pageno::text||'|'||encode(data,'hex') from pg_largeobject order by loid,pageno) TO STDOUT", 'booking_preprod');
+      if (sha256(largeObjects) !== binding.liveLargeObjectDigest ||
+          (await readFile(join(directory, 'live-after-large-objects.sha256'), 'utf8')).trim() !== binding.liveLargeObjectDigest.slice(7)) {
+        throw new ContractError('restored live large-object evidence differs from the verified swap result', EXIT.DATABASE);
+      }
+      return { forensicDirectory: directory, forensicManifestDigest: expectedManifestDigest,
+        sourceBackupDigest: binding.sourceBackupDigest, restoreSummaryDigest: entries.get('restore-summary.txt').digest,
+        runningContainers: running, databases, activeSessions: 0, migrationTableAbsent: true,
+        liveTableEvidenceDigest: binding.liveTableEvidenceDigest, liveSequenceEvidenceDigest: binding.liveSequenceEvidenceDigest,
+        liveLargeObjectDigest: binding.liveLargeObjectDigest };
+    };
+    const databaseArgv = ['exec', 'booking-preprod-postgres-1', 'psql', '--no-password', '--tuples-only', '--no-align', '--quiet',
+      '--username', 'booking_preprod', '--dbname', 'booking_preprod', '--command',
+      "SELECT (to_regclass('public.migrations') IS NULL)::int || '|' || current_database() || '|' || current_user;"];
+    const verifyDatabase = (value) => {
+      if (value.trim() !== '1|booking_preprod|booking_preprod') {
+        throw new ContractError('restored preproduction database still exposes the migrations ledger or the wrong identity', EXIT.DATABASE);
+      }
+      return { database: 'booking_preprod', databaseUser: 'booking_preprod', migrationTableAbsent: true };
+    };
+    return guardPlan({ executable: docker, argv: databaseArgv, cwd: paths.releaseDirectory, env: trustedEnvironment.env,
+      environmentBinding: trustedEnvironment.environmentBinding,
+      artifactBinding: { recovery: { kind: 'database-restore-attestation', operationId: state.operationId,
+        forensicDirectory: binding.forensicDirectory, forensicManifestDigest: binding.forensicManifestDigest,
+        forensicStateGeneration: binding.forensicStateGeneration, forensicFencingEpoch: binding.forensicFencingEpoch,
+        forensicApprovalId: binding.forensicApprovalId, sourceBackupDigest: binding.sourceBackupDigest,
+        freezeManifestDigest: binding.freezeManifestDigest, postExpandBackupDigest: binding.postExpandBackupDigest,
+        liveTableEvidenceDigest: binding.liveTableEvidenceDigest, liveSequenceEvidenceDigest: binding.liveSequenceEvidenceDigest,
+        liveLargeObjectDigest: binding.liveLargeObjectDigest,
+        databases: ['booking_preprod|17915|true', 'booking_preprod_failed_op06|16384|false', 'booking_preprod_g4_op06_post_check|17914|true'] } },
+      preflightArtifacts: attestForensicRestore, verifyExecution: verifyDatabase,
+      readback: { executable: docker, argv: databaseArgv, verify: verifyDatabase }, verifyArtifacts: attestForensicRestore });
+  }
   if (spec.kind === 'compose-egress') {
     const preflightArtifacts = combineArtifactChecks(inspectComposeConfig, inspectImages(['telegram-egress']));
-    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', 'telegram-egress'], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--pull', 'never', '--no-deps', '--wait', 'telegram-egress'], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { telegramEgress: { image: artifacts.telegramEgress.image, digest: artifacts.telegramEgress.digest,
         sbomDigest: artifacts.telegramEgress.sbomDigest, provenanceDigest: artifacts.telegramEgress.provenanceDigest,
@@ -1008,8 +1477,35 @@ async function buildPlan(state, args, runtime) {
       readback: { executable: process.execPath, argv: [helper, '--readback', 'true', ...helperArgs], verify: verifySingleton },
       replayVerifyArtifacts: singletonArtifacts, verifyArtifacts: singletonArtifacts });
   }
+  if (spec.kind === 'failed-active-runtime-restore') {
+    const binding = runtime.legacyActiveRuntimeBinding || LEGACY_ACTIVE_RUNTIME_BINDING;
+    if (state.operationId !== (runtime.failedRestoreBinding || FAILED_RESTORE_BINDING).operationId ||
+        releaseIdentity.releaseId !== LEGACY_OLD_BINDING.releaseId || releaseIdentity.gitSha !== LEGACY_OLD_BINDING.gitSha ||
+        releaseIdentity.manifestDigest !== LEGACY_OLD_BINDING.manifestRawDigest) {
+      throw new ContractError('active runtime restore is not bound to the fixed failed operation and legacy identity', EXIT.IDENTITY);
+    }
+    const inspectArgv = ['container', 'inspect', binding.backend.id, binding.gateway.id];
+    const verifyInspect = (value) => verifyLegacyActiveRuntimeInspect(value, state, binding, false);
+    const predecessorCheck = ({ statePath, adoptionReceipt, recoveryPending }) =>
+      verifyRestorePredecessors(statePath, state, adoptionReceipt, recoveryPending);
+    const preflightCheck = (context) => verifyLegacyActiveRuntimePreflightArtifacts(
+      context, state, paths, docker, runtime, binding, predecessorCheck,
+    );
+    const runtimeCheck = (context) => verifyLegacyActiveRuntimeArtifacts(context, state, paths, docker, runtime);
+    return guardPlan({ executable: docker, argv: ['start', binding.backend.id, binding.gateway.id], cwd: paths.releaseDirectory,
+      env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
+      artifactBinding: { recovery: { kind: 'fixed-legacy-active-runtime-restore', operationId: state.operationId,
+        backend: binding.backend, gateway: binding.gateway, nginx: binding.nginx, databaseOid: binding.databaseOid,
+        bot: binding.bot, allowedMutation: 'docker-start-existing-container-ids-only', forbidden: ['compose', 'create', 'pull'] } },
+      preflightArtifacts: preflightCheck, replayPreflightArtifacts: preflightCheck,
+      verifyExecution: (value) => verifyLegacyDockerStartOutput(value, binding),
+      readback: { executable: docker, argv: inspectArgv, verify: verifyInspect },
+      verifyArtifacts: runtimeCheck, replayVerifyArtifacts: runtimeCheck });
+  }
   if (spec.kind === 'release-probe') {
-    const publicProbe = ['preprod-probe-observation', 'preprod-probe-rollback'].includes(args.action);
+    const recoveredProbe = args.action === 'preprod-probe-recovered-active';
+    const publicProbe = recoveredProbe || ['preprod-probe-observation', 'preprod-probe-rollback'].includes(args.action);
+    const businessSmoke = args.action === 'preprod-probe-observation';
     let port = null;
     if (!publicProbe) {
       requireBoundEnvironment(trustedEnvironment, ['BOOKING_GREEN_PORT', 'BOOKING_BLUE_PORT']);
@@ -1029,23 +1525,76 @@ async function buildPlan(state, args, runtime) {
             parsed.telegramWebhookEnabled !== true || parsed.telegramWebhookUrl !== 'https://booking-preprod.happybooking.uk/telegram/webhook'))) {
         throw new ContractError('release probe identity mismatch', EXIT.READINESS);
       }
+      if (businessSmoke) {
+        const traceHex = sha256(`${state.operationId}:${args['action-id']}:${state.generation}:${state.fencingEpoch}`).slice(7);
+        const expectedMarker = `g4_${traceHex.slice(0, 24)}`;
+        const expectedUpdateId = Number(8_000_000_000_000_000n + (BigInt(`0x${traceHex.slice(24, 38)}`) % 100_000_000_000_000n));
+        const fixture = parsed.fixture;
+        const checks = parsed.checks;
+        if (!hasExactObjectKeys(parsed, ['schema', 'status', 'origin', 'releaseId', 'gitSha', 'manifestDigest', 'slot', 'configSchema',
+              'migrationFloor', 'migrationCatalogDigest', 'telegramBotMode', 'telegramWebhookEnabled', 'telegramWebhookUrl', 'fixture', 'checks']) ||
+            !hasExactObjectKeys(fixture, ['marker', 'updateId', 'operationId', 'actionId', 'generation', 'fencingEpoch']) ||
+            !hasExactObjectKeys(checks, ['publicIdentity', 'rootUi', 'sessionChain', 'shortLinks', 'database', 'telegramWidget', 'telegramLogin', 'telegramInbox']) ||
+            !hasExactObjectKeys(checks?.publicIdentity, ['status']) || !hasExactObjectKeys(checks?.rootUi, ['statusCode', 'bodyDigest']) ||
+            !hasExactObjectKeys(checks?.sessionChain, ['registered', 'loggedIn', 'rotated', 'authenticatedReadback', 'loggedOut', 'revokedReadback']) ||
+            !hasExactObjectKeys(checks?.shortLinks, ['referral', 'share']) ||
+            !hasExactObjectKeys(checks?.shortLinks?.referral, ['statusCode', 'location']) ||
+            !hasExactObjectKeys(checks?.shortLinks?.share, ['statusCode', 'location']) ||
+            !hasExactObjectKeys(checks?.database, ['database', 'databaseUser', 'writeReadback', 'sessionRows', 'revokedRows', 'fixtureOwnership', 'fixtureCleanup']) ||
+            !hasExactObjectKeys(checks?.telegramWidget, ['origin', 'botUsername', 'transport', 'domainAccepted', 'embedInitialized']) ||
+            !hasExactObjectKeys(checks?.telegramLogin, ['signatureAlgorithm', 'syntheticFixture', 'sessionCreated', 'authenticatedReadback',
+              'databaseIdentityReadback', 'logoutConfirmed', 'revokedSessionRejected', 'databaseRevocationReadback', 'fixtureCleanup']) ||
+            !hasExactObjectKeys(checks?.telegramInbox, ['deliveryStatusCodes', 'rowCount', 'processedCount', 'processedAtPresent', 'sideEffectOperations']) ||
+            parsed.schema !== 'booking.preprod-business-smoke/v2' ||
+            !fixture || fixture.marker !== expectedMarker || fixture.updateId !== expectedUpdateId ||
+            fixture.operationId !== state.operationId || fixture.actionId !== args['action-id'] ||
+            fixture.generation !== state.generation || fixture.fencingEpoch !== state.fencingEpoch ||
+            checks?.publicIdentity?.status !== 'pass' || checks?.rootUi?.statusCode !== 200 || !DIGEST.test(checks?.rootUi?.bodyDigest || '') ||
+            checks?.sessionChain?.registered !== true || checks?.sessionChain?.loggedIn !== true || checks?.sessionChain?.rotated !== true ||
+            checks?.sessionChain?.authenticatedReadback !== true || checks?.sessionChain?.loggedOut !== true || checks?.sessionChain?.revokedReadback !== true ||
+            checks?.shortLinks?.referral?.statusCode !== 302 || checks?.shortLinks?.referral?.location !== `/#/pages/login/register?ref=G4${expectedMarker.slice(3, 15).toUpperCase()}` ||
+            checks?.shortLinks?.share?.statusCode !== 302 || checks?.shortLinks?.share?.location !== `/#/pages/booking/detail?slug=${expectedMarker}` ||
+            checks?.database?.database !== 'booking_preprod' || checks?.database?.databaseUser !== 'booking_preprod' ||
+            checks?.database?.writeReadback !== true || checks?.database?.sessionRows !== 2 || checks?.database?.revokedRows !== 2 ||
+            checks?.database?.fixtureOwnership !== 'username-and-smoke-email' ||
+            checks?.database?.fixtureCleanup !== 'deleted-and-read-back' ||
+            checks?.telegramWidget?.origin !== 'https://booking-preprod.happybooking.uk' ||
+            checks?.telegramWidget?.botUsername !== manifest.artifacts.gateway.telegramBotUsername ||
+            checks?.telegramWidget?.transport !== 'tls-validated-no-redirect-no-cache' ||
+            checks?.telegramWidget?.domainAccepted !== true || checks?.telegramWidget?.embedInitialized !== true ||
+            checks?.telegramLogin?.signatureAlgorithm !== 'sha256-bot-token+hmac-sha256' ||
+            checks?.telegramLogin?.syntheticFixture !== true || checks?.telegramLogin?.sessionCreated !== true ||
+            checks?.telegramLogin?.authenticatedReadback !== true || checks?.telegramLogin?.databaseIdentityReadback !== true ||
+            checks?.telegramLogin?.logoutConfirmed !== true || checks?.telegramLogin?.revokedSessionRejected !== true ||
+            checks?.telegramLogin?.databaseRevocationReadback !== true || checks?.telegramLogin?.fixtureCleanup !== 'deleted-and-read-back' ||
+            canonicalJson(checks?.telegramInbox?.deliveryStatusCodes) !== canonicalJson([200, 200]) ||
+            checks?.telegramInbox?.rowCount !== 1 || checks?.telegramInbox?.processedCount !== 1 ||
+            checks?.telegramInbox?.processedAtPresent !== true || checks?.telegramInbox?.sideEffectOperations !== 0) {
+          throw new ContractError('observation business smoke receipt is incomplete', EXIT.READINESS);
+        }
+      }
       return parsed;
     };
-    const probeArgs = [fileURLToPath(new URL(publicProbe ? './probe-fenced-public.mjs' : './probe-fenced-candidate.mjs', import.meta.url)),
+    const probeArgs = [fileURLToPath(new URL(businessSmoke ? './probe-fenced-business.mjs' : (publicProbe ? './probe-fenced-public.mjs' : './probe-fenced-candidate.mjs'), import.meta.url)),
       ...(publicProbe ? [] : ['--base-url', `http://127.0.0.1:${port}`]),
       '--release-id', releaseIdentity.releaseId, '--git-sha', releaseIdentity.gitSha, '--manifest-digest', releaseIdentity.manifestDigest, '--slot', releaseIdentity.slot,
       ...(publicProbe && !exactLegacyCompose ? ['--config-schema', manifest.contracts.configSchema,
         '--migration-floor', manifest.contracts.migration.expandFloor,
         '--migration-catalog-digest', manifest.contracts.migration.catalogDigest,
         '--telegram-bot-mode', 'webhook', '--telegram-webhook-enabled', 'true',
-        '--telegram-webhook-url', 'https://booking-preprod.happybooking.uk/telegram/webhook'] : [])];
-    const probeRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
+        '--telegram-webhook-url', 'https://booking-preprod.happybooking.uk/telegram/webhook'] : []),
+      ...(businessSmoke ? ['--operation-id', state.operationId, '--action-id', args['action-id'],
+        '--generation', String(state.generation), '--fencing-epoch', String(state.fencingEpoch)] : [])];
+    const probeRuntimeArtifacts = recoveredProbe
+      ? ({ statePath }) => verifyRecoveredRuntimeHead(statePath, state)
+      : (exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress));
     return guardPlan({ executable: process.execPath, argv: probeArgs, cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { probe: { slot: releaseIdentity.slot, ...(publicProbe ? { origin: 'https://booking-preprod.happybooking.uk',
         ...(!exactLegacyCompose ? { configSchema: manifest.contracts.configSchema, migrationFloor: manifest.contracts.migration.expandFloor,
           migrationCatalogDigest: manifest.contracts.migration.catalogDigest, telegramBotMode: 'webhook', telegramWebhookEnabled: true,
-          telegramWebhookUrl: 'https://booking-preprod.happybooking.uk/telegram/webhook' } : {}) } : { port }),
+          telegramWebhookUrl: 'https://booking-preprod.happybooking.uk/telegram/webhook',
+          ...(businessSmoke ? { businessSmokeContract: 'booking.preprod-business-smoke/v2' } : {}) } : {}) } : { port }),
         releaseId: releaseIdentity.releaseId, gitSha: releaseIdentity.gitSha, manifestDigest: releaseIdentity.manifestDigest } },
       ...(probeRuntimeArtifacts ? { preflightArtifacts: probeRuntimeArtifacts, verifyArtifacts: probeRuntimeArtifacts,
         replayPreflightArtifacts: probeRuntimeArtifacts, replayVerifyArtifacts: probeRuntimeArtifacts } : {}),
@@ -1080,7 +1629,7 @@ async function buildPlan(state, args, runtime) {
       if (state.phase !== 'ROLLED_BACK') await assertLoopbackPortAvailable(candidatePort, runtime);
       return inspectStageArtifacts(context);
     };
-    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--no-deps', '--wait', ...services], cwd: paths.releaseDirectory,
+    return guardPlan({ executable: docker, argv: [...composePrefix, 'up', '--no-build', '--pull', 'never', '--no-deps', '--wait', ...services], cwd: paths.releaseDirectory,
       env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
       artifactBinding: { backend: { image: artifacts.backend.image, digest: artifacts.backend.digest },
         gateway: { image: artifacts.gateway.image, digest: artifacts.gateway.digest, frontendAssetDigest: artifacts.gateway.frontendAssetDigest,
@@ -1132,7 +1681,8 @@ async function buildPlan(state, args, runtime) {
           const observedFrontendDigest = await directoryDigest(frontendDirectory, 'running gateway H5 directory');
           if (observedFrontendDigest !== artifacts.gateway.frontendAssetDigest) throw new ContractError('running gateway H5 digest does not match release manifest', EXIT.IDENTITY);
           return { ...imageEvidence, runtimeBindings, frontendAssetDigest: observedFrontendDigest,
-            routeContractDigest: imageEvidence.routeContract.digest };
+            routeContractDigest: imageEvidence.routeContract.digest, containerIds,
+            gatewayConfigImage: `${artifacts.gateway.image}:${releaseIdentity.releaseId}` };
         } finally { await rm(frontendDirectory, { recursive: true, force: true }); }
       } });
   }
@@ -1226,6 +1776,35 @@ async function buildPlan(state, args, runtime) {
       verifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, oneShotName, readbackName]), inspectTelegramEgress),
       replayVerifyArtifacts: combineArtifactChecks(verifyOneShotArtifacts([ledgerReadbackName, readbackName]), inspectTelegramEgress) });
   }
+  const approvedIngressGatewayBinding = async (identity) => {
+    const exactLegacy = identity.releaseId === LEGACY_OLD_BINDING.releaseId && identity.gitSha === LEGACY_OLD_BINDING.gitSha &&
+      identity.manifestDigest === LEGACY_OLD_BINDING.manifestRawDigest && identity.slot === 'green';
+    if (exactLegacy) return { containerId: LEGACY_ACTIVE_RUNTIME_BINDING.gateway.id,
+      backendContainerId: LEGACY_ACTIVE_RUNTIME_BINDING.backend.id, imageId: LEGACY_ACTIVE_RUNTIME_BINDING.gateway.imageId,
+      configImage: LEGACY_ACTIVE_RUNTIME_BINDING.gateway.image, configHash: LEGACY_ACTIVE_RUNTIME_BINDING.gateway.configHash };
+    if (runtime.ingressApprovedBindings) {
+      const fixture = runtime.ingressApprovedBindings[identity.releaseId];
+      if (runtime.releaseManifest && runtime.releaseRoot && fixture) return fixture;
+      if (fixture) throw new ContractError('injected ingress runtime binding is unavailable outside an isolated fixture', EXIT.IDENTITY);
+    }
+    if (!runtime.statePath) throw new ContractError('canonical deploy-state path is unavailable for ingress runtime binding', EXIT.IDENTITY);
+    const stageDigest = state.evidence.stageReceiptDigest;
+    if (!DIGEST.test(stageDigest || '')) throw new ContractError('ingress requires a canonical candidate stage receipt', EXIT.IDENTITY);
+    const { receipt, acceptedReceipt } = await readCanonicalExecutorReceiptByDigest(runtime.statePath, stageDigest);
+    const artifacts = receipt.verification?.artifacts;
+    const binding = { containerId: artifacts?.containerIds?.gateway, backendContainerId: artifacts?.containerIds?.backend,
+      imageId: artifacts?.gateway?.imageId, configImage: artifacts?.gatewayConfigImage, configHash: artifacts?.runtimeBindings?.gateway?.configHash };
+    if (acceptedReceipt.receiptDigest !== stageDigest || receipt.action !== 'preprod-stage' || receipt.status !== 'pass' ||
+        receipt.environment !== state.environment || receipt.project !== state.project || receipt.operationId !== state.operationId ||
+        receipt.manifestDigest !== identity.manifestDigest || !sameReleaseIdentity(receipt.releaseIdentity, identity) ||
+        receipt.runtimeEnvDigest !== state.runtimeEnvDigest || canonicalJson(receipt.resourceIds) !== canonicalJson([state.resources.edgeNetwork]) ||
+        !DOCKER_CONTAINER_ID.test(binding.containerId || '') || !DOCKER_CONTAINER_ID.test(binding.backendContainerId || '') ||
+        !DIGEST.test(binding.imageId || '') || typeof binding.configImage !== 'string' || !binding.configImage.endsWith(`:${identity.releaseId}`) ||
+        !/^[0-9a-f]{64}$/.test(binding.configHash || '')) {
+      throw new ContractError('canonical stage receipt does not contain an approved exact gateway runtime identity', EXIT.IDENTITY);
+    }
+    return binding;
+  };
   const helper = runtime.ingressExecutable || await findTrustedRootExecutable(['/usr/local/libexec/happybooking/switch-preprod-ingress']);
   const hostname = 'booking-preprod.happybooking.uk';
   const upstream = `gateway-${releaseIdentity.slot}:8080`;
@@ -1236,6 +1815,10 @@ async function buildPlan(state, args, runtime) {
   const sequence = args.action === 'preprod-rollback-ingress' ? 2 : (state.rollbackRehearsalCompleted ? 3 : 1);
   const actionKind = args.action;
   const rollbackUpstream = `gateway-${rollbackIdentity.slot}:8080`;
+  const sourceIdentity = args.action === 'preprod-rollback-ingress' ? state.active : rollbackIdentity;
+  const [sourceGatewayBinding, targetGatewayBinding] = await Promise.all([
+    approvedIngressGatewayBinding(sourceIdentity), approvedIngressGatewayBinding(releaseIdentity),
+  ]);
   const cycleBinding = { actionKind, actionId: args['action-id'], sequence, approvalId: state.approvalId,
     leaseId: state.lease.leaseId, holderId: state.lease.holderId, rollbackUpstream,
     rollbackReleaseId: rollbackIdentity.releaseId, rollbackManifestDigest: rollbackIdentity.manifestDigest };
@@ -1244,31 +1827,47 @@ async function buildPlan(state, args, runtime) {
     '--operation-id', state.operationId, '--approval-id', state.approvalId, '--lease-id', state.lease.leaseId,
     '--holder-id', state.lease.holderId, '--action-kind', actionKind, '--action-id', args['action-id'], '--sequence', String(sequence),
     '--fencing-epoch', String(state.fencingEpoch), '--rollback-upstream', rollbackUpstream, '--rollback-release', rollbackIdentity.releaseId,
-    '--rollback-manifest-digest', rollbackIdentity.manifestDigest];
+    '--rollback-manifest-digest', rollbackIdentity.manifestDigest,
+    '--source-container-id', sourceGatewayBinding.containerId, '--source-backend-container-id', sourceGatewayBinding.backendContainerId,
+    '--source-image-id', sourceGatewayBinding.imageId, '--source-config-image', sourceGatewayBinding.configImage,
+    '--source-config-hash', sourceGatewayBinding.configHash,
+    '--target-container-id', targetGatewayBinding.containerId, '--target-backend-container-id', targetGatewayBinding.backendContainerId,
+    '--target-image-id', targetGatewayBinding.imageId, '--target-config-image', targetGatewayBinding.configImage,
+    '--target-config-hash', targetGatewayBinding.configHash];
   const ingressRuntimeArtifacts = exactLegacyCompose ? null : combineArtifactChecks(inspectReleaseRuntime, inspectTelegramEgress);
   return guardPlan({ executable: helper, argv: mutationArgs, cwd: paths.releaseDirectory,
     env: trustedEnvironment.env, environmentBinding: trustedEnvironment.environmentBinding,
     artifactBinding: { ingress: { hostname, upstream, releaseId: releaseIdentity.releaseId, manifestDigest: releaseIdentity.manifestDigest,
-      operationId: state.operationId, fencingEpoch: state.fencingEpoch, ...cycleBinding } },
+      operationId: state.operationId, fencingEpoch: state.fencingEpoch, sourceGatewayBinding, targetGatewayBinding, ...cycleBinding } },
     ...(ingressRuntimeArtifacts ? { preflightArtifacts: ingressRuntimeArtifacts, verifyArtifacts: ingressRuntimeArtifacts,
       replayPreflightArtifacts: ingressRuntimeArtifacts, replayVerifyArtifacts: ingressRuntimeArtifacts } : {}),
     readback: { executable: helper, argv: ['--readback', '--project', state.project, '--hostname', hostname], verify: (value) => {
       let parsed; try { parsed = JSON.parse(value); } catch { throw new ContractError('ingress readback is not JSON', EXIT.INGRESS); }
-      const expectedKeys = ['schema', 'project', 'hostname', 'upstream', 'releaseId', 'manifestDigest', 'operationId', 'approvalId', 'leaseId',
-        'holderId', 'actionKind', 'actionId', 'sequence', 'fencingEpoch', 'rollbackUpstream', 'rollbackReleaseId', 'rollbackManifestDigest',
-        'proofDigest', 'remoteVersion', 'remoteConfigDigest', 'guard', 'observedAt'];
+      const expectedKeys = ['schema', 'project', 'hostname', 'edgeNetwork', 'logicalAlias', 'fixedRemoteService', 'aliasState', 'upstream', 'releaseId',
+        'manifestDigest', 'operationId', 'approvalId', 'leaseId', 'holderId', 'actionKind', 'actionId', 'sequence', 'fencingEpoch', 'rollbackUpstream',
+        'rollbackReleaseId', 'rollbackManifestDigest', 'sourceReleaseId', 'sourceManifestDigest', 'sourceUpstream', 'sourceContainerId',
+        'sourceBackendContainerId', 'sourceImageId', 'sourceConfigImage', 'sourceConfigHash', 'targetContainerId', 'targetBackendContainerId',
+        'targetImageId', 'targetConfigImage', 'targetConfigHash', 'cloudflaredContainerId', 'cloudflaredImageId', 'cloudflaredStartedAt', 'proofDigest', 'guard', 'observedAt'];
       const guard = parsed?.guard;
-      if (!parsed || Object.keys(parsed).sort().join(',') !== [...expectedKeys].sort().join(',') || parsed.schema !== 'booking.ingress-readback/v2' ||
+      if (!parsed || Object.keys(parsed).sort().join(',') !== [...expectedKeys].sort().join(',') || parsed.schema !== 'booking.ingress-readback/v3' ||
           parsed.project !== state.project || parsed.hostname !== hostname || parsed.upstream !== upstream || parsed.releaseId !== releaseIdentity.releaseId ||
+          parsed.edgeNetwork !== state.resources.edgeNetwork || parsed.logicalAlias !== 'gateway-green' ||
+          parsed.fixedRemoteService !== 'http://gateway-green:8080' || parsed.aliasState !== 'desired' ||
           parsed.manifestDigest !== releaseIdentity.manifestDigest || parsed.operationId !== state.operationId || parsed.fencingEpoch !== state.fencingEpoch ||
           parsed.approvalId !== cycleBinding.approvalId || parsed.leaseId !== cycleBinding.leaseId || parsed.holderId !== cycleBinding.holderId ||
           parsed.actionKind !== cycleBinding.actionKind || parsed.actionId !== cycleBinding.actionId || parsed.sequence !== cycleBinding.sequence ||
           parsed.rollbackUpstream !== cycleBinding.rollbackUpstream || parsed.rollbackReleaseId !== cycleBinding.rollbackReleaseId ||
           parsed.rollbackManifestDigest !== cycleBinding.rollbackManifestDigest || !DIGEST.test(parsed.proofDigest || '') ||
-          !Number.isSafeInteger(parsed.remoteVersion) || parsed.remoteVersion < 0 || !DIGEST.test(parsed.remoteConfigDigest || '') ||
-          !guard || Object.keys(guard).sort().join(',') !== ['mode', 'atomicRemoteCas', 'opportunisticIfMatch', 'exclusiveWriteRequired'].sort().join(',') ||
-          guard.mode !== 'double-read-version-and-digest' || guard.atomicRemoteCas !== false || typeof guard.opportunisticIfMatch !== 'boolean' ||
-          guard.exclusiveWriteRequired !== true ||
+          parsed.sourceContainerId !== sourceGatewayBinding.containerId || parsed.sourceBackendContainerId !== sourceGatewayBinding.backendContainerId ||
+          parsed.sourceImageId !== sourceGatewayBinding.imageId || parsed.sourceConfigImage !== sourceGatewayBinding.configImage || parsed.sourceConfigHash !== sourceGatewayBinding.configHash ||
+          parsed.targetContainerId !== targetGatewayBinding.containerId || parsed.targetBackendContainerId !== targetGatewayBinding.backendContainerId ||
+          parsed.targetImageId !== targetGatewayBinding.imageId || parsed.targetConfigImage !== targetGatewayBinding.configImage || parsed.targetConfigHash !== targetGatewayBinding.configHash ||
+          !DIGEST.test(parsed.cloudflaredImageId || '') ||
+          !/^[0-9a-f]{64}$/.test(parsed.cloudflaredContainerId || '') || !Number.isFinite(Date.parse(parsed.cloudflaredStartedAt)) ||
+          !guard || Object.keys(guard).sort().join(',') !== ['mode', 'convergence', 'fencedResources', 'exactIdMutation', 'cloudflareMutationAllowed', 'publicProbeRequired'].sort().join(',') ||
+          guard.mode !== 'local-docker-network-alias' || guard.convergence !== 'previous-desired-in-flight-readback' ||
+          canonicalJson([...guard.fencedResources].sort()) !== canonicalJson(['booking-preprod-edge', 'ingress:booking-preprod'].sort()) || guard.exactIdMutation !== true ||
+          guard.cloudflareMutationAllowed !== false || guard.publicProbeRequired !== true ||
           !Number.isFinite(Date.parse(parsed.observedAt))) throw new ContractError('ingress readback identity mismatch', EXIT.INGRESS);
       return parsed;
     } } });
@@ -1309,7 +1908,7 @@ function priorPendingIngressPlan(state, args, releaseIdentity, resource, plan, r
     ...(priorRegistryBinding ? { registrySupplyChainBinding: priorRegistryBinding,
       environmentBinding: { ...plan.environmentBinding,
         BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(priorRegistryBinding) } } : {}) };
-  const priorRequest = { schema: 'booking.fenced-action-request/v1', environment: state.environment, project: state.project,
+  const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
     action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
     generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
     manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds, runtimeEnvDigest: state.runtimeEnvDigest,
@@ -1317,7 +1916,7 @@ function priorPendingIngressPlan(state, args, releaseIdentity, resource, plan, r
   if (priorRequest.commandDigest !== pending.commandDigest || sha256(priorRequest) !== pending.requestDigest) {
     throw new ContractError('prior pending ingress request digest does not match its immutable recovery identity', EXIT.INGRESS);
   }
-  return { pending, priorPlan, recoveryArgv: [...priorArgv, '--recover-pending', 'true'] };
+  return { pending, priorPlan, priorRequest, recoveryArgv: [...priorArgv, '--recover-pending', 'true'] };
 }
 
 function verifyPriorPendingIngress(readback, state, args, releaseIdentity, resource, priorIdentity) {
@@ -1326,7 +1925,7 @@ function verifyPriorPendingIngress(readback, state, args, releaseIdentity, resou
   const pending = priorIdentity.pending;
   const rollback = state.rollback;
   const sequence = args.action === 'preprod-rollback-ingress' ? 2 : (state.rollbackRehearsalCompleted ? 3 : 1);
-  if (!pending || args['action-id'] === pending.actionId || observed?.schema !== 'booking.ingress-readback/v2' ||
+  if (!pending || args['action-id'] === pending.actionId || observed?.schema !== 'booking.ingress-readback/v3' ||
       observed.project !== state.project || observed.hostname !== 'booking-preprod.happybooking.uk' ||
       observed.upstream !== `gateway-${releaseIdentity.slot}:8080` || observed.releaseId !== releaseIdentity.releaseId ||
       observed.manifestDigest !== releaseIdentity.manifestDigest || observed.operationId !== state.operationId ||
@@ -1335,25 +1934,602 @@ function verifyPriorPendingIngress(readback, state, args, releaseIdentity, resou
       observed.rollbackUpstream !== `gateway-${rollback.slot}:8080` || observed.rollbackReleaseId !== rollback.releaseId ||
       observed.rollbackManifestDigest !== rollback.manifestDigest || observed.approvalId !== pending.approvalId ||
       observed.leaseId !== pending.leaseId || observed.holderId !== pending.holderId ||
-      !DIGEST.test(observed.proofDigest || '') || !DIGEST.test(observed.remoteConfigDigest || '') ||
-      !Number.isSafeInteger(observed.remoteVersion) || observed.guard?.mode !== 'double-read-version-and-digest' ||
-      observed.guard?.atomicRemoteCas !== false || observed.guard?.exclusiveWriteRequired !== true) {
+      observed.edgeNetwork !== state.resources.edgeNetwork || observed.logicalAlias !== 'gateway-green' ||
+      observed.fixedRemoteService !== 'http://gateway-green:8080' || observed.aliasState !== 'desired' ||
+      !DIGEST.test(observed.proofDigest || '') || observed.guard?.mode !== 'local-docker-network-alias' ||
+      observed.guard?.convergence !== 'previous-desired-in-flight-readback' ||
+      canonicalJson([...(observed.guard?.fencedResources || [])].sort()) !== canonicalJson(['booking-preprod-edge', 'ingress:booking-preprod'].sort()) || observed.guard?.exactIdMutation !== true ||
+      observed.guard?.cloudflareMutationAllowed !== false || observed.guard?.publicProbeRequired !== true) {
     throw new ContractError('prior pending ingress identity/action does not match the independently proven remote state', EXIT.INGRESS);
   }
   return observed;
 }
 
 const TAKEOVER_ADOPTABLE_ACTIONS = new Set([
-  'preprod-stage', 'preprod-baseline-ledger', 'preprod-expand-migrate',
+  'preprod-stage', 'preprod-baseline-ledger', 'preprod-expand-migrate', 'preprod-prepare-telegram-egress',
   'preprod-transfer-singletons', 'preprod-rollback-singletons',
+  'preprod-set-webhook', 'preprod-restore-active-runtime',
 ]);
 
+const FAILED_RESTORE_BINDING = Object.freeze({
+  operationId: 'g4.fc79097c5756.06',
+  manifestDigest: 'sha256:dc23534a1d05706e073ffa4f0baf78cf069f90fa893d1c6d68559c4f970c3884',
+  sourceBackupDigest: 'sha256:1e3a8ee51c80a62817cf160b452abcb655359503cdf0ef2daaa7ca501aa367a6',
+  forensicDirectory: '/volume1/happybooking/booking-preprod/.g4/forensics/g4.fc79097-op06-database-swap-20260910T1101Z',
+  forensicManifestDigest: 'sha256:045bd2c8b85a80e75385bc0ecdbe0b2f234f5042b37ac0f2db645c236eac2e66',
+  forensicStateGeneration: 9,
+  forensicFencingEpoch: 2,
+  forensicApprovalId: 'approval.user.20260910.g4.recovery.r7',
+  freezeManifestDigest: 'sha256:f59f3e825eea28b53119516013d9892b09ab83a3b5b68d4b8bc2a4867ccf0155',
+  postExpandBackupDigest: 'sha256:022608ba1cdb44946c1369c9ffe190ce5b72f26bc3d2e4c2cac3dda8e9ae7043',
+  liveTableEvidenceDigest: 'sha256:1c29effde2c6844dc53de730791c6eb3cf1a7310d1c54b6f18317ab2b00f048d',
+  liveSequenceEvidenceDigest: 'sha256:97614048e19a080ed839f27b1ecbe9dbdd4eed06a30e5bec8a0e1afcac496504',
+  liveLargeObjectDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  priorTelegramFencingEpoch: 1,
+  priorTelegramActionId: 'g4.fc79097c5756.06.egress.rehearsal.f1',
+  priorTelegramFailureReceiptDigest: 'sha256:db40132b7eb61b372a291a0dbe285d8f35c38333a2b4d4d8b4a92185a68530a9',
+});
+
+export function telegramAbortDockerCommands(project) {
+  if (project !== 'booking-preprod') throw new ContractError('Telegram abort project is not preproduction', EXIT.IDENTITY);
+  const containerName = `${project}-telegram-egress-1`;
+  return Object.freeze({
+    containerName,
+    // The request digest binds this placeholder procedure. Runtime execution
+    // replaces it only with the twice-inspected immutable Docker container ID.
+    mutationArgv: Object.freeze(['container', 'rm', '--force', '<verified-container-id>']),
+    readbackArgv: Object.freeze(['ps', '-a', '--filter', `name=^/${containerName}$`, '--format', '{{.ID}}|{{.Names}}']),
+  });
+}
+
+const LEGACY_ACTIVE_RUNTIME_BINDING = Object.freeze({
+  backend: Object.freeze({
+    id: '50dbe86316e2bdfe2b84727fe7407ef435eec3c91f3c764d605c7fc8a552d4fb',
+    imageId: 'sha256:a1bebe8670c2dc5524c9cd3b0d91a3274d85365a6b252c3cdd9907c6b48695ee',
+    image: 'booking-preprod-backend:booking-20260908T202714Z-317be4dec675',
+    service: 'backend-green', configHash: 'beba82426cab283cdbaeac564dad4226c40d5a71b4910ef76f5e7eed407fa31d',
+    networkAliases: Object.freeze({ edge: Object.freeze(['backend-green']), data: Object.freeze(['backend-green']) }),
+  }),
+  gateway: Object.freeze({
+    id: 'eb38bbd0b092d1cdc8c30e62faa400421d0764f5fc5f3997e3986f3a7b10800d',
+    imageId: 'sha256:0a26e5415496cd1227d80833fa2a4bae5fdb41d558119ed2ec5d6df0b0fd5593',
+    image: 'booking-preprod-gateway:booking-20260908T202714Z-317be4dec675',
+    service: 'gateway-green', configHash: '67ca960d4f4dc4266ea8b003e22e26545a8f0418d3bad6e83a76be6bece8791e',
+    networkAliases: Object.freeze({ edge: Object.freeze(['gateway-green']) }),
+  }),
+  cloudflared: Object.freeze({
+    name: 'booking-preprod-cloudflared',
+    imageId: 'sha256:c1d35f78a5f68601e349d12fed690bc5cb3a0d64d0d25dd7297d415aa399c179',
+    image: 'cloudflare/cloudflared@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0',
+    user: '65532:65532',
+    cmd: Object.freeze(['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run']),
+    tokenMount: Object.freeze({ type: 'bind', source: '/etc/happybooking/secrets/cloudflare-preprod-tunnel-token',
+      destination: '/run/secrets/tunnel-token', rw: false, propagation: 'rprivate' }),
+  }),
+  nginx: Object.freeze({
+    source: '/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/source/frontend/nginx.preprod.conf',
+    destination: '/etc/nginx/conf.d/default.conf', digest: 'sha256:ac038692b8ee7e826e057334554bbd006deec617f71750c54bdf94bfa496752a',
+    mode: 0o644, uid: 0, gid: 0, size: 364,
+  }),
+  databaseOid: 17915,
+  bot: Object.freeze({ id: 8711543100, username: 'HappyBookingPreprodBot' }),
+});
+
+async function readRecoveryResourceState(statePath, state, resourceId, allowPending = false, allowMissingVirgin = false) {
+  let value;
+  try { value = JSON.parse(await readFile(join(resourceDirectory(statePath, resourceId), 'resource-state.json'), 'utf8')); }
+  catch (error) {
+    if (error?.code === 'ENOENT' && allowMissingVirgin) return { schema: 'booking.fenced-resource/v1',
+      environment: state.environment, project: state.project, resourceId, highestAcceptedFencingEpoch: 0,
+      operationId: null, manifestDigest: null, pendingAction: null, receiptChainHead: null, updatedAt: null, missingVirgin: true };
+    throw new ContractError(`recovery predecessor state is unavailable for ${resourceId}`, EXIT.SINGLETON);
+  }
+  if (value?.schema !== 'booking.fenced-resource/v1' || value.environment !== state.environment || value.project !== state.project ||
+      value.resourceId !== resourceId || !Number.isInteger(value.highestAcceptedFencingEpoch) ||
+      value.highestAcceptedFencingEpoch > state.fencingEpoch || (!allowPending && value.pendingAction !== null) ||
+      (value.receiptChainHead !== null && !DIGEST.test(value.receiptChainHead || ''))) {
+    throw new ContractError(`recovery predecessor state is not closed for ${resourceId}`, EXIT.SINGLETON);
+  }
+  return value;
+}
+
+function assertRecoveryReceiptIdentity(receipt, state, expectedAction, expectedIdentity, expectedResources, expectedFence) {
+  if (receipt?.schema !== schemaForAction(expectedAction).receipt || receipt.status !== 'pass' ||
+      receipt.environment !== state.environment || receipt.project !== state.project || receipt.operationId !== state.operationId ||
+      receipt.action !== expectedAction || receipt.fencingEpoch !== expectedFence || receipt.runtimeEnvDigest !== state.runtimeEnvDigest ||
+      receipt.manifestDigest !== expectedIdentity.manifestDigest || canonicalJson(receipt.releaseIdentity) !== canonicalJson(expectedIdentity) ||
+      canonicalJson(receipt.resourceIds) !== canonicalJson(expectedResources) || receipt.requestDigest !== sha256(receiptRequestBody(receipt))) {
+    throw new ContractError(`${expectedAction} recovery predecessor receipt identity is invalid`, EXIT.IDENTITY);
+  }
+  return receipt;
+}
+
+async function verifyRestorePredecessors(statePath, state, adoptionReceipt = null, recoveryPending = null) {
+  const databaseResources = [state.resources.databaseRef, state.resources.dataNetwork];
+  const telegramResource = `telegram:${state.project}`;
+  let databaseHead; let telegramHead; let expectedFence = null;
+  if (adoptionReceipt) {
+    assertRecoveryReceiptIdentity(adoptionReceipt, state, 'preprod-restore-active-runtime', state.active,
+      [state.resources.edgeNetwork, state.resources.dataNetwork, state.resources.databaseRef, telegramResource, state.resources.ingressRef],
+      adoptionReceipt.fencingEpoch);
+    expectedFence = adoptionReceipt.fencingEpoch;
+    const predecessors = new Map((adoptionReceipt.resources || []).map((resource) => [resource.resourceId, resource.previousReceiptDigest]));
+    databaseHead = predecessors.get(state.resources.databaseRef);
+    telegramHead = predecessors.get(telegramResource);
+    if (!databaseHead || predecessors.get(state.resources.dataNetwork) !== databaseHead || !telegramHead) {
+      throw new ContractError('active runtime restore receipt omits exact database or Telegram predecessors', EXIT.IDENTITY);
+    }
+  } else {
+    const states = new Map();
+    for (const resourceId of [...Object.values(state.resources), telegramResource]) {
+      states.set(resourceId, await readRecoveryResourceState(statePath, state, resourceId, Boolean(recoveryPending),
+        [state.resources.edgeNetwork, state.resources.ingressRef].includes(resourceId)));
+    }
+    const predecessorHead = async (resource, resourceId) => {
+      if (resource.manifestDigest === state.active.manifestDigest && resource.receiptChainHead) {
+        const candidate = await readCanonicalExecutorReceiptByDigest(statePath, resource.receiptChainHead);
+        if (candidate.receipt.action === 'preprod-restore-active-runtime' && candidate.receipt.operationId === state.operationId) {
+          const prior = candidate.receipt.resources?.find((item) => item.resourceId === resourceId)?.previousReceiptDigest;
+          if (!prior) throw new ContractError('completed active restore omits a recovery predecessor', EXIT.IDENTITY);
+          return prior;
+        }
+      }
+      return resource.receiptChainHead;
+    };
+    databaseHead = await predecessorHead(states.get(state.resources.databaseRef), state.resources.databaseRef);
+    const dataHead = await predecessorHead(states.get(state.resources.dataNetwork), state.resources.dataNetwork);
+    telegramHead = await predecessorHead(states.get(telegramResource), telegramResource);
+    if (!databaseHead || dataHead !== databaseHead || !telegramHead) {
+      throw new ContractError('active runtime recovery requires closed database and Telegram receipt heads', EXIT.IDENTITY);
+    }
+  }
+  const database = await readCanonicalExecutorReceiptByDigest(statePath, databaseHead);
+  const telegram = await readCanonicalExecutorReceiptByDigest(statePath, telegramHead);
+  if (database.acceptedReceipt.receiptDigest !== databaseHead || telegram.acceptedReceipt.receiptDigest !== telegramHead) {
+    throw new ContractError('active runtime recovery predecessor is not the accepted canonical receipt', EXIT.IDENTITY);
+  }
+  const predecessorFence = database.receipt.fencingEpoch;
+  if (!Number.isInteger(predecessorFence) || telegram.receipt.fencingEpoch !== predecessorFence || predecessorFence > state.fencingEpoch ||
+      (expectedFence !== null && predecessorFence !== expectedFence)) {
+    throw new ContractError('active runtime recovery predecessor fencing epochs are inconsistent', EXIT.SINGLETON);
+  }
+  assertRecoveryReceiptIdentity(database.receipt, state, 'preprod-attest-database-restore', state.candidate,
+    databaseResources, predecessorFence);
+  assertRecoveryReceiptIdentity(telegram.receipt, state, 'preprod-abort-telegram-egress', state.candidate,
+    [telegramResource], predecessorFence);
+  return { databaseRestoreReceiptDigest: databaseHead, telegramAbortReceiptDigest: telegramHead,
+    predecessorFencingEpoch: predecessorFence };
+}
+
+async function verifyRecoveredRuntimeHead(statePath, state) {
+  const resourceIds = [state.resources.edgeNetwork, state.resources.dataNetwork, state.resources.databaseRef,
+    `telegram:${state.project}`, state.resources.ingressRef];
+  const states = await Promise.all(resourceIds.map((resourceId) => readRecoveryResourceState(statePath, state, resourceId)));
+  const heads = [...new Set(states.map((value) => value.receiptChainHead))];
+  if (heads.length !== 1 || !heads[0] || states.some((value) => value.highestAcceptedFencingEpoch !== state.fencingEpoch ||
+      value.operationId !== state.operationId || value.manifestDigest !== state.active.manifestDigest)) {
+    throw new ContractError('recovered active runtime resources do not share the current fenced receipt head', EXIT.IDENTITY);
+  }
+  const canonical = await readCompletedExecutorReceiptByDigest(statePath, heads[0]);
+  assertRecoveryReceiptIdentity(canonical.receipt, state, 'preprod-restore-active-runtime', state.active, resourceIds, state.fencingEpoch);
+  await verifyRestorePredecessors(statePath, state, canonical.receipt);
+  return { activeRuntimeRestoreReceiptDigest: canonical.acceptedReceipt.receiptDigest, fencingEpoch: state.fencingEpoch };
+}
+
+function verifyLegacyProbeOutput(stdout, identity, label) {
+  const value = parseLastJson(stdout, `${label} did not emit JSON`, EXIT.READINESS);
+  if (value.status !== 'pass' || value.releaseId !== identity.releaseId || value.gitSha !== identity.gitSha ||
+      value.manifestDigest !== identity.manifestDigest || value.slot !== identity.slot) {
+    throw new ContractError(`${label} identity mismatch`, EXIT.READINESS);
+  }
+  return value;
+}
+
+async function verifyLegacyNginxBinding(binding, runtime) {
+  const canonical = await realpath(binding.nginx.source).catch(() => {
+    throw new ContractError('fixed legacy Nginx bind source is unavailable', EXIT.IDENTITY);
+  });
+  const metadata = await stat(canonical);
+  if (canonical !== binding.nginx.source || !metadata.isFile() || metadata.size !== binding.nginx.size ||
+      (!runtime.allowNonRootEvidence && process.platform !== 'win32' &&
+        (metadata.uid !== binding.nginx.uid || metadata.gid !== binding.nginx.gid || (metadata.mode & 0o777) !== binding.nginx.mode)) ||
+      await digestFile(canonical) !== binding.nginx.digest) {
+    throw new ContractError('fixed legacy Nginx bind source identity drifted', EXIT.IDENTITY);
+  }
+  return binding.nginx.digest;
+}
+
+function verifyLegacyDatabaseIdentity(value, binding) {
+  const observed = value.trim();
+  if (observed !== `booking_preprod|booking_preprod|${binding.databaseOid}|1`) {
+    throw new ContractError('restored legacy database schema or OID drifted', EXIT.DATABASE);
+  }
+  return { name: 'booking_preprod', user: 'booking_preprod', oid: binding.databaseOid, migrationsTableAbsent: true };
+}
+
+export const LEGACY_SUPPORTING_INSPECT_FORMAT = '{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},"ConfigImage":{{json .Config.Image}},"User":{{json .Config.User}},"Labels":{{json .Config.Labels}},"PortBindings":{{json .HostConfig.PortBindings}},"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"Privileged":{{json .HostConfig.Privileged}},"CapDrop":{{json .HostConfig.CapDrop}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},"Cmd":{{json .Config.Cmd}},"Mounts":{{json .Mounts}},"Networks":{{json .NetworkSettings.Networks}},"Running":{{json .State.Running}}}';
+
+async function inspectLegacyNetworkTopology(run, state, binding, fixedContainers) {
+  const networkStdout = await run(['network', 'inspect', state.resources.edgeNetwork, state.resources.dataNetwork]);
+  let networks;
+  try { networks = JSON.parse(networkStdout); }
+  catch { throw new ContractError('fixed legacy network topology readback is not JSON', EXIT.IDENTITY); }
+  const edgeNetwork = Array.isArray(networks) ? networks.find((network) => network?.Name === state.resources.edgeNetwork) : null;
+  const dataNetwork = Array.isArray(networks) ? networks.find((network) => network?.Name === state.resources.dataNetwork) : null;
+  const endpointIds = [
+    { network: dataNetwork, name: 'booking-preprod-postgres-1' },
+    { network: dataNetwork, name: 'booking-preprod-redis-1' },
+    { network: edgeNetwork, name: binding.cloudflared.name },
+  ].map(({ network, name }) => {
+    const endpointEntries = network?.Containers && typeof network.Containers === 'object' && !Array.isArray(network.Containers)
+      ? Object.entries(network.Containers) : [];
+    const matches = endpointEntries.filter(([, endpoint]) => endpoint?.Name === name);
+    if (matches.length !== 1 || !/^[0-9a-f]{64}$/.test(matches[0][0])) {
+      throw new ContractError(`fixed legacy ${name} network endpoint identity drifted`, EXIT.IDENTITY);
+    }
+    return matches[0][0];
+  });
+  const supportingContainersStdout = await run(['container', 'inspect', '--format', LEGACY_SUPPORTING_INSPECT_FORMAT, ...endpointIds]);
+  return verifyLegacyNetworkTopology(networkStdout, supportingContainersStdout, state, fixedContainers, binding);
+}
+
+async function verifyLegacyActiveRuntimePreflightArtifacts(context, state, paths, docker, runtime, binding, predecessorCheck) {
+  const { runner, env, timeoutMs, revalidateLease } = context;
+  const run = async (argv, exitCode = EXIT.IDENTITY) => {
+    const currentTimeout = typeof revalidateLease === 'function' ? revalidateLease().timeoutMs : timeoutMs;
+    const value = await runner(docker, argv, { cwd: paths.releaseDirectory, env, timeoutMs: currentTimeout });
+    assertResult(value, exitCode);
+    return value.stdout;
+  };
+  const predecessors = await predecessorCheck(context);
+  const inspected = verifyLegacyActiveRuntimeInspect(
+    await run(['container', 'inspect', binding.backend.id, binding.gateway.id]), state, binding, false, true,
+  );
+  const networkTopology = await inspectLegacyNetworkTopology(run, state, binding, inspected);
+  const running = (await run(['ps', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.Names}}'], EXIT.READINESS))
+    .trim().split(/\r?\n/).filter(Boolean).sort();
+  const expectedRunning = ['booking-preprod-postgres-1', 'booking-preprod-redis-1',
+    ...(inspected.backend.running ? ['booking-preprod-backend-green-1'] : []),
+    ...(inspected.gateway.running ? ['booking-preprod-gateway-green-1'] : []),
+  ].sort();
+  if (canonicalJson(running) !== canonicalJson(expectedRunning)) {
+    throw new ContractError('unexpected preproduction project container is running before active restore', EXIT.SINGLETON);
+  }
+  const nginxBindDigest = await verifyLegacyNginxBinding(binding, runtime);
+  const database = verifyLegacyDatabaseIdentity(await run(['exec', 'booking-preprod-postgres-1', 'psql', '--no-password',
+    '--tuples-only', '--no-align', '--quiet', '--username', 'booking_preprod', '--dbname', 'booking_preprod', '--command',
+    "SELECT current_database()||'|'||current_user||'|'||(SELECT oid::text FROM pg_database WHERE datname=current_database())||'|'||(to_regclass('public.migrations') IS NULL)::int;"], EXIT.DATABASE), binding);
+  await assertLoopbackPortAvailable(18083, runtime);
+  if (!inspected.gateway.running) await assertLoopbackPortAvailable(18082, runtime);
+  return { predecessors, containers: inspected, networkTopology, runningContainers: running, nginxBindDigest, database,
+    ports: { inactiveAvailable: '127.0.0.1:18083', active: inspected.gateway.running ? '127.0.0.1:18082' : 'available:127.0.0.1:18082' } };
+}
+
+async function verifyLegacyActiveRuntimeArtifacts({ runner, env, timeoutMs, statePath, revalidateLease, preflightEvidence },
+  state, paths, docker, runtime) {
+  const binding = runtime.legacyActiveRuntimeBinding || LEGACY_ACTIVE_RUNTIME_BINDING;
+  const run = async (argv, exitCode = EXIT.IDENTITY) => {
+    const currentTimeout = typeof revalidateLease === 'function' ? revalidateLease().timeoutMs : timeoutMs;
+    const value = await runner(docker, argv, { cwd: paths.releaseDirectory, env, timeoutMs: currentTimeout });
+    assertResult(value, exitCode);
+    return value.stdout;
+  };
+  let inspected;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const stdout = await run(['container', 'inspect', binding.backend.id, binding.gateway.id], EXIT.READINESS);
+    try { inspected = verifyLegacyActiveRuntimeInspect(stdout, state, binding, true); break; }
+    catch (error) {
+      if (attempt === 29 || !/health|identity or isolation/.test(error.message)) throw error;
+      if (typeof revalidateLease === 'function') revalidateLease(1_500);
+      await (runtime.recoveryDelay || delay)(1_000);
+    }
+  }
+  const networkTopology = await inspectLegacyNetworkTopology(run, state, binding, inspected);
+  const running = (await run(['ps', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.Names}}'], EXIT.READINESS))
+    .trim().split(/\r?\n/).filter(Boolean).sort();
+  const expectedRunning = ['booking-preprod-backend-green-1', 'booking-preprod-gateway-green-1', 'booking-preprod-postgres-1', 'booking-preprod-redis-1'].sort();
+  if (canonicalJson(running) !== canonicalJson(expectedRunning)) throw new ContractError('unexpected preproduction project container is running', EXIT.SINGLETON);
+  await assertLoopbackPortAvailable(18083, runtime);
+  await verifyLegacyNginxBinding(binding, runtime);
+  const database = verifyLegacyDatabaseIdentity(await run(['exec', 'booking-preprod-postgres-1', 'psql', '--no-password', '--tuples-only', '--no-align', '--quiet',
+    '--username', 'booking_preprod', '--dbname', 'booking_preprod', '--command',
+    "SELECT current_database()||'|'||current_user||'|'||(SELECT oid::text FROM pg_database WHERE datname=current_database())||'|'||(to_regclass('public.migrations') IS NULL)::int;"], EXIT.DATABASE), binding);
+  const localProbeArgs = [fileURLToPath(new URL('./probe-fenced-candidate.mjs', import.meta.url)), '--base-url', 'http://127.0.0.1:18082',
+    '--release-id', state.active.releaseId, '--git-sha', state.active.gitSha, '--manifest-digest', state.active.manifestDigest, '--slot', state.active.slot];
+  let probe = await runner(process.execPath, localProbeArgs, { cwd: paths.releaseDirectory, env, timeoutMs: typeof revalidateLease === 'function' ? revalidateLease().timeoutMs : timeoutMs });
+  assertResult(probe, EXIT.READINESS);
+  const local = verifyLegacyProbeOutput(probe.stdout, state.active, 'legacy local three-endpoint probe');
+  const publicProbeArgs = [fileURLToPath(new URL('./probe-fenced-public.mjs', import.meta.url)),
+    '--release-id', state.active.releaseId, '--git-sha', state.active.gitSha, '--manifest-digest', state.active.manifestDigest, '--slot', state.active.slot];
+  probe = await runner(process.execPath, publicProbeArgs, { cwd: paths.releaseDirectory, env, timeoutMs: typeof revalidateLease === 'function' ? revalidateLease().timeoutMs : timeoutMs });
+  assertResult(probe, EXIT.READINESS);
+  const ingress = verifyLegacyProbeOutput(probe.stdout, state.active, 'legacy public ingress three-endpoint probe');
+  const telegramScript = "const https=require('https');const token=process.env.TELEGRAM_BOT_TOKEN;if(!token)process.exit(41);const get=(m)=>new Promise((ok,no)=>https.get('https://api.telegram.org/bot'+token+'/'+m,r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>{try{const x=JSON.parse(b);x.ok?ok(x.result):no(Error('api'));}catch(e){no(e)}})}).on('error',no));Promise.all([get('getMe'),get('getWebhookInfo')]).then(([m,w])=>{console.log(JSON.stringify({botId:m.id,botUsername:m.username,webhookUrl:w.url||''}))}).catch(()=>process.exit(42));";
+  const telegramOutput = await run(['exec', binding.backend.id, 'node', '-e', telegramScript], EXIT.INGRESS);
+  const telegram = parseLastJson(telegramOutput, 'legacy Telegram readback did not emit JSON', EXIT.INGRESS);
+  if (telegram.botId !== binding.bot.id || String(telegram.botUsername || '').toLowerCase() !== binding.bot.username.toLowerCase() || telegram.webhookUrl !== '') {
+    throw new ContractError('legacy Telegram bot identity or polling delivery state drifted', EXIT.INGRESS);
+  }
+  return { ...(preflightEvidence ? { predecessors: preflightEvidence } : {}), containers: inspected, networkTopology, runningContainers: running,
+    nginxBindDigest: binding.nginx.digest, database,
+    ports: { active: '127.0.0.1:18082', inactiveAvailable: '127.0.0.1:18083' }, localProbe: local, ingressProbe: ingress,
+    telegram: { botId: telegram.botId, botUsername: telegram.botUsername, mode: 'polling', webhookUrl: '' } };
+}
+
 function receiptRequestBody(receipt) {
-  return { schema: 'booking.fenced-action-request/v1', environment: receipt.environment, project: receipt.project,
+  return { schema: schemaForAction(receipt.action).request, environment: receipt.environment, project: receipt.project,
     action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
     generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
     manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
     runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest };
+}
+
+function assertFixedTelegramFailureReceipt(failed, state, releaseIdentity, binding, expectedResources) {
+  const failureResource = failed?.resources?.[0];
+  if (!failed || failed.receiptDigest !== binding.priorTelegramFailureReceiptDigest ||
+      failed.schema !== schemaForAction('preprod-prepare-telegram-egress').receipt || failed.status !== 'fail' ||
+      failed.environment !== state.environment || failed.project !== state.project || failed.operationId !== state.operationId ||
+      failed.action !== 'preprod-prepare-telegram-egress' || failed.actionId !== binding.priorTelegramActionId ||
+      failed.fencingEpoch !== binding.priorTelegramFencingEpoch || failed.manifestDigest !== releaseIdentity.manifestDigest ||
+      failed.runtimeEnvDigest !== state.runtimeEnvDigest || !DIGEST.test(failed.commandDigest || '') ||
+      canonicalJson(failed.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+      canonicalJson(failed.resourceIds) !== canonicalJson(expectedResources) ||
+      failed.requestDigest !== sha256(receiptRequestBody(failed)) || failed.resources?.length !== 1 ||
+      failureResource?.resourceId !== expectedResources[0] ||
+      failureResource?.highestAcceptedFencingEpoch !== binding.priorTelegramFencingEpoch ||
+      (failureResource.previousReceiptDigest !== null && !DIGEST.test(failureResource.previousReceiptDigest || ''))) {
+    throw new ContractError('Telegram abort fixed prior failure receipt is invalid', EXIT.IDENTITY);
+  }
+  return failureResource.previousReceiptDigest;
+}
+
+function assertTelegramAbortReceipt(receipt, acceptedReceipt, state, releaseIdentity, binding, fixedFailure, expectedResourceId,
+  expectedPreviousReceiptDigest, expectedCommandDigest, expectedPending = null) {
+  const expectedPriorFailure = { action: 'preprod-prepare-telegram-egress', fencingEpoch: binding.priorTelegramFencingEpoch,
+    receiptDigest: binding.priorTelegramFailureReceiptDigest, requestDigest: fixedFailure.requestDigest };
+  const resource = receipt?.resources?.[0];
+  if (!receipt || !acceptedReceipt ||
+      receipt.schema !== schemaForAction('preprod-abort-telegram-egress').receipt || receipt.status !== 'pass' ||
+      receipt.environment !== state.environment || receipt.project !== state.project || receipt.operationId !== state.operationId ||
+      receipt.action !== 'preprod-abort-telegram-egress' || receipt.manifestDigest !== releaseIdentity.manifestDigest ||
+      receipt.runtimeEnvDigest !== state.runtimeEnvDigest || receipt.commandDigest !== expectedCommandDigest ||
+      canonicalJson(receipt.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+      canonicalJson(receipt.resourceIds) !== canonicalJson([expectedResourceId]) ||
+      receipt.requestDigest !== sha256(receiptRequestBody(receipt)) || receipt.resources?.length !== 1 ||
+      resource?.resourceId !== expectedResourceId || resource?.highestAcceptedFencingEpoch !== receipt.fencingEpoch ||
+      resource?.previousReceiptDigest !== expectedPreviousReceiptDigest ||
+      canonicalJson(receipt.verification?.priorFailure) !== canonicalJson(expectedPriorFailure) ||
+      !DIGEST.test(receipt.executionOutputDigest || '') || !DIGEST.test(receipt.readbackOutputDigest || '') ||
+      !Number.isInteger(receipt.fencingEpoch) || receipt.fencingEpoch <= binding.priorTelegramFencingEpoch) {
+    throw new ContractError('Telegram abort prior receipt is not canonically bound to the failed operation', EXIT.IDENTITY);
+  }
+  if (expectedPending && (receipt.actionId !== expectedPending.actionId || receipt.approvalId !== expectedPending.approvalId ||
+      receipt.leaseId !== expectedPending.leaseId || receipt.holderId !== expectedPending.holderId ||
+      receipt.generation !== expectedPending.generation || receipt.fencingEpoch !== expectedPending.fencingEpoch ||
+      receipt.commandDigest !== expectedPending.commandDigest || receipt.requestDigest !== expectedPending.requestDigest)) {
+    throw new ContractError('Telegram abort prior receipt does not match its pending action', EXIT.IDENTITY);
+  }
+  return receipt;
+}
+
+async function assertTelegramAbortReceiptChain(statePath, head, baseHead, state, releaseIdentity, binding, fixedFailure,
+  expectedResourceId, expectedCommandDigest, maximumFencingEpoch) {
+  let cursor = head;
+  let upperFence = maximumFencingEpoch;
+  const visited = new Set();
+  let newest = null;
+  while (cursor !== baseHead) {
+    if (!cursor || visited.has(cursor)) throw new ContractError('Telegram abort receipt chain is incomplete or cyclic', EXIT.IDENTITY);
+    visited.add(cursor);
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, cursor);
+    if (canonical.acceptedReceipt.receiptDigest !== cursor) {
+      throw new ContractError('Telegram abort receipt chain head is not the canonical accepted receipt', EXIT.IDENTITY);
+    }
+    const receipt = assertTelegramAbortReceipt(canonical.receipt, canonical.acceptedReceipt, state, releaseIdentity, binding, fixedFailure,
+      expectedResourceId, canonical.receipt.resources?.[0]?.previousReceiptDigest, expectedCommandDigest);
+    if (receipt.fencingEpoch >= upperFence) throw new ContractError('Telegram abort receipt chain fencing epochs are not strictly increasing', EXIT.IDENTITY);
+    if (!newest) newest = { ...canonical, receipt };
+    upperFence = receipt.fencingEpoch;
+    cursor = receipt.resources[0].previousReceiptDigest;
+  }
+  return newest;
+}
+
+function assertDatabaseAttestationReceipt(receipt, acceptedReceipt, state, releaseIdentity, resourceIds,
+  expectedCommandDigest, expectedFencingEpoch, expectedPending = null, expectedPreviousByResource = null) {
+  const expectedResourceIds = [...resourceIds];
+  const observedResourceIds = [...(receipt?.resourceIds || [])];
+  const receiptResources = receipt?.resources || [];
+  const byResource = new Map(receiptResources.map((resource) => [resource?.resourceId, resource]));
+  const predecessorHeads = new Set(receiptResources.map((resource) => resource?.previousReceiptDigest));
+  if (!receipt || !acceptedReceipt || !DIGEST.test(acceptedReceipt.receiptDigest || '') ||
+      receipt.schema !== schemaForAction('preprod-attest-database-restore').receipt || !['pass', 'fail'].includes(receipt.status) ||
+      receipt.environment !== state.environment || receipt.project !== state.project || receipt.operationId !== state.operationId ||
+      receipt.action !== 'preprod-attest-database-restore' || receipt.manifestDigest !== releaseIdentity.manifestDigest ||
+      receipt.runtimeEnvDigest !== state.runtimeEnvDigest || receipt.commandDigest !== expectedCommandDigest ||
+      receipt.fencingEpoch !== expectedFencingEpoch || canonicalJson(receipt.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+      canonicalJson(observedResourceIds) !== canonicalJson(expectedResourceIds) ||
+      receipt.requestDigest !== sha256(receiptRequestBody(receipt)) || receiptResources.length !== resourceIds.length ||
+      byResource.size !== resourceIds.length || predecessorHeads.size !== 1 || resourceIds.some((resourceId) => {
+        const resource = byResource.get(resourceId);
+        return !resource || resource.highestAcceptedFencingEpoch !== expectedFencingEpoch ||
+          (resource.previousReceiptDigest !== null && !DIGEST.test(resource.previousReceiptDigest || '')) ||
+          (expectedPreviousByResource && resource.previousReceiptDigest !== expectedPreviousByResource.get(resourceId));
+      }) || !DIGEST.test(receipt.executionOutputDigest || '') || !DIGEST.test(receipt.readbackOutputDigest || '')) {
+    throw new ContractError('database restore prior receipt is not canonically bound to the failed operation', EXIT.IDENTITY);
+  }
+  if (expectedPending && (receipt.actionId !== expectedPending.actionId || receipt.approvalId !== expectedPending.approvalId ||
+      receipt.leaseId !== expectedPending.leaseId || receipt.holderId !== expectedPending.holderId ||
+      receipt.generation !== expectedPending.generation || receipt.fencingEpoch !== expectedPending.fencingEpoch ||
+      receipt.commandDigest !== expectedPending.commandDigest || receipt.requestDigest !== expectedPending.requestDigest)) {
+    throw new ContractError('database restore prior receipt does not match its pending action', EXIT.IDENTITY);
+  }
+  return receipt;
+}
+
+async function verifyFixedDatabaseMigrationPredecessor(statePath, state, releaseIdentity, resourceIds, binding, observedHead) {
+  const expandHead = state.evidence.expandMigrationReceiptDigest;
+  const baselineHead = state.evidence.baselineReceiptDigest;
+  if (!DIGEST.test(expandHead || '') || !DIGEST.test(baselineHead || '') || observedHead !== expandHead) {
+    throw new ContractError('database restore fixed predecessor does not match the rooted migration evidence', EXIT.IDENTITY);
+  }
+  const verifyReceipt = async (head, action, previousReceiptDigest) => {
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, head);
+    const receipt = canonical.receipt;
+    const resources = Array.isArray(receipt?.resources) ? receipt.resources : [];
+    const byResource = new Map(resources.map((resource) => [resource?.resourceId, resource]));
+    if (canonical.acceptedReceipt.receiptDigest !== head || receipt?.schema !== schemaForAction(action).receipt ||
+        receipt.status !== 'pass' || receipt.environment !== state.environment || receipt.project !== state.project ||
+        receipt.operationId !== state.operationId || receipt.action !== action || receipt.runtimeEnvDigest !== state.runtimeEnvDigest ||
+        receipt.manifestDigest !== releaseIdentity.manifestDigest || canonicalJson(receipt.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+        canonicalJson(receipt.resourceIds) !== canonicalJson(resourceIds) || receipt.requestDigest !== sha256(receiptRequestBody(receipt)) ||
+        !Number.isInteger(receipt.fencingEpoch) || receipt.fencingEpoch < 1 || receipt.fencingEpoch > binding.forensicFencingEpoch ||
+        resources.length !== resourceIds.length || byResource.size !== resourceIds.length || resourceIds.some((resourceId) => {
+          const resource = byResource.get(resourceId);
+          return !resource || resource.highestAcceptedFencingEpoch !== receipt.fencingEpoch ||
+            resource.previousReceiptDigest !== previousReceiptDigest;
+        })) {
+      throw new ContractError(`database restore fixed ${action} receipt identity is invalid`, EXIT.IDENTITY);
+    }
+    return receipt;
+  };
+  await verifyReceipt(baselineHead, 'preprod-baseline-ledger', null);
+  await verifyReceipt(expandHead, 'preprod-expand-migrate', baselineHead);
+  return expandHead;
+}
+
+async function prepareFailedDatabaseAttestationContinuity({ statePath, state, args, releaseIdentity, resourceIds,
+  locks, requestBody, requestDigest, binding, revalidateLease }) {
+  const resources = [];
+  for (const lock of locks) resources.push(await inspectLockedResourceState(lock, {
+    environment: state.environment, project: state.project, resourceId: lock.resourceId,
+  }));
+  if (resources.some((resource) => resource.operationId !== state.operationId ||
+      resource.manifestDigest !== releaseIdentity.manifestDigest || resource.highestAcceptedFencingEpoch > state.fencingEpoch)) {
+    throw new ContractError('database restore resource identity is not continuous with the failed operation', EXIT.IDENTITY);
+  }
+  const epochs = new Set(resources.map((resource) => resource.highestAcceptedFencingEpoch));
+  if (epochs.size !== 1) throw new ContractError('database restore resources do not share one accepted fencing epoch', EXIT.SINGLETON);
+  if (resources.some((resource) => resource.receiptChainHead !== resources[0].receiptChainHead)) {
+    throw new ContractError('database restore resources do not share one receipt-chain predecessor', EXIT.IDENTITY);
+  }
+  const resourceEpoch = resources[0].highestAcceptedFencingEpoch;
+  const allPending = resources.every((resource) => resource.pendingAction !== null);
+  const allCompleted = resources.every((resource) => resource.pendingAction === null);
+  if (!allPending && !allCompleted) {
+    throw new ContractError('database restore resources disagree on prior action completion', EXIT.SINGLETON);
+  }
+  if (resourceEpoch === state.fencingEpoch) {
+    if (allCompleted) {
+      return { accepted: null, verification: null };
+    }
+    const pending = resources[0].pendingAction;
+    if (resources.some((resource) => canonicalJson(resource.pendingAction) !== canonicalJson(pending)) ||
+        pending.action !== args.action || pending.actionId !== args['action-id'] || pending.requestDigest !== requestDigest ||
+        pending.approvalId !== state.approvalId || pending.leaseId !== state.lease.leaseId ||
+        pending.holderId !== state.lease.holderId || pending.generation !== state.generation ||
+        pending.fencingEpoch !== state.fencingEpoch || pending.commandDigest !== requestBody.commandDigest) {
+      throw new ContractError('database restore current pending resources do not match the requested action', EXIT.IDENTITY);
+    }
+    return { accepted: resources, verification: { mode: 'current-pending-resumed',
+      priorFencingEpoch: state.fencingEpoch, priorReceiptDigest: null } };
+  }
+
+  const nextBinding = (resourceId, now) => ({
+    environment: state.environment, project: state.project, resourceId, fencingEpoch: state.fencingEpoch,
+    operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+    action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+    leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+    commandDigest: requestBody.commandDigest, now,
+  });
+  let mode;
+  let priorReceiptDigest = null;
+
+  if (resourceEpoch <= binding.forensicFencingEpoch) {
+    if (!allCompleted || !DIGEST.test(resources[0].receiptChainHead || '')) {
+      throw new ContractError('database restore fixed-evidence predecessor resources are inconsistent', EXIT.IDENTITY);
+    }
+    priorReceiptDigest = await verifyFixedDatabaseMigrationPredecessor(
+      statePath, state, releaseIdentity, resourceIds, binding, resources[0].receiptChainHead,
+    );
+    mode = 'fixed-evidence-predecessor';
+  } else if (allCompleted) {
+    const head = resources[0].receiptChainHead;
+    if (!DIGEST.test(head || '')) {
+      throw new ContractError('database restore completed prior fence has inconsistent receipt-chain heads', EXIT.IDENTITY);
+    }
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, head);
+    assertDatabaseAttestationReceipt(canonical.receipt, canonical.acceptedReceipt, state, releaseIdentity, resourceIds,
+      requestBody.commandDigest, resourceEpoch);
+    if (canonical.receipt.status !== 'pass') {
+      throw new ContractError('database restore completed prior fence is not backed by a pass receipt', EXIT.IDENTITY);
+    }
+    priorReceiptDigest = canonical.acceptedReceipt.receiptDigest;
+    mode = 'prior-completed-re-attested';
+  } else {
+    const pending = resources[0].pendingAction;
+    if (resources.some((resource) => canonicalJson(resource.pendingAction) !== canonicalJson(pending)) ||
+        pending.action !== args.action || pending.fencingEpoch !== resourceEpoch ||
+        pending.commandDigest !== requestBody.commandDigest) {
+      throw new ContractError('database restore prior pending resources do not share one immutable action identity', EXIT.IDENTITY);
+    }
+    const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+      action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
+      generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
+      manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
+      runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
+    if (pending.requestDigest !== sha256(priorRequest)) {
+      throw new ContractError('database restore prior pending request identity is invalid', EXIT.IDENTITY);
+    }
+    const previousByResource = new Map(resources.map((resource) => [resource.resourceId, resource.receiptChainHead]));
+    const recorded = await readExecutorReceipt(statePath, resourceEpoch, args.action, pending.actionId);
+    if (recorded) {
+      const canonical = await readCanonicalExecutorReceiptByDigest(statePath, recorded.receiptDigest);
+      if (canonicalJson(canonical.receipt) !== canonicalJson(recorded)) {
+        throw new ContractError('database restore prior pending receipt is not canonical', EXIT.IDENTITY);
+      }
+      assertDatabaseAttestationReceipt(recorded, canonical.acceptedReceipt, state, releaseIdentity, resourceIds,
+        requestBody.commandDigest, resourceEpoch, pending, previousByResource);
+      if (recorded.status === 'pass') {
+        for (let index = 0; index < locks.length; index += 1) {
+          const mutationAt = revalidateLease().observedAt;
+          await adoptPriorEpochPendingAction(locks[index], {
+            fencingEpoch: resourceEpoch, pendingAction: structuredClone(resources[index].pendingAction),
+            receiptChainHead: resources[index].receiptChainHead,
+          }, { environment: state.environment, project: state.project, resourceId: resources[index].resourceId,
+            fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+            now: mutationAt.toISOString() }, recorded.receiptDigest);
+        }
+        priorReceiptDigest = recorded.receiptDigest;
+        mode = 'prior-pending-pass-adopted';
+      } else {
+        mode = 'prior-pending-fail-superseded';
+      }
+    } else {
+      mode = 'prior-pending-without-receipt-superseded';
+    }
+    if (mode !== 'prior-pending-pass-adopted') {
+      for (let index = 0; index < locks.length; index += 1) {
+        const mutationAt = revalidateLease().observedAt;
+        await supersedePriorEpochPendingAction(locks[index], {
+          fencingEpoch: resourceEpoch, pendingAction: structuredClone(resources[index].pendingAction),
+          receiptChainHead: resources[index].receiptChainHead,
+        }, nextBinding(resources[index].resourceId, mutationAt.toISOString()));
+      }
+      const accepted = [];
+      for (const lock of locks) accepted.push(await inspectLockedResourceState(lock, {
+        environment: state.environment, project: state.project, resourceId: lock.resourceId,
+      }));
+      return { accepted, verification: { mode, priorFencingEpoch: resourceEpoch, priorReceiptDigest } };
+    }
+  }
+
+  const accepted = [];
+  for (const lock of locks) {
+    const mutationAt = revalidateLease().observedAt;
+    accepted.push(await acceptResourceEpoch(lock, nextBinding(lock.resourceId, mutationAt.toISOString())));
+  }
+  return { accepted, verification: { mode, priorFencingEpoch: resourceEpoch, priorReceiptDigest } };
 }
 
 async function takeoverAdoption(statePath, state, args, releaseIdentity, resourceIds, resourceStates) {
@@ -1372,7 +2548,7 @@ async function takeoverAdoption(statePath, state, args, releaseIdentity, resourc
   const { head, receipt, acceptedReceipt } = matching[0];
   const expectedResources = [...resourceIds].sort();
   const observedResources = [...(receipt.resourceIds || [])].sort();
-  if (acceptedReceipt.receiptDigest !== head || receipt.schema !== 'booking.external-action-receipt/v1' || receipt.status !== 'pass' ||
+  if (acceptedReceipt.receiptDigest !== head || receipt.schema !== schemaForAction(receipt.action).receipt || receipt.status !== 'pass' ||
       receipt.environment !== state.environment || receipt.project !== state.project || receipt.fencingEpoch >= state.fencingEpoch ||
       receipt.actionId === args['action-id'] || receipt.runtimeEnvDigest !== state.runtimeEnvDigest ||
       canonicalJson(receipt.releaseIdentity) !== canonicalJson(releaseIdentity) ||
@@ -1380,6 +2556,208 @@ async function takeoverAdoption(statePath, state, args, releaseIdentity, resourc
     throw new ContractError('prior-fence action receipt does not match the canonical adoption identity', EXIT.SINGLETON);
   }
   return { receipt, acceptedReceipt };
+}
+
+async function recoverPriorActionByDesiredReadback({ statePath, state, args, releaseIdentity, resourceIds,
+  resourceStates, locks, requestBody, requestDigest, plan, runner, runtime, revalidateLease }) {
+  if (!TAKEOVER_ADOPTABLE_ACTIONS.has(args.action) || state.fencingEpoch < 2 || resourceStates.length !== locks.length) return null;
+  if (resourceStates.some((resource) => resource.highestAcceptedFencingEpoch > state.fencingEpoch ||
+      resource.operationId !== state.operationId || resource.manifestDigest !== releaseIdentity.manifestDigest)) return null;
+  const pendingStates = resourceStates.filter((resource) => resource.pendingAction !== null);
+  if (pendingStates.length === 0) return null;
+  const currentPending = pendingStates.filter((resource) => resource.highestAcceptedFencingEpoch === state.fencingEpoch);
+  const priorPending = pendingStates.filter((resource) => resource.highestAcceptedFencingEpoch < state.fencingEpoch);
+  if (currentPending.some((resource) => {
+    const pending = resource.pendingAction;
+    return pending.fencingEpoch !== state.fencingEpoch || pending.action !== args.action || pending.actionId !== args['action-id'] ||
+      pending.requestDigest !== requestDigest || pending.commandDigest !== requestBody.commandDigest ||
+      pending.approvalId !== state.approvalId || pending.leaseId !== state.lease.leaseId ||
+      pending.holderId !== state.lease.holderId || pending.generation !== state.generation;
+  })) {
+    throw new ContractError('current-fence partial accept has conflicting pending identity', EXIT.SINGLETON);
+  }
+  const priorIdentities = new Set(priorPending.map((resource) => canonicalJson(resource.pendingAction)));
+  if (priorIdentities.size > 1 || priorPending.some((resource) => resource.pendingAction.action !== args.action ||
+      resource.pendingAction.fencingEpoch !== resource.highestAcceptedFencingEpoch ||
+      resource.pendingAction.commandDigest !== requestBody.commandDigest)) {
+    throw new ContractError('prior-fence partial action has conflicting pending identities', EXIT.SINGLETON);
+  }
+  for (const resource of priorPending) {
+    const prior = resource.pendingAction;
+    const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+      action: args.action, actionId: prior.actionId, operationId: state.operationId, approvalId: prior.approvalId,
+      generation: prior.generation, fencingEpoch: prior.fencingEpoch, leaseId: prior.leaseId, holderId: prior.holderId,
+      manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
+      runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: prior.commandDigest };
+    if (prior.requestDigest !== sha256(priorRequest)) {
+      throw new ContractError('prior-fence partial action request digest is invalid', EXIT.IDENTITY);
+    }
+  }
+  const pending = priorPending[0]?.pendingAction || currentPending[0]?.pendingAction;
+  const recorded = priorPending.length > 0
+    ? await readExecutorReceipt(statePath, pending.fencingEpoch, args.action, pending.actionId)
+    : null;
+  const receiptMode = recorded?.status || 'missing';
+  if (recorded) {
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, recorded.receiptDigest);
+    if (canonicalJson(canonical.receipt) !== canonicalJson(recorded) || recorded.operationId !== state.operationId ||
+        recorded.fencingEpoch !== pending.fencingEpoch || recorded.requestDigest !== pending.requestDigest ||
+        recorded.commandDigest !== pending.commandDigest || canonicalJson(recorded.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+        canonicalJson([...recorded.resourceIds].sort()) !== canonicalJson([...resourceIds].sort())) {
+      throw new ContractError('prior-fence partial action receipt identity is invalid', EXIT.IDENTITY);
+    }
+  }
+  const completedStates = resourceStates.filter((resource) => resource.pendingAction === null);
+  const completedReceipts = [];
+  for (const resource of completedStates) {
+    if (!resource.receiptChainHead) throw new ContractError('prior-fence partial completion has no receipt-chain head', EXIT.SINGLETON);
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, resource.receiptChainHead);
+    const receipt = canonical.receipt;
+    if (canonical.acceptedReceipt.receiptDigest !== resource.receiptChainHead || receipt.status !== 'pass' ||
+        receipt.action !== args.action || receipt.operationId !== state.operationId ||
+        receipt.manifestDigest !== releaseIdentity.manifestDigest || receipt.fencingEpoch !== resource.highestAcceptedFencingEpoch ||
+        canonicalJson([...receipt.resourceIds].sort()) !== canonicalJson([...resourceIds].sort())) {
+      throw new ContractError('prior-fence partial completion has no canonical pass receipt', EXIT.SINGLETON);
+    }
+    completedReceipts.push(canonical);
+  }
+  let replay;
+  try {
+    replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
+      revalidateLease, statePath, adoptionReceipt: recorded || completedReceipts[0]?.receipt });
+  } catch {
+    throw new ContractError(`prior-fence ${receiptMode} action is not exact desired state; recovery is ambiguous`, EXIT.SINGLETON);
+  }
+  if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+  const completedAt = (await passRegistryGate(plan, revalidateLease)).observedAt;
+  const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
+    startedAt: completedAt.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
+    executionOutputDigest: sha256(''), readbackOutputDigest: replay.readbackOutputDigest,
+    verification: { ...replay.verification, adoption: { mode: 'prior-partial-proven-applied-read-only',
+      priorReceiptMode: receiptMode, priorFencingEpoch: Math.min(...pendingStates.map((resource) => resource.pendingAction.fencingEpoch)),
+      priorRequestDigest: pending.requestDigest,
+      priorReceiptDigest: recorded?.receiptDigest || null } },
+    resources: resourceStates.map((resource) => ({ resourceId: resource.resourceId,
+      highestAcceptedFencingEpoch: state.fencingEpoch, previousReceiptDigest: resource.receiptChainHead })) };
+  const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+  revalidateLease();
+  await writeExecutorReceipt(statePath, receipt);
+  for (let index = 0; index < locks.length; index += 1) {
+    const resource = resourceStates[index];
+    const lock = locks[index];
+    const mutationAt = revalidateLease().observedAt.toISOString();
+    if (resource.pendingAction && resource.highestAcceptedFencingEpoch < state.fencingEpoch) {
+      await adoptPriorEpochPendingAction(lock, { fencingEpoch: resource.highestAcceptedFencingEpoch,
+        pendingAction: structuredClone(resource.pendingAction), receiptChainHead: resource.receiptChainHead }, {
+        environment: state.environment, project: state.project, resourceId: resource.resourceId,
+        fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+        now: mutationAt,
+      }, receipt.receiptDigest);
+    } else if (resource.pendingAction) {
+      await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: resource.resourceId,
+        fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest,
+        now: mutationAt }, receipt.receiptDigest);
+    } else {
+      await acceptResourceEpoch(lock, { environment: state.environment, project: state.project, resourceId: resource.resourceId,
+        fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+        action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+        leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+        commandDigest: requestBody.commandDigest, now: mutationAt });
+      await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: resource.resourceId,
+        fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest,
+        now: revalidateLease().observedAt.toISOString() }, receipt.receiptDigest);
+    }
+  }
+  const currentGroupBinding = { environment: state.environment, project: state.project, operationId: state.operationId,
+    generation: state.generation, fencingEpoch: state.fencingEpoch, action: args.action, actionId: args['action-id'], requestDigest,
+    manifestDigest: releaseIdentity.manifestDigest, approvalId: state.approvalId, leaseId: state.lease.leaseId,
+    holderId: state.lease.holderId, commandDigest: requestBody.commandDigest, now: revalidateLease().observedAt.toISOString() };
+  await finalizeRecoveredResourceActionGroup(statePath, locks, currentGroupBinding, receipt.receiptDigest);
+  return receipt;
+}
+
+async function prepareRetryableProbeContinuity({ statePath, state, args, releaseIdentity, resourceIds, locks,
+  requestBody, requestDigest, priorReceipt, revalidateLease }) {
+  if (!RETRYABLE_READ_ONLY_PROBES.has(args.action)) return null;
+  if (locks.length !== 1 || resourceIds.length !== 1) {
+    throw new ContractError('read-only probe recovery requires exactly one fenced resource', EXIT.SINGLETON);
+  }
+  const resource = await inspectLockedResourceState(locks[0], {
+    environment: state.environment, project: state.project, resourceId: resourceIds[0],
+  }).catch((error) => {
+    if (/has no fencing state/.test(error?.message || '')) return null;
+    throw error;
+  });
+  if (!resource || resource.pendingAction === null) return null;
+  const pending = resource.pendingAction;
+  const priorRequest = {
+    schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+    action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
+    generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
+    manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
+    runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest,
+  };
+  const currentFence = pending.fencingEpoch === state.fencingEpoch;
+  const currentPending = currentFence && pending.actionId === args['action-id'] && pending.requestDigest === requestDigest &&
+    pending.approvalId === state.approvalId && pending.leaseId === state.lease.leaseId &&
+    pending.holderId === state.lease.holderId && pending.generation === state.generation;
+  if (resource.highestAcceptedFencingEpoch !== pending.fencingEpoch || pending.fencingEpoch > state.fencingEpoch ||
+      resource.operationId !== state.operationId || resource.manifestDigest !== releaseIdentity.manifestDigest ||
+      pending.action !== args.action || pending.commandDigest !== requestBody.commandDigest ||
+      pending.requestDigest !== sha256(priorRequest) || (currentFence && !currentPending)) {
+    throw new ContractError('read-only probe pending action identity is inconsistent', EXIT.IDENTITY);
+  }
+  if (resource.receiptChainHead) {
+    const predecessor = await readCanonicalExecutorReceiptByDigest(statePath, resource.receiptChainHead);
+    if (predecessor.acceptedReceipt.receiptDigest !== resource.receiptChainHead || predecessor.receipt.status !== 'pass' ||
+        predecessor.receipt.environment !== state.environment || predecessor.receipt.project !== state.project ||
+        !predecessor.receipt.resourceIds?.includes(resource.resourceId)) {
+      throw new ContractError('read-only probe pending action receipt-chain head is invalid', EXIT.IDENTITY);
+    }
+  }
+  const recorded = currentFence ? priorReceipt : await readExecutorReceipt(
+    statePath, pending.fencingEpoch, args.action, pending.actionId,
+  );
+  if (recorded) {
+    const canonical = await readCanonicalExecutorReceiptByDigest(statePath, recorded.receiptDigest);
+    const recordedResource = recorded.resources?.[0];
+    if (canonical.acceptedReceipt.receiptDigest !== recorded.receiptDigest || canonicalJson(canonical.receipt) !== canonicalJson(recorded) ||
+        recorded.schema !== schemaForAction(args.action).receipt || !['pass', 'fail'].includes(recorded.status) ||
+        recorded.environment !== state.environment || recorded.project !== state.project || recorded.action !== args.action ||
+        recorded.actionId !== pending.actionId || recorded.operationId !== state.operationId ||
+        recorded.approvalId !== pending.approvalId || recorded.generation !== pending.generation ||
+        recorded.fencingEpoch !== pending.fencingEpoch || recorded.leaseId !== pending.leaseId || recorded.holderId !== pending.holderId ||
+        recorded.manifestDigest !== releaseIdentity.manifestDigest || canonicalJson(recorded.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+        canonicalJson(recorded.resourceIds) !== canonicalJson(resourceIds) || recorded.runtimeEnvDigest !== state.runtimeEnvDigest ||
+        recorded.commandDigest !== pending.commandDigest || recorded.requestDigest !== pending.requestDigest ||
+        recorded.requestDigest !== sha256(receiptRequestBody(recorded)) || recorded.resources?.length !== 1 ||
+        recordedResource?.resourceId !== resource.resourceId ||
+        recordedResource?.highestAcceptedFencingEpoch !== pending.fencingEpoch ||
+        recordedResource?.previousReceiptDigest !== resource.receiptChainHead) {
+      throw new ContractError('read-only probe pending receipt is not bound to the exact pending request and chain head', EXIT.IDENTITY);
+    }
+    if (currentFence && recorded.status === 'pass') return null;
+  }
+  if (currentFence) {
+    return { accepted: [resource], verification: { mode: recorded ? 'same-fence-fail-retried' : 'same-fence-missing-retried',
+      priorFencingEpoch: state.fencingEpoch, priorReceiptDigest: recorded?.receiptDigest || null } };
+  }
+  const mutationAt = revalidateLease().observedAt;
+  await supersedePriorEpochPendingAction(locks[0], {
+    fencingEpoch: resource.highestAcceptedFencingEpoch, pendingAction: structuredClone(pending),
+    receiptChainHead: resource.receiptChainHead,
+  }, {
+    environment: state.environment, project: state.project, resourceId: resource.resourceId,
+    fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+    action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+    leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+    commandDigest: requestBody.commandDigest, now: mutationAt.toISOString(),
+  });
+  const accepted = await inspectLockedResourceState(locks[0], {
+    environment: state.environment, project: state.project, resourceId: resource.resourceId,
+  });
+  return { accepted: [accepted], verification: { mode: `cross-fence-${recorded?.status || 'missing'}-superseded-and-retried`,
+    priorFencingEpoch: pending.fencingEpoch, priorReceiptDigest: recorded?.receiptDigest || null } };
 }
 
 function assertResult(result, exitCode) {
@@ -1423,6 +2801,22 @@ async function verifyCurrentExternalState(plan, context) {
   return { verification, readbackOutputDigest: sha256(readback.stdout) };
 }
 
+async function verifyPublishedIngressState(plan, context, receipt) {
+  const leaseWindow = await passRegistryGate(plan, context.revalidateLease);
+  const readback = await context.runner(plan.readback.executable, plan.readback.argv, {
+    cwd: plan.cwd, env: context.env, timeoutMs: leaseWindow.timeoutMs,
+  });
+  assertResult(readback, EXIT.INGRESS);
+  let parsed; try { parsed = JSON.parse(readback.stdout); } catch { throw new ContractError('ingress pass recovery readback is not JSON', EXIT.INGRESS); }
+  const expected = receipt.verification?.runtime;
+  const { observedAt: parsedAt, ...parsedIdentity } = parsed || {};
+  const { observedAt: _expectedAt, ...expectedIdentity } = expected || {};
+  if (!Number.isFinite(Date.parse(parsedAt)) || canonicalJson(parsedIdentity) !== canonicalJson(expectedIdentity)) {
+    throw new ContractError('ingress pass recovery readback drifted from the published proof', EXIT.INGRESS);
+  }
+  return { verification: { runtime: parsed }, readbackOutputDigest: sha256(readback.stdout) };
+}
+
 export async function runFencedAction(args, runtime = {}) {
   validateArgs(args);
   const spec = ACTIONS[args.action];
@@ -1447,28 +2841,418 @@ export async function runFencedAction(args, runtime = {}) {
       const rootedDigest = state.evidence.webhookReceiptDigest;
       if (!rootedDigest) throw new ContractError('OBSERVING has no rooted webhook action to replay', EXIT.INGRESS);
       const { receipt, acceptedReceipt } = await readCanonicalExecutorReceiptByDigest(statePath, rootedDigest);
-      if (acceptedReceipt.receiptDigest !== rootedDigest || receipt.action !== args.action || receipt.actionId !== args['action-id'] ||
+      if (acceptedReceipt.receiptDigest !== rootedDigest || receipt.schema !== schemaForAction(args.action).receipt ||
+          receipt.action !== args.action || receipt.actionId !== args['action-id'] ||
           receipt.operationId !== state.operationId || receipt.fencingEpoch !== state.fencingEpoch) {
         throw new ContractError('OBSERVING permits only exact replay of the rooted webhook action', EXIT.INGRESS);
       }
       rootedWebhookReplay = true;
     }
-    const plan = await (runtime.planBuilder || buildPlan)(state, args, runtime);
-    const requestBody = { schema: 'booking.fenced-action-request/v1', environment: state.environment, project: state.project,
+    const plan = await (runtime.planBuilder || buildPlan)(state, args, { ...runtime, statePath });
+    const requestBody = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
       action: args.action, actionId: args['action-id'], operationId: state.operationId, approvalId: state.approvalId,
       generation: state.generation, fencingEpoch: state.fencingEpoch, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
       manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds, runtimeEnvDigest: state.runtimeEnvDigest,
       commandDigest: commandIdentity(plan) };
     const requestDigest = sha256(requestBody);
     const priorReceipt = await readExecutorReceipt(statePath, state.fencingEpoch, args.action, args['action-id']);
-    if (priorReceipt && ((!rootedWebhookReplay && priorReceipt.requestDigest !== requestDigest) || priorReceipt.status !== 'pass')) {
+    if (priorReceipt && (priorReceipt.schema !== schemaForAction(args.action).receipt ||
+        (!rootedWebhookReplay && priorReceipt.requestDigest !== requestDigest) ||
+        !['pass', 'fail'].includes(priorReceipt.status))) {
       throw new ContractError('existing action receipt does not match this request', EXIT.SINGLETON);
     }
     const locks = await acquireResourceLocks(statePath, resourceIds);
     try {
       const runner = runtime.commandRunner || defaultCommandRunner;
       await passRegistryGate(plan, revalidateLease);
-      if (priorReceipt) {
+      const probeContinuity = spec.kind === 'release-probe' && priorReceipt?.status !== 'pass'
+        ? await prepareRetryableProbeContinuity({ statePath, state, args, releaseIdentity, resourceIds, locks,
+          requestBody, requestDigest, priorReceipt, revalidateLease })
+        : null;
+      const reconcileBinding = {
+        environment: state.environment, project: state.project, fencingEpoch: state.fencingEpoch,
+        operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+        action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+        leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+        commandDigest: requestBody.commandDigest, now: firstNow.toISOString(),
+      };
+      const ambiguousGroup = priorReceipt?.status === 'pass' ? null
+        : await readResourceActionGroup(statePath, reconcileBinding, resourceIds);
+      let resumeUnstartedGroup = null;
+      if (ambiguousGroup && ['MUTATING', 'EXECUTING', 'RECEIPT_WRITTEN'].includes(ambiguousGroup.value.phase) && priorReceipt?.status !== 'pass') {
+        const resources = [];
+        for (const lock of locks) {
+          const resource = await inspectLockedResourceState(lock, { ...reconcileBinding, resourceId: lock.resourceId });
+          const pending = resource.pendingAction;
+          if (resource.highestAcceptedFencingEpoch !== state.fencingEpoch || resource.operationId !== state.operationId ||
+              resource.manifestDigest !== releaseIdentity.manifestDigest || pending?.action !== args.action ||
+              pending.actionId !== args['action-id'] || pending.requestDigest !== requestDigest ||
+              pending.commandDigest !== requestBody.commandDigest || pending.groupDigest !== ambiguousGroup.value.groupDigest) {
+            throw new ContractError('ambiguous action-group resource identity drifted', EXIT.SINGLETON);
+          }
+          resources.push(resource);
+        }
+        let replay;
+        try {
+          replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
+            revalidateLease, statePath, adoptionReceipt: priorReceipt });
+        } catch {
+          if (ambiguousGroup.value.phase === 'MUTATING' && !priorReceipt) {
+            // MUTATING is deliberately before the durable dispatch boundary.
+            // It proves a crash occurred before any command dispatch was
+            // recorded, so this exact group may consume its one dispatch.
+            resumeUnstartedGroup = { group: ambiguousGroup, resources };
+          } else if (ambiguousGroup.value.phase === 'RECEIPT_WRITTEN' && priorReceipt?.status === 'fail' &&
+              ['ACCEPTED', 'MUTATING'].includes(ambiguousGroup.value.receiptFromPhase) &&
+              ambiguousGroup.value.receiptDigest === priorReceipt.receiptDigest) {
+            reconcileBinding.now = revalidateLease().observedAt.toISOString();
+            await resumeResourceActionGroupBeforeDispatch(statePath, reconcileBinding, resourceIds, priorReceipt.receiptDigest);
+            resumeUnstartedGroup = { group: ambiguousGroup, resources };
+          } else {
+            throw new ContractError('ambiguous action-group is not exact desired state; automatic mutation is forbidden', EXIT.SINGLETON);
+          }
+        }
+        if (replay) {
+          if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+          const completedAt = (await passRegistryGate(plan, revalidateLease)).observedAt;
+          const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
+            startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
+            executionOutputDigest: sha256(''), readbackOutputDigest: replay.readbackOutputDigest,
+            verification: { ...replay.verification, reconcile: { mode: 'same-fence-proven-applied-read-only',
+              priorReceiptMode: priorReceipt?.status || 'missing', groupDigest: ambiguousGroup.value.groupDigest } },
+            resources: resources.map((resource) => ({ resourceId: resource.resourceId,
+              highestAcceptedFencingEpoch: state.fencingEpoch, previousReceiptDigest: resource.receiptChainHead })) };
+          const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+          revalidateLease();
+          await writeExecutorReceipt(statePath, receipt);
+          reconcileBinding.now = revalidateLease().observedAt.toISOString();
+          await reconcileResourceActionGroupReceipt(statePath, reconcileBinding, resourceIds, receipt.receiptDigest);
+          await completeResourceActionGroup(statePath, locks, reconcileBinding, receipt.receiptDigest);
+          return receipt;
+        }
+      }
+      if (args.action === 'preprod-abort-telegram-egress') {
+        if (locks.length !== 1) throw new ContractError('Telegram abort requires exactly one fenced resource', EXIT.SINGLETON);
+        const recoveryBinding = runtime.failedRestoreBinding || FAILED_RESTORE_BINDING;
+        if (state.operationId !== recoveryBinding.operationId || releaseIdentity.manifestDigest !== recoveryBinding.manifestDigest) {
+          throw new ContractError('Telegram abort is not bound to this failed operation', EXIT.IDENTITY);
+        }
+        const failed = await readExecutorReceipt(statePath, recoveryBinding.priorTelegramFencingEpoch,
+          'preprod-prepare-telegram-egress', recoveryBinding.priorTelegramActionId);
+        const expectedResources = [`telegram:${state.project}`];
+        const canonicalFailure = failed ? await readCanonicalExecutorReceiptByDigest(statePath, failed.receiptDigest) : null;
+        if (!canonicalFailure || canonicalFailure.acceptedReceipt.receiptDigest !== failed?.receiptDigest ||
+            canonicalJson(canonicalFailure.receipt) !== canonicalJson(failed)) {
+          throw new ContractError('Telegram abort fixed prior failure receipt is not canonical', EXIT.IDENTITY);
+        }
+        const baseReceiptChainHead = assertFixedTelegramFailureReceipt(failed, state, releaseIdentity, recoveryBinding, expectedResources);
+        let resource = await inspectLockedResourceState(locks[0], {
+          environment: state.environment, project: state.project, resourceId: locks[0].resourceId,
+        });
+        if (resource.operationId !== state.operationId || resource.manifestDigest !== releaseIdentity.manifestDigest ||
+            resource.highestAcceptedFencingEpoch > state.fencingEpoch) {
+          throw new ContractError('Telegram abort resource identity is not continuous with the failed operation', EXIT.IDENTITY);
+        }
+        let pending = resource.pendingAction;
+        const currentPending = resource.highestAcceptedFencingEpoch === state.fencingEpoch &&
+          pending?.action === args.action && pending.actionId === args['action-id'] && pending.requestDigest === requestDigest &&
+          pending.approvalId === state.approvalId && pending.leaseId === state.lease.leaseId && pending.holderId === state.lease.holderId &&
+          pending.generation === state.generation && pending.fencingEpoch === state.fencingEpoch && pending.commandDigest === requestBody.commandDigest;
+        if (priorReceipt) {
+          const direct = await readCanonicalExecutorReceiptByDigest(statePath, priorReceipt.receiptDigest);
+          if (canonicalJson(direct.receipt) !== canonicalJson(priorReceipt)) {
+            throw new ContractError('Telegram abort current receipt is not canonical', EXIT.IDENTITY);
+          }
+          if (currentPending) {
+            assertTelegramAbortReceipt(priorReceipt, direct.acceptedReceipt, state, releaseIdentity, recoveryBinding, failed,
+              resource.resourceId, resource.receiptChainHead, requestBody.commandDigest, pending);
+          } else {
+            const newest = resource.pendingAction === null && resource.highestAcceptedFencingEpoch === state.fencingEpoch
+              ? await assertTelegramAbortReceiptChain(statePath, resource.receiptChainHead, baseReceiptChainHead, state,
+                releaseIdentity, recoveryBinding, failed, resource.resourceId, requestBody.commandDigest, state.fencingEpoch + 1)
+              : null;
+            if (!newest || newest.acceptedReceipt.receiptDigest !== resource.receiptChainHead ||
+                newest.receipt.receiptDigest !== priorReceipt.receiptDigest || newest.receipt.requestDigest !== requestDigest) {
+              throw new ContractError('Telegram abort completed resource does not match the current receipt', EXIT.IDENTITY);
+            }
+          }
+        } else if (!currentPending) {
+          if (resource.highestAcceptedFencingEpoch >= state.fencingEpoch) {
+            throw new ContractError('Telegram abort current resource has no matching pending action or receipt', EXIT.SINGLETON);
+          }
+          const prior = { fencingEpoch: resource.highestAcceptedFencingEpoch,
+            pendingAction: pending === null ? null : structuredClone(pending), receiptChainHead: resource.receiptChainHead };
+          const newest = await assertTelegramAbortReceiptChain(statePath, resource.receiptChainHead, baseReceiptChainHead, state,
+            releaseIdentity, recoveryBinding, failed, resource.resourceId, requestBody.commandDigest, state.fencingEpoch);
+          const nextBinding = {
+            environment: state.environment, project: state.project, resourceId: resource.resourceId,
+            fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+            action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+            leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+            commandDigest: requestBody.commandDigest, now: revalidateLease().observedAt.toISOString(),
+          };
+          if (pending?.action === 'preprod-prepare-telegram-egress') {
+            if (resource.highestAcceptedFencingEpoch !== recoveryBinding.priorTelegramFencingEpoch ||
+                resource.receiptChainHead !== baseReceiptChainHead || pending.actionId !== recoveryBinding.priorTelegramActionId ||
+                pending.fencingEpoch !== recoveryBinding.priorTelegramFencingEpoch || failed.action !== pending.action ||
+                failed.actionId !== pending.actionId || failed.approvalId !== pending.approvalId || failed.leaseId !== pending.leaseId ||
+                failed.holderId !== pending.holderId || failed.generation !== pending.generation ||
+                failed.fencingEpoch !== pending.fencingEpoch || failed.commandDigest !== pending.commandDigest ||
+                failed.requestDigest !== pending.requestDigest) {
+              throw new ContractError('Telegram abort prior failure receipt does not match the pending action', EXIT.IDENTITY);
+            }
+            await supersedePriorEpochPendingAction(locks[0], prior, nextBinding);
+          } else if (pending?.action === args.action) {
+            const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+              action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
+              generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
+              manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds: expectedResources,
+              runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
+            if (pending.fencingEpoch !== resource.highestAcceptedFencingEpoch || pending.commandDigest !== requestBody.commandDigest ||
+                pending.requestDigest !== sha256(priorRequest)) {
+              throw new ContractError('Telegram abort prior pending request identity is invalid', EXIT.IDENTITY);
+            }
+            const completedPending = await readExecutorReceipt(statePath, pending.fencingEpoch, args.action, pending.actionId);
+            if (completedPending) {
+              if (completedPending.status !== 'pass') throw new ContractError('Telegram abort prior pending receipt is not a pass', EXIT.IDENTITY);
+              const canonical = await readCanonicalExecutorReceiptByDigest(statePath, completedPending.receiptDigest);
+              if (canonicalJson(canonical.receipt) !== canonicalJson(completedPending)) {
+                throw new ContractError('Telegram abort prior pending receipt is not canonical', EXIT.IDENTITY);
+              }
+              assertTelegramAbortReceipt(completedPending, canonical.acceptedReceipt, state, releaseIdentity, recoveryBinding, failed,
+                resource.resourceId, resource.receiptChainHead, requestBody.commandDigest, pending);
+              await adoptPriorEpochPendingAction(locks[0], prior, { environment: state.environment, project: state.project,
+                resourceId: resource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+                manifestDigest: releaseIdentity.manifestDigest, now: nextBinding.now }, completedPending.receiptDigest);
+              const adopted = await inspectLockedResourceState(locks[0], { environment: state.environment, project: state.project,
+                resourceId: resource.resourceId });
+              await acceptResourceEpoch(locks[0], { ...nextBinding, now: revalidateLease().observedAt.toISOString() });
+              if (adopted.receiptChainHead !== completedPending.receiptDigest) {
+                throw new ContractError('Telegram abort prior receipt was not adopted into the resource chain', EXIT.IDENTITY);
+              }
+            } else {
+              await supersedePriorEpochPendingAction(locks[0], prior, nextBinding);
+            }
+          } else if (pending === null) {
+            if (!newest || newest.acceptedReceipt.receiptDigest !== resource.receiptChainHead ||
+                newest.receipt.fencingEpoch !== resource.highestAcceptedFencingEpoch) {
+              throw new ContractError('Telegram abort completed prior fence has no canonical receipt-chain head', EXIT.IDENTITY);
+            }
+            await acceptResourceEpoch(locks[0], nextBinding);
+          } else {
+            throw new ContractError('Telegram abort cannot bind the prior pending action', EXIT.SINGLETON);
+          }
+          resource = await inspectLockedResourceState(locks[0], { environment: state.environment, project: state.project,
+            resourceId: resource.resourceId });
+          pending = resource.pendingAction;
+          if (resource.highestAcceptedFencingEpoch !== state.fencingEpoch || pending?.actionId !== args['action-id'] ||
+              pending.requestDigest !== requestDigest || pending.commandDigest !== requestBody.commandDigest) {
+            throw new ContractError('Telegram abort takeover did not establish the current fenced pending action', EXIT.SINGLETON);
+          }
+        }
+        if (priorReceipt) {
+          // The generic replay path below performs the same fresh absence readback and closes any current-fence pending state.
+        } else {
+        let execution; let readback; let verification; let completedAt;
+        try {
+          let leaseWindow = await passRegistryGate(plan, revalidateLease);
+          const before = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd,
+            env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
+          assertResult(before, EXIT.SINGLETON);
+          let alreadyAbsent = null;
+          try { alreadyAbsent = plan.readback.verify(before.stdout); } catch { /* Existing target must be inspected before removal. */ }
+          let executionVerification = null;
+          if (!alreadyAbsent) {
+            if (!plan.preflight) throw new ContractError('Telegram abort requires exact target preflight', EXIT.IDENTITY);
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
+            const preflight = await runner(plan.preflight.executable, plan.preflight.argv, { cwd: plan.cwd,
+              env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
+            assertResult(preflight, EXIT.IDENTITY);
+            const target = plan.preflight.verify(preflight.stdout);
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
+            const immediate = await runner(plan.preflight.executable, plan.preflight.argv, { cwd: plan.cwd,
+              env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
+            assertResult(immediate, EXIT.IDENTITY);
+            const immediateTarget = plan.preflight.verify(immediate.stdout);
+            if (canonicalJson(immediateTarget) !== canonicalJson(target)) {
+              throw new ContractError('Telegram egress abort target changed between identity checks', EXIT.IDENTITY);
+            }
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
+            const removeByIdArgv = ['container', 'rm', '--force', target.containerId];
+            execution = await runner(plan.executable, removeByIdArgv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
+              timeoutMs: leaseWindow.timeoutMs });
+            assertResult(execution, EXIT.SINGLETON);
+            if (execution.stdout.trim() !== target.containerId) {
+              throw new ContractError('Telegram egress abort removed-container ID does not match the twice-inspected target', EXIT.IDENTITY);
+            }
+            executionVerification = { ...(plan.verifyExecution ? plan.verifyExecution(execution.stdout) : {}), target };
+          } else {
+            execution = { stdout: '', exitCode: 0, signal: null, overflow: false };
+          }
+          leaseWindow = await passRegistryGate(plan, revalidateLease);
+          readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd,
+            env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
+          assertResult(readback, EXIT.SINGLETON);
+          verification = { ...(executionVerification ? { execution: executionVerification } : {}), runtime: plan.readback.verify(readback.stdout),
+            reconcile: { mode: alreadyAbsent ? 'already-absent-idempotent-pass' : 'exact-container-force-removed' },
+            priorFailure: { action: 'preprod-prepare-telegram-egress', fencingEpoch: recoveryBinding.priorTelegramFencingEpoch,
+              receiptDigest: failed.receiptDigest, requestDigest: failed.requestDigest } };
+          if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+          completedAt = (await passRegistryGate(plan, revalidateLease)).observedAt;
+        } catch (error) {
+          throw error;
+        }
+        const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
+          startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
+          executionOutputDigest: sha256(execution.stdout), readbackOutputDigest: sha256(readback.stdout), verification,
+          resources: [{ resourceId: resource.resourceId, highestAcceptedFencingEpoch: state.fencingEpoch,
+            previousReceiptDigest: resource.receiptChainHead }] };
+        const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+        revalidateLease();
+        await writeExecutorReceipt(statePath, receipt);
+        const mutationAt = revalidateLease().observedAt;
+        await completeResourceAction(locks[0], { environment: state.environment, project: state.project,
+          resourceId: resource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+          actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
+        return receipt;
+        }
+      }
+      let failedDatabaseContinuity = null;
+      if (args.action === 'preprod-attest-database-restore') {
+        const recoveryBinding = runtime.failedRestoreBinding || FAILED_RESTORE_BINDING;
+        if (state.operationId !== recoveryBinding.operationId || releaseIdentity.manifestDigest !== recoveryBinding.manifestDigest ||
+            !Number.isInteger(recoveryBinding.forensicFencingEpoch) || state.fencingEpoch <= recoveryBinding.forensicFencingEpoch) {
+          throw new ContractError('failed database recovery continuity is not bound to the fixed restore evidence', EXIT.IDENTITY);
+        }
+        failedDatabaseContinuity = await prepareFailedDatabaseAttestationContinuity({ statePath, state, args, releaseIdentity,
+          resourceIds, locks, requestBody, requestDigest, binding: recoveryBinding, revalidateLease });
+        if (priorReceipt) {
+          const canonical = await readCanonicalExecutorReceiptByDigest(statePath, priorReceipt.receiptDigest);
+          if (canonicalJson(canonical.receipt) !== canonicalJson(priorReceipt)) {
+            throw new ContractError('database restore current receipt is not canonical', EXIT.IDENTITY);
+          }
+          assertDatabaseAttestationReceipt(priorReceipt, canonical.acceptedReceipt, state, releaseIdentity, resourceIds,
+            requestBody.commandDigest, state.fencingEpoch);
+          if (priorReceipt.status !== 'pass') {
+            throw new ContractError('database restore current receipt is not a pass', EXIT.IDENTITY);
+          }
+        }
+      }
+      if (args.action === 'preprod-restore-active-runtime' && !priorReceipt) {
+        const resourceStates = [];
+        for (const lock of locks) resourceStates.push(await readRecoveryResourceState(statePath, state, lock.resourceId, true,
+          [state.resources.edgeNetwork, state.resources.ingressRef].includes(lock.resourceId)));
+        const pendingStates = resourceStates.filter((resource) => resource.pendingAction !== null);
+        if (pendingStates.length !== 0) {
+          const priorPendingDigests = new Set();
+          for (const resource of pendingStates) {
+            const pending = resource.pendingAction;
+            const pendingRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+              action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
+              generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
+              manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
+              runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
+            const currentPending = pending.fencingEpoch === state.fencingEpoch && pending.actionId === args['action-id'] &&
+              pending.approvalId === state.approvalId && pending.leaseId === state.lease.leaseId &&
+              pending.holderId === state.lease.holderId && pending.generation === state.generation && pending.requestDigest === requestDigest;
+            if (resource.highestAcceptedFencingEpoch !== pending.fencingEpoch || resource.operationId !== state.operationId ||
+                resource.manifestDigest !== releaseIdentity.manifestDigest || pending.action !== args.action ||
+                pending.commandDigest !== requestBody.commandDigest || pending.fencingEpoch > state.fencingEpoch ||
+                pending.requestDigest !== sha256(pendingRequest) || (pending.fencingEpoch === state.fencingEpoch && !currentPending)) {
+              throw new ContractError('active runtime restore pending resource identity is inconsistent', EXIT.SINGLETON);
+            }
+            if (!currentPending) priorPendingDigests.add(pending.requestDigest);
+          }
+          if (priorPendingDigests.size > 1) throw new ContractError('active runtime restore has conflicting prior pending attempts', EXIT.SINGLETON);
+          let completedPrior = null;
+          for (const resource of resourceStates.filter((item) => item.pendingAction === null &&
+            item.manifestDigest === releaseIdentity.manifestDigest && item.receiptChainHead)) {
+            const canonical = await readCanonicalExecutorReceiptByDigest(statePath, resource.receiptChainHead);
+            if (canonical.receipt.action === args.action && canonical.receipt.operationId === state.operationId) {
+              if (completedPrior && completedPrior.receipt.receiptDigest !== canonical.receipt.receiptDigest) {
+                throw new ContractError('active runtime restore has conflicting completed prior receipts', EXIT.SINGLETON);
+              }
+              completedPrior = canonical;
+            }
+          }
+          let preflightEvidence = null;
+          if (plan.preflightArtifacts) {
+            const leaseWindow = revalidateLease(1_000);
+            preflightEvidence = await plan.preflightArtifacts({ runner, env: plan.env || runtime.env || process.env,
+              timeoutMs: leaseWindow.timeoutMs, revalidateLease, statePath, recoveryPending: true,
+              adoptionReceipt: completedPrior?.receipt });
+          }
+          const runtimeSnapshot = preflightEvidence?.containers;
+          const hasRuntimeSnapshot = typeof runtimeSnapshot?.backend?.running === 'boolean' &&
+            typeof runtimeSnapshot?.gateway?.running === 'boolean';
+          const externalStateComplete = hasRuntimeSnapshot && runtimeSnapshot.backend.running && runtimeSnapshot.gateway.running;
+          const mustReadOnlyRecover = hasRuntimeSnapshot
+            ? externalStateComplete
+            : (priorPendingDigests.size === 1 || completedPrior !== null || pendingStates.length === locks.length);
+          let replay = null;
+          if (mustReadOnlyRecover) {
+            replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
+              revalidateLease, statePath, recoveryPending: true, adoptionReceipt: completedPrior?.receipt });
+          }
+          for (let index = 0; index < locks.length; index += 1) {
+            const mutationAt = revalidateLease().observedAt.toISOString();
+            const resource = resourceStates[index];
+            const binding = { environment: state.environment, project: state.project, resourceId: resource.resourceId,
+              fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+              allowedPreviousManifestDigest: state.candidate?.manifestDigest, action: args.action, actionId: args['action-id'],
+              requestDigest, approvalId: state.approvalId, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
+              generation: state.generation, commandDigest: requestBody.commandDigest, now: mutationAt };
+            if (resource.pendingAction?.fencingEpoch === state.fencingEpoch) continue;
+            if (resource.pendingAction) {
+              await supersedePriorEpochPendingAction(locks[index], { fencingEpoch: resource.highestAcceptedFencingEpoch,
+                pendingAction: structuredClone(resource.pendingAction), receiptChainHead: resource.receiptChainHead }, binding);
+            } else {
+              await acceptResourceEpoch(locks[index], binding);
+            }
+          }
+          let executionOutput = '';
+          if (!mustReadOnlyRecover) {
+            let leaseWindow = await passRegistryGate(plan, revalidateLease, 1_000);
+            const execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
+              timeoutMs: leaseWindow.timeoutMs });
+            assertResult(execution, EXIT.SWITCH);
+            executionOutput = execution.stdout;
+            const executionVerification = plan.verifyExecution ? plan.verifyExecution(execution.stdout) : null;
+            leaseWindow = await passRegistryGate(plan, revalidateLease);
+            const readback = await runner(plan.readback.executable, plan.readback.argv, { cwd: plan.cwd,
+              env: plan.env || runtime.env || process.env, timeoutMs: leaseWindow.timeoutMs });
+            assertResult(readback, EXIT.READINESS);
+            const verification = { ...(executionVerification ? { execution: executionVerification } : {}), runtime: plan.readback.verify(readback.stdout) };
+            if (plan.verifyArtifacts) verification.artifacts = await plan.verifyArtifacts({ runner,
+              env: plan.env || runtime.env || process.env, timeoutMs: revalidateLease().timeoutMs, statePath, revalidateLease,
+              preflightEvidence });
+            replay = { verification, readbackOutputDigest: sha256(readback.stdout) };
+          }
+          const completedAt = revalidateLease().observedAt;
+          const priorPendingDigest = [...priorPendingDigests][0] || pendingStates[0].pendingAction.requestDigest;
+          const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
+            startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
+            executionOutputDigest: sha256(executionOutput), readbackOutputDigest: replay.readbackOutputDigest,
+            verification: { ...replay.verification, adoption: { mode: mustReadOnlyRecover
+              ? 'prior-pending-proven-applied-read-only' : (hasRuntimeSnapshot
+                ? 'fixed-container-idempotent-start-retried' : 'partial-current-fence-accept-completed-before-start'),
+              priorFencingEpoch: Math.min(...pendingStates.map((resource) => resource.pendingAction.fencingEpoch)),
+              priorRequestDigest: priorPendingDigest } },
+            resources: resourceStates.map((resource) => ({ resourceId: resource.resourceId,
+              highestAcceptedFencingEpoch: state.fencingEpoch, previousReceiptDigest: resource.receiptChainHead })) };
+          const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
+          revalidateLease();
+          await writeExecutorReceipt(statePath, receipt);
+          for (const lock of locks) {
+            const mutationAt = revalidateLease().observedAt;
+            await completeResourceAction(lock, { environment: state.environment, project: state.project,
+              resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+              actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
+          }
+          return receipt;
+        }
+      }
+      if (priorReceipt?.status === 'pass') {
         if (spec.kind.includes('ingress') && locks.length === 1) {
           const priorEpochResource = await inspectLockedResourceState(locks[0], {
             environment: state.environment, project: state.project, resourceId: locks[0].resourceId,
@@ -1518,6 +3302,100 @@ export async function runFencedAction(args, runtime = {}) {
             return priorReceipt;
           }
         }
+        {
+          const vectorStates = [];
+          for (const lock of locks) vectorStates.push(await inspectLockedResourceState(lock, {
+            environment: state.environment, project: state.project, resourceId: lock.resourceId,
+          }));
+          if (vectorStates.some((resource) => resource.highestAcceptedFencingEpoch < state.fencingEpoch)) {
+            const canonicalPass = await readCanonicalExecutorReceiptByDigest(statePath, priorReceipt.receiptDigest);
+            const vector = new Map((priorReceipt.resources || []).map((item) => [item.resourceId, item]));
+            if (canonicalPass.acceptedReceipt.receiptDigest !== priorReceipt.receiptDigest ||
+                canonicalJson(canonicalPass.receipt) !== canonicalJson(priorReceipt) || vector.size !== resourceIds.length ||
+                resourceIds.some((resourceId) => !vector.has(resourceId))) {
+              throw new ContractError('published pass recovery vector is not canonical or complete', EXIT.IDENTITY);
+            }
+            for (const resource of vectorStates) {
+              const expected = vector.get(resource.resourceId);
+              if (resource.operationId !== state.operationId || resource.manifestDigest !== releaseIdentity.manifestDigest ||
+                  resource.highestAcceptedFencingEpoch > state.fencingEpoch ||
+                  resource.receiptChainHead !== expected.previousReceiptDigest) {
+                // A resource already completed by this pass is the sole
+                // exception to the vector's predecessor head.
+                if (!(resource.highestAcceptedFencingEpoch === state.fencingEpoch && resource.pendingAction === null &&
+                    resource.receiptChainHead === priorReceipt.receiptDigest)) {
+                  throw new ContractError(`resource ${resource.resourceId} drifted from the published pass recovery vector`, EXIT.SINGLETON);
+                }
+              }
+              if (resource.pendingAction) {
+                const pending = resource.pendingAction;
+                if (pending.action !== args.action || pending.fencingEpoch !== resource.highestAcceptedFencingEpoch) {
+                  throw new ContractError(`resource ${resource.resourceId} pending identity conflicts with the published pass`, EXIT.IDENTITY);
+                }
+                if (resource.highestAcceptedFencingEpoch === state.fencingEpoch) {
+                  if (pending.commandDigest !== requestBody.commandDigest || pending.actionId !== args['action-id'] || pending.requestDigest !== requestDigest ||
+                      pending.approvalId !== state.approvalId || pending.leaseId !== state.lease.leaseId ||
+                      pending.holderId !== state.lease.holderId || pending.generation !== state.generation) {
+                    throw new ContractError(`resource ${resource.resourceId} current pending identity conflicts with the published pass`, EXIT.IDENTITY);
+                  }
+                } else {
+                  if (spec.kind.includes('ingress') && pending.requestDigest !== priorReceipt.verification?.adoption?.priorRequestDigest) {
+                    throw new ContractError(`resource ${resource.resourceId} prior ingress pending identity conflicts with the published pass`, EXIT.IDENTITY);
+                  }
+                  const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
+                    action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
+                    generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId,
+                    holderId: pending.holderId, manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
+                    runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
+                  if (pending.requestDigest !== sha256(priorRequest)) {
+                    throw new ContractError(`resource ${resource.resourceId} prior pending request is invalid`, EXIT.IDENTITY);
+                  }
+                }
+              } else if (resource.highestAcceptedFencingEpoch < state.fencingEpoch &&
+                  resource.receiptChainHead !== expected.previousReceiptDigest) {
+                throw new ContractError(`resource ${resource.resourceId} prior completion is outside the published pass vector`, EXIT.SINGLETON);
+              }
+            }
+            const replayContext = { runner, env: plan.env || runtime.env || process.env,
+              revalidateLease, statePath, adoptionReceipt: priorReceipt };
+            const replay = spec.kind.includes('ingress')
+              ? await verifyPublishedIngressState(plan, replayContext, priorReceipt)
+              : await verifyCurrentExternalState(plan, replayContext);
+            if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
+            await passRegistryGate(plan, revalidateLease);
+            for (let index = 0; index < locks.length; index += 1) {
+              const lock = locks[index];
+              const resource = vectorStates[index];
+              if (resource.highestAcceptedFencingEpoch === state.fencingEpoch && resource.pendingAction === null) continue;
+              const mutationAt = revalidateLease().observedAt.toISOString();
+              if (resource.highestAcceptedFencingEpoch < state.fencingEpoch && resource.pendingAction) {
+                await adoptPriorEpochPendingAction(lock, { fencingEpoch: resource.highestAcceptedFencingEpoch,
+                  pendingAction: structuredClone(resource.pendingAction), receiptChainHead: resource.receiptChainHead }, {
+                  environment: state.environment, project: state.project, resourceId: resource.resourceId,
+                  fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+                  now: mutationAt }, priorReceipt.receiptDigest);
+              } else {
+                if (resource.highestAcceptedFencingEpoch < state.fencingEpoch) {
+                  await acceptResourceEpoch(lock, { environment: state.environment, project: state.project,
+                    resourceId: resource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+                    manifestDigest: releaseIdentity.manifestDigest, action: args.action, actionId: args['action-id'], requestDigest,
+                    approvalId: state.approvalId, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
+                    generation: state.generation, commandDigest: requestBody.commandDigest, now: mutationAt });
+                }
+                await completeResourceAction(lock, { environment: state.environment, project: state.project,
+                  resourceId: resource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+                  actionId: args['action-id'], requestDigest, now: revalidateLease().observedAt.toISOString() },
+                priorReceipt.receiptDigest);
+              }
+              if (runtime.afterPublishedPassResourceRecovery) await runtime.afterPublishedPassResourceRecovery({
+                recoveredCount: index + 1, resourceId: resource.resourceId,
+              });
+            }
+            reconcileBinding.now = revalidateLease().observedAt.toISOString();
+            await finalizeRecoveredResourceActionGroup(statePath, locks, reconcileBinding, priorReceipt.receiptDigest);
+            return priorReceipt;
+          }
+        }
         const resourceStates = [];
         const acceptedPriorReceiptDigests = new Set([priorReceipt.receiptDigest]);
         for (const lock of locks) {
@@ -1555,20 +3433,57 @@ export async function runFencedAction(args, runtime = {}) {
               fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() },
             [...acceptedPriorReceiptDigests], recoveryReceipt.receiptDigest);
           }
+          reconcileBinding.now = revalidateLease().observedAt.toISOString();
+          await finalizeRecoveredResourceActionGroup(statePath, locks, reconcileBinding, recoveryReceipt.receiptDigest);
           return recoveryReceipt;
+        }
+        if (priorReceipt.requestDigest === requestDigest) {
+          reconcileBinding.now = revalidateLease().observedAt.toISOString();
+          await finalizeRecoveredResourceActionGroup(statePath, locks, reconcileBinding, priorReceipt.receiptDigest);
         }
         return priorReceipt;
       }
       if (spec.kind.includes('ingress') && state.fencingEpoch >= 2) {
-        const priorResource = await inspectLockedResourceState(locks[0], {
-          environment: state.environment, project: state.project, resourceId: locks[0].resourceId,
-        });
-        if (priorResource.pendingAction !== null && priorResource.highestAcceptedFencingEpoch < state.fencingEpoch) {
-          if (locks.length !== 1 || priorResource.operationId !== state.operationId || priorResource.manifestDigest !== releaseIdentity.manifestDigest) {
+        const priorResources = [];
+        for (const lock of locks) priorResources.push(await inspectLockedResourceState(lock, {
+          environment: state.environment, project: state.project, resourceId: lock.resourceId,
+        }));
+        const priorPendingResources = priorResources.filter((resource) =>
+          resource.pendingAction !== null && resource.highestAcceptedFencingEpoch < state.fencingEpoch);
+        if (priorPendingResources.length !== 0) {
+          const priorResource = priorPendingResources.find((resource) => resource.resourceId === state.resources.ingressRef) || priorPendingResources[0];
+          const pendingSignature = priorResource && canonicalJson({ epoch: priorResource.highestAcceptedFencingEpoch,
+            operationId: priorResource.operationId, manifestDigest: priorResource.manifestDigest, pendingAction: priorResource.pendingAction });
+          const currentPendingMatches = (resource) => resource.pendingAction !== null &&
+            resource.highestAcceptedFencingEpoch === state.fencingEpoch && resource.operationId === state.operationId &&
+            resource.manifestDigest === releaseIdentity.manifestDigest && resource.pendingAction.action === args.action &&
+            resource.pendingAction.actionId === args['action-id'] && resource.pendingAction.requestDigest === requestDigest &&
+            resource.pendingAction.commandDigest === requestBody.commandDigest;
+          if (!priorResource || priorPendingResources.some((resource) =>
+            canonicalJson({ epoch: resource.highestAcceptedFencingEpoch, operationId: resource.operationId,
+              manifestDigest: resource.manifestDigest, pendingAction: resource.pendingAction }) !== pendingSignature) ||
+              priorResources.some((resource) => !priorPendingResources.includes(resource) && !currentPendingMatches(resource)) ||
+              priorResource.operationId !== state.operationId || priorResource.manifestDigest !== releaseIdentity.manifestDigest) {
             throw new ContractError('prior pending ingress resource identity cannot be recovered', EXIT.INGRESS);
           }
           const runner = runtime.commandRunner || defaultCommandRunner;
           const priorIdentity = priorPendingIngressPlan(state, args, releaseIdentity, priorResource, plan, resourceIds);
+          const priorRecorded = await readExecutorReceipt(statePath, priorResource.highestAcceptedFencingEpoch,
+            args.action, priorResource.pendingAction.actionId);
+          const priorReceiptMode = priorRecorded?.status || 'missing';
+          if (priorRecorded) {
+            const canonical = await readCanonicalExecutorReceiptByDigest(statePath, priorRecorded.receiptDigest);
+            if (canonicalJson(canonical.receipt) !== canonicalJson(priorRecorded) ||
+                priorRecorded.schema !== schemaForAction(args.action).receipt || priorRecorded.action !== args.action ||
+                priorRecorded.actionId !== priorResource.pendingAction.actionId || priorRecorded.operationId !== state.operationId ||
+                priorRecorded.fencingEpoch !== priorResource.highestAcceptedFencingEpoch ||
+                priorRecorded.requestDigest !== priorResource.pendingAction.requestDigest ||
+                priorRecorded.requestDigest !== sha256(priorIdentity.priorRequest) ||
+                canonicalJson(priorRecorded.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+                canonicalJson(priorRecorded.resourceIds) !== canonicalJson(resourceIds)) {
+              throw new ContractError('prior pending ingress receipt is not bound to the exact old-fence request', EXIT.INGRESS);
+            }
+          }
           let priorProof = null;
           let priorProofOutput = null;
           let notApplied = null;
@@ -1588,36 +3503,38 @@ export async function runFencedAction(args, runtime = {}) {
             let recoveryValue;
             try { recoveryValue = JSON.parse(recovered.stdout); }
             catch { throw new ContractError('prior pending ingress recovery is not JSON', EXIT.INGRESS); }
-            if (recoveryValue?.schema === 'booking.ingress-readback/v2') {
+            if (recoveryValue?.schema === 'booking.ingress-readback/v3') {
               priorProof = verifyPriorPendingIngress(recovered, state, args, releaseIdentity, priorResource, priorIdentity);
               priorProofOutput = recovered.stdout;
             } else {
               const pending = priorIdentity.pending;
               const expectedSequence = args.action === 'preprod-rollback-ingress' ? 2 : (state.rollbackRehearsalCompleted ? 3 : 1);
-              const expectedPreviousUpstream = expectedSequence === 2
-                ? `gateway-${state.active.slot}:8080`
-                : `gateway-${state.rollback.slot}:8080`;
-              const expectedRecoveryKeys = ['schema', 'outcome', 'project', 'hostname', 'operationId', 'actionKind', 'actionId',
-                'sequence', 'fencingEpoch', 'expectedPreviousUpstream', 'remoteVersion', 'remoteConfigDigest',
-                'previousProofDigest', 'guard', 'observedAt'];
+              const expectedRecoveryKeys = ['schema', 'outcome', 'project', 'hostname', 'edgeNetwork', 'logicalAlias', 'fixedRemoteService',
+                'aliasState', 'operationId', 'actionKind', 'actionId', 'sequence', 'fencingEpoch', 'previousProofDigest', 'guard', 'observedAt'];
               const recoveryGuard = recoveryValue?.guard;
               if (!recoveryValue || Object.keys(recoveryValue).sort().join(',') !== expectedRecoveryKeys.sort().join(',') ||
-                  recoveryValue.schema !== 'booking.ingress-pending-recovery/v1' || recoveryValue.outcome !== 'not-applied' ||
+                  recoveryValue.schema !== 'booking.ingress-pending-recovery/v2' || recoveryValue.outcome !== 'not-applied' ||
                   recoveryValue.project !== state.project || recoveryValue.hostname !== 'booking-preprod.happybooking.uk' ||
+                  recoveryValue.edgeNetwork !== state.resources.edgeNetwork || recoveryValue.logicalAlias !== 'gateway-green' ||
+                  recoveryValue.fixedRemoteService !== 'http://gateway-green:8080' || recoveryValue.aliasState !== 'previous' ||
                   recoveryValue.operationId !== state.operationId || recoveryValue.actionKind !== args.action ||
                   recoveryValue.actionId !== pending.actionId || recoveryValue.sequence !== expectedSequence ||
-                  recoveryValue.fencingEpoch !== pending.fencingEpoch || recoveryValue.expectedPreviousUpstream !== expectedPreviousUpstream ||
-                  !DIGEST.test(recoveryValue.remoteConfigDigest || '') || !Number.isSafeInteger(recoveryValue.remoteVersion) ||
+                  recoveryValue.fencingEpoch !== pending.fencingEpoch ||
                   (recoveryValue.previousProofDigest !== null && !DIGEST.test(recoveryValue.previousProofDigest || '')) ||
                   !recoveryGuard || Object.keys(recoveryGuard).sort().join(',') !==
-                    ['mode', 'atomicRemoteCas', 'opportunisticIfMatch', 'exclusiveWriteRequired'].sort().join(',') ||
-                  recoveryGuard.mode !== 'double-read-version-and-digest' || recoveryGuard.atomicRemoteCas !== false ||
-                  typeof recoveryGuard.opportunisticIfMatch !== 'boolean' || recoveryGuard.exclusiveWriteRequired !== true ||
+                    ['mode', 'convergence', 'fencedResources', 'cloudflareMutationAllowed'].sort().join(',') ||
+                  recoveryGuard.mode !== 'local-docker-network-alias' ||
+                  recoveryGuard.convergence !== 'previous-desired-in-flight-readback' ||
+                  canonicalJson([...(recoveryGuard.fencedResources || [])].sort()) !== canonicalJson(['booking-preprod-edge', 'ingress:booking-preprod'].sort()) ||
+                  recoveryGuard.cloudflareMutationAllowed !== false ||
                   !Number.isFinite(Date.parse(recoveryValue.observedAt))) {
                 throw new ContractError('prior pending ingress not-applied proof is invalid', EXIT.INGRESS);
               }
               notApplied = recoveryValue;
             }
+          }
+          if (priorReceiptMode === 'pass' && notApplied) {
+            throw new ContractError('prior ingress pass receipt conflicts with not-applied remote evidence', EXIT.INGRESS);
           }
           let preflightArtifactEvidence = null;
           if (plan.preflightArtifacts) {
@@ -1627,14 +3544,21 @@ export async function runFencedAction(args, runtime = {}) {
           }
           if (notApplied) {
             const { observedAt: supersededAt } = await passRegistryGate(plan, revalidateLease);
-            await supersedePriorEpochPendingAction(locks[0], {
-              fencingEpoch: priorResource.highestAcceptedFencingEpoch,
-              pendingAction: structuredClone(priorResource.pendingAction), receiptChainHead: priorResource.receiptChainHead,
-            }, { environment: state.environment, project: state.project, resourceId: priorResource.resourceId,
-              fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
-              action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
-              leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
-              commandDigest: requestBody.commandDigest, now: supersededAt.toISOString() });
+            let supersededCount = 0;
+            for (const lock of locks) {
+              const resource = priorResources.find((item) => item.resourceId === lock.resourceId);
+              if (currentPendingMatches(resource)) continue;
+              await supersedePriorEpochPendingAction(lock, {
+                fencingEpoch: resource.highestAcceptedFencingEpoch,
+                pendingAction: structuredClone(resource.pendingAction), receiptChainHead: resource.receiptChainHead,
+              }, { environment: state.environment, project: state.project, resourceId: resource.resourceId,
+                fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+                action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
+                leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
+                commandDigest: requestBody.commandDigest, now: supersededAt.toISOString() });
+              supersededCount += 1;
+              if (runtime.afterIngressResourceSupersede) await runtime.afterIngressResourceSupersede({ supersededCount, resourceId: resource.resourceId });
+            }
           }
           let execution = null;
           let executionVerification = null;
@@ -1658,49 +3582,72 @@ export async function runFencedAction(args, runtime = {}) {
             timeoutMs: leaseWindow.timeoutMs, statePath, revalidateLease, preflightEvidence: preflightArtifactEvidence }) : null;
           if (!runtime.planBuilder) await inspectTrustedRuntimeEnvironment(state, runtime);
           const { observedAt: completedAt } = await passRegistryGate(plan, revalidateLease);
-          const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
+          const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
             startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass',
             executionOutputDigest: sha256(execution?.stdout || ''),
             readbackOutputDigest: sha256(readback?.stdout || priorProofOutput || ''),
             verification: { ...(executionVerification ? { execution: executionVerification } : {}), runtime: verification,
               ...(artifactVerification ? { artifacts: artifactVerification } : {}),
               adoption: { mode: notApplied ? 'prior-pending-proven-not-applied-and-retried' : 'prior-pending-proven-applied-read-only',
+                priorReceiptMode,
                 priorProofDigest: priorProof?.proofDigest || notApplied.previousProofDigest,
                 priorFencingEpoch: priorResource.highestAcceptedFencingEpoch,
                 priorRequestDigest: priorResource.pendingAction.requestDigest } },
-            resources: [{ resourceId: priorResource.resourceId, highestAcceptedFencingEpoch: state.fencingEpoch,
-              previousReceiptDigest: priorResource.receiptChainHead }] };
+            resources: priorResources.map((resource) => ({ resourceId: resource.resourceId,
+              highestAcceptedFencingEpoch: state.fencingEpoch, previousReceiptDigest: resource.receiptChainHead })) };
           const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
           revalidateLease();
           await writeExecutorReceipt(statePath, receipt);
+          if (runtime.afterIngressPassWrite) await runtime.afterIngressPassWrite();
           if (notApplied) {
             const mutationAt = revalidateLease().observedAt;
-            await completeResourceAction(locks[0], { environment: state.environment, project: state.project,
-              resourceId: priorResource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
+            for (const lock of locks) await completeResourceAction(lock, { environment: state.environment, project: state.project,
+              resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
               actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
           } else {
             const mutationAt = revalidateLease().observedAt;
-            await adoptPriorEpochPendingAction(locks[0], { fencingEpoch: priorResource.highestAcceptedFencingEpoch,
-              pendingAction: structuredClone(priorResource.pendingAction),
-              receiptChainHead: priorResource.receiptChainHead }, { environment: state.environment, project: state.project,
-              resourceId: priorResource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
-              manifestDigest: releaseIdentity.manifestDigest, now: mutationAt.toISOString() }, receipt.receiptDigest);
+            for (let index = 0; index < locks.length; index += 1) {
+              const resource = priorPendingResources.find((item) => item.resourceId === locks[index].resourceId);
+              await adoptPriorEpochPendingAction(locks[index], { fencingEpoch: resource.highestAcceptedFencingEpoch,
+                pendingAction: structuredClone(resource.pendingAction), receiptChainHead: resource.receiptChainHead }, {
+                environment: state.environment, project: state.project, resourceId: resource.resourceId,
+                fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
+                now: mutationAt.toISOString() }, receipt.receiptDigest);
+              if (runtime.afterIngressResourceAdopt) await runtime.afterIngressResourceAdopt({ adoptedCount: index + 1, resourceId: resource.resourceId });
+            }
           }
           return receipt;
         }
       }
-      const allowedPreviousManifestDigest = spec.identity === 'rollback' && state.phase === 'ROLLBACK_PENDING'
+      const allowedPreviousManifestDigest = spec.kind === 'failed-active-runtime-restore'
+        ? state.candidate?.manifestDigest
+        : spec.identity === 'rollback' && state.phase === 'ROLLBACK_PENDING'
         ? (state.candidate || state.active)?.manifestDigest
         : (['preprod-stage', 'preprod-transfer-singletons', 'preprod-switch-ingress'].includes(args.action) && state.candidate &&
           state.active.manifestDigest !== state.candidate.manifestDigest ? state.active.manifestDigest : null);
       const resourceStatesBeforeAction = [];
       if (TAKEOVER_ADOPTABLE_ACTIONS.has(args.action) && state.fencingEpoch >= 2) {
-        for (const lock of locks) resourceStatesBeforeAction.push(await inspectLockedResourceState(lock, {
-          environment: state.environment, project: state.project, resourceId: lock.resourceId,
-        }));
+        if (args.action === 'preprod-restore-active-runtime') {
+          for (const lock of locks) resourceStatesBeforeAction.push(await readRecoveryResourceState(statePath, state, lock.resourceId, false,
+            [state.resources.edgeNetwork, state.resources.ingressRef].includes(lock.resourceId)));
+          if (resourceStatesBeforeAction.some((resource) => resource.missingVirgin)) resourceStatesBeforeAction.length = 0;
+        } else {
+          for (const lock of locks) resourceStatesBeforeAction.push(await inspectLockedResourceState(lock, {
+            environment: state.environment, project: state.project, resourceId: lock.resourceId,
+          }));
+        }
       }
+      const priorPartialRecovery = resourceStatesBeforeAction.length
+        ? await recoverPriorActionByDesiredReadback({ statePath, state, args, releaseIdentity, resourceIds,
+          resourceStates: resourceStatesBeforeAction, locks, requestBody, requestDigest, plan,
+          runner, runtime, revalidateLease })
+        : null;
+      if (priorPartialRecovery) return priorPartialRecovery;
       const adoption = resourceStatesBeforeAction.length
-        ? await takeoverAdoption(statePath, state, args, releaseIdentity, resourceIds, resourceStatesBeforeAction)
+        ? (args.action === 'preprod-restore-active-runtime' && resourceStatesBeforeAction.some((resource) =>
+          resource.manifestDigest !== releaseIdentity.manifestDigest)
+          ? null
+          : await takeoverAdoption(statePath, state, args, releaseIdentity, resourceIds, resourceStatesBeforeAction))
         : null;
       if (adoption) {
         await passRegistryGate(plan, revalidateLease);
@@ -1725,7 +3672,7 @@ export async function runFencedAction(args, runtime = {}) {
         } catch (error) {
           let failedAt;
           try { failedAt = revalidateLease(0).observedAt; } catch { throw error; }
-          const failureBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
+          const failureBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
             startedAt: firstNow.toISOString(), completedAt: failedAt.toISOString(),
             status: 'fail', executionOutputDigest: sha256(''), readbackOutputDigest: sha256(''),
             verification: { error: error instanceof ContractError ? error.message : 'takeover adoption readback failed' },
@@ -1736,7 +3683,7 @@ export async function runFencedAction(args, runtime = {}) {
           throw error;
         }
         const completedAt = revalidateLease().observedAt;
-        const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest,
+        const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest,
           startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(), status: 'pass', executionOutputDigest: sha256(''),
           readbackOutputDigest: replay.readbackOutputDigest,
           verification: { ...replay.verification, adoption: { priorReceiptDigest: adoption.acceptedReceipt.receiptDigest,
@@ -1766,19 +3713,25 @@ export async function runFencedAction(args, runtime = {}) {
       if (plan.preflightArtifacts) {
         const leaseWindow = revalidateLease(1_000);
         preflightArtifactEvidence = await plan.preflightArtifacts({ runner, env: plan.env || runtime.env || process.env,
-          timeoutMs: leaseWindow.timeoutMs });
+          timeoutMs: leaseWindow.timeoutMs, revalidateLease, statePath });
       }
       await passRegistryGate(plan, revalidateLease);
-      const accepted = [];
-      for (const lock of locks) {
+      const accepted = failedDatabaseContinuity?.accepted ? [...failedDatabaseContinuity.accepted]
+        : (probeContinuity?.accepted ? [...probeContinuity.accepted] : (resumeUnstartedGroup ? [...resumeUnstartedGroup.resources] : []));
+      let actionGroupBinding = null;
+      if (!failedDatabaseContinuity?.accepted && !probeContinuity?.accepted) {
         const mutationAt = revalidateLease().observedAt;
-        accepted.push(await acceptResourceEpoch(lock, {
-          environment: state.environment, project: state.project, resourceId: lock.resourceId, fencingEpoch: state.fencingEpoch,
+        actionGroupBinding = {
+          environment: state.environment, project: state.project, fencingEpoch: state.fencingEpoch,
           operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest, allowedPreviousManifestDigest,
           action: args.action, actionId: args['action-id'], requestDigest, approvalId: state.approvalId,
           leaseId: state.lease.leaseId, holderId: state.lease.holderId, generation: state.generation,
           commandDigest: requestBody.commandDigest, now: mutationAt.toISOString(),
-        }));
+        };
+        if (!resumeUnstartedGroup) {
+          const group = await acceptResourceActionGroup(statePath, locks, actionGroupBinding);
+          accepted.push(...group.states);
+        }
       }
       let execution;
       let readback;
@@ -1786,6 +3739,12 @@ export async function runFencedAction(args, runtime = {}) {
       let completedAt;
       try {
         let leaseWindow = await passRegistryGate(plan, revalidateLease, 1_000);
+        if (actionGroupBinding) {
+          actionGroupBinding.now = revalidateLease().observedAt.toISOString();
+          if (!resumeUnstartedGroup) await markResourceActionGroupMutating(statePath, actionGroupBinding, resourceIds);
+          actionGroupBinding.now = revalidateLease().observedAt.toISOString();
+          await markResourceActionGroupExecuting(statePath, actionGroupBinding, resourceIds);
+        }
         execution = await runner(plan.executable, plan.argv, { cwd: plan.cwd, env: plan.env || runtime.env || process.env,
           timeoutMs: leaseWindow.timeoutMs });
         assertResult(execution, spec.kind === 'compose-migrate' || spec.kind === 'compose-baseline' ? EXIT.DATABASE : spec.kind.includes('webhook') || spec.kind.includes('ingress') ? EXIT.INGRESS : EXIT.SWITCH);
@@ -1799,6 +3758,8 @@ export async function runFencedAction(args, runtime = {}) {
         }
         verification = { ...(preflightVerification ? { preflight: preflightVerification } : {}),
           ...(executionVerification ? { execution: executionVerification } : {}), runtime: (plan.readback?.verify || plan.verify)(readback.stdout) };
+        if (probeContinuity?.verification) verification.retry = probeContinuity.verification;
+        if (failedDatabaseContinuity?.verification) verification.continuity = failedDatabaseContinuity.verification;
         if (plan.verifyArtifacts) {
           leaseWindow = await passRegistryGate(plan, revalidateLease);
           verification.artifacts = await plan.verifyArtifacts({ runner, env: plan.env || runtime.env || process.env,
@@ -1809,7 +3770,7 @@ export async function runFencedAction(args, runtime = {}) {
       } catch (error) {
         let failedAt;
         try { failedAt = revalidateLease(0).observedAt; } catch { throw error; }
-        const failureBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest, startedAt: firstNow.toISOString(),
+        const failureBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest, startedAt: firstNow.toISOString(),
           completedAt: failedAt.toISOString(), status: 'fail',
           executionOutputDigest: sha256(execution?.stdout || ''), readbackOutputDigest: sha256(readback?.stdout || ''),
           verification: { error: error instanceof ContractError ? error.message : 'external action failed' },
@@ -1817,19 +3778,29 @@ export async function runFencedAction(args, runtime = {}) {
         const failureReceipt = { ...failureBody, receiptDigest: sha256(failureBody) };
         revalidateLease(0);
         await writeExecutorReceipt(statePath, failureReceipt);
+        if (actionGroupBinding) {
+          actionGroupBinding.now = revalidateLease(0).observedAt.toISOString();
+          await markResourceActionGroupReceipt(statePath, actionGroupBinding, resourceIds, failureReceipt.receiptDigest, 'fail');
+        }
         throw error;
       }
-      const receiptBody = { ...requestBody, schema: 'booking.external-action-receipt/v1', requestDigest, startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(),
+      const receiptBody = { ...requestBody, schema: schemaForAction(args.action).receipt, requestDigest, startedAt: firstNow.toISOString(), completedAt: completedAt.toISOString(),
         status: 'pass', executionOutputDigest: sha256(execution.stdout), readbackOutputDigest: sha256(readback.stdout), verification,
         resources: accepted.map((item) => ({ resourceId: item.resourceId, highestAcceptedFencingEpoch: item.highestAcceptedFencingEpoch, previousReceiptDigest: item.receiptChainHead })) };
       const receipt = { ...receiptBody, receiptDigest: sha256(receiptBody) };
       revalidateLease();
       await writeExecutorReceipt(statePath, receipt);
-      for (const lock of locks) {
-        const mutationAt = revalidateLease().observedAt;
-        await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
-          fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() },
-        receipt.receiptDigest);
+      if (actionGroupBinding) {
+        actionGroupBinding.now = revalidateLease().observedAt.toISOString();
+        await markResourceActionGroupReceipt(statePath, actionGroupBinding, resourceIds, receipt.receiptDigest, 'pass');
+        await completeResourceActionGroup(statePath, locks, actionGroupBinding, receipt.receiptDigest);
+      } else {
+        for (const lock of locks) {
+          const mutationAt = revalidateLease().observedAt;
+          await completeResourceAction(lock, { environment: state.environment, project: state.project, resourceId: lock.resourceId,
+            fencingEpoch: state.fencingEpoch, operationId: state.operationId, actionId: args['action-id'], requestDigest, now: mutationAt.toISOString() },
+          receipt.receiptDigest);
+        }
       }
       return receipt;
     } finally { await releaseResourceLocks(locks); }
