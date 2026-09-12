@@ -800,7 +800,9 @@ export async function runControlPlaneInstaller(input, runtime = {}) {
   const args = parseArgs(input); const paths = defaultPaths(runtime); const now = runtime.now || new Date().toISOString();
   const settings = { uid: runtime.expectedUid === undefined ? 0 : runtime.expectedUid, enforceMode: runtime.enforceMode === undefined ? true : runtime.enforceMode };
   if (dirname(paths.rollbackRoot) !== dirname(paths.installRoot) || dirname(paths.lockPath) !== dirname(paths.installRoot) || dirname(paths.journalPath) !== dirname(paths.installRoot)) throw new InstallError('fixed targets must share one parent');
-  await assertDirectory(dirname(paths.installRoot), settings.uid, 'install parent', settings.enforceMode);
+  if (!['bundle-inventory', 'approval-check'].includes(args.action)) {
+    await assertDirectory(dirname(paths.installRoot), settings.uid, 'install parent', settings.enforceMode);
+  }
   if (args.action === 'active-inventory') {
     validateIdentity(args);
     const active = await inventory(paths.installRoot, { uid: settings.uid, strict: true, enforceMode: settings.enforceMode });

@@ -152,8 +152,11 @@ test('active inventory is fixed-path, strict, host-bound and read-only', async (
 
 test('bundle inventory verifies only the immutable bundle before receipt and quiescence gates', async (t) => {
   const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const missingParent = join(f.root, 'missing-install-parent');
   const result = await runControlPlaneInstaller(['--action', 'bundle-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], {
-    ...f.runtime, paths: { ...f.paths, receiptRoot: join(f.root, 'missing-receipts') }, assertQuiescent: async () => { throw new Error('must not run'); },
+    ...f.runtime, paths: { ...f.paths, installRoot: join(missingParent, 'happybooking'), rollbackRoot: join(missingParent, 'happybooking.rollback'),
+      lockPath: join(missingParent, '.install.lock'), journalPath: join(missingParent, '.install.journal.json'), receiptRoot: join(f.root, 'missing-receipts') },
+    assertQuiescent: async () => { throw new Error('must not run'); },
   });
   assert.equal(result.action, 'bundle-inventory'); assert.equal(result.inventoryDigest, f.inv.digest);
 });
