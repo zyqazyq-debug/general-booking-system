@@ -24,9 +24,9 @@ HOST_IDENTITY_TRUST_ROOT='/etc'
 SELF='/usr/local/libexec/run-booking-preprod-control-plane-installer'
 EXPECTED_UID='0'
 EXPECTED_GID='0'
-SHA256SUM='/bin/sha256sum'
-STAT='/bin/stat'
-READLINK='/bin/readlink'
+SHA256SUM='/usr/bin/sha256sum'
+STAT='/usr/bin/stat'
+READLINK='/usr/bin/readlink'
 BOOTSTRAP_TEST='false'
 
 fail() {

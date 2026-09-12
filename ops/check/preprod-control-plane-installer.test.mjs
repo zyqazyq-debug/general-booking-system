@@ -662,9 +662,9 @@ test('host bootstrap source fixes all trust roots and verifies before Docker or 
     "APPROVER_TRUST_ROOT='/etc/happybooking'",
     "COSIGN='/usr/local/bin/cosign'",
     "COSIGN_TRUST_ROOT='/usr/local/bin'",
-    "SHA256SUM='/bin/sha256sum'",
-    "STAT='/bin/stat'",
-    "READLINK='/bin/readlink'",
+    "SHA256SUM='/usr/bin/sha256sum'",
+    "STAT='/usr/bin/stat'",
+    "READLINK='/usr/bin/readlink'",
   ]) assert.ok(source.includes(fixed), fixed);
   assert.match(source, /trusted_chain "\$BUNDLE_ROOT" "\$EVIDENCE_TRUST_ROOT"/);
   assert.match(source, /trusted_chain "\$APPROVAL_ROOT" "\$EVIDENCE_TRUST_ROOT"/);
