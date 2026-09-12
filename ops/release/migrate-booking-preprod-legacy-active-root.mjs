@@ -194,15 +194,66 @@ export function mountReferencesProtected(mount, protectedIdentity) {
   return containsPath(mount.root, protectedIdentity.root) || containsPath(protectedIdentity.root, mount.root);
 }
 
-async function processMountInfos(runtime) {
-  if (runtime.processMountInfos) return runtime.processMountInfos();
+async function processTasks(runtime) {
+  if (runtime.processTasks) return runtime.processTasks();
   const result = [];
-  for (const name of await readdir('/proc')) {
-    if (!/^[0-9]+$/.test(name)) continue;
-    try { result.push({ pid: Number(name), value: await readFile(`/proc/${name}/mountinfo`, 'utf8') }); }
-    catch (error) { if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process ${name} mounts`); }
+  for (const groupName of await readdir('/proc')) {
+    if (!/^[0-9]+$/.test(groupName)) continue;
+    let taskNames;
+    try { taskNames = await readdir(`/proc/${groupName}/task`); }
+    catch (error) {
+      if (['ENOENT', 'ESRCH'].includes(error?.code)) continue;
+      throw new MigrationError(`cannot enumerate process ${groupName} tasks`);
+    }
+    for (const taskName of taskNames) {
+      if (/^[0-9]+$/.test(taskName)) result.push({ groupId: Number(groupName), taskId: Number(taskName), base: `/proc/${groupName}/task/${taskName}` });
+    }
   }
   return result;
+}
+
+export async function processMountInfos(runtime = {}) {
+  if (runtime.processMountInfos) return runtime.processMountInfos();
+  const result = [];
+  for (const task of await processTasks(runtime)) {
+    const label = `${task.groupId}/${task.taskId}`; const statPath = `${task.base}/stat`;
+    let before;
+    try { before = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId); }
+    catch (error) {
+      if (['ENOENT', 'ESRCH'].includes(error?.code)) continue;
+      throw error instanceof MigrationError ? error : new MigrationError(`cannot inspect process task ${label} identity`);
+    }
+    if (before.state === 'Z') continue;
+    try {
+      const value = await readFile(`${task.base}/mountinfo`, 'utf8');
+      const after = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId);
+      if (after.startTime !== before.startTime) throw new MigrationError(`process task ${label} identity changed during mount inspection`);
+      if (after.state === 'Z') continue;
+      result.push({ pid: task.taskId, groupId: task.groupId, value });
+    } catch (error) {
+      if (error instanceof MigrationError) throw error;
+      if (['ENOENT', 'ESRCH'].includes(error?.code)) continue;
+      if (error?.code === 'EINVAL') {
+        try {
+          const after = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId);
+          if (after.startTime === before.startTime && after.state === 'Z') continue;
+        } catch (statError) {
+          if (['ENOENT', 'ESRCH'].includes(statError?.code)) continue;
+        }
+      }
+      throw new MigrationError(`cannot inspect process task ${label} mounts`);
+    }
+  }
+  return result;
+}
+
+export function parseProcessStat(value, expectedPid) {
+  if (typeof value !== 'string' || !Number.isSafeInteger(expectedPid) || expectedPid < 1) throw new MigrationError('process stat identity is invalid');
+  const prefix = `${expectedPid} (`; const close = value.lastIndexOf(') ');
+  if (!value.startsWith(prefix) || close < prefix.length) throw new MigrationError('process stat row is invalid');
+  const fields = value.slice(close + 2).trim().split(/\s+/);
+  if (fields.length < 20 || !/^[A-Za-z]$/.test(fields[0]) || !/^\d+$/.test(fields[19])) throw new MigrationError('process stat row is invalid');
+  return { state: fields[0], startTime: fields[19] };
 }
 
 async function assertNoMounts(path, runtime) {
@@ -211,8 +262,8 @@ async function assertNoMounts(path, runtime) {
   if (selfMounts.some((mount) => mount.mountPoint === canonicalPath || containsPath(canonicalPath, mount.mountPoint))) throw new MigrationError('active root contains a mountpoint');
   const protectedIdentity = mountedObjectIdentity(canonicalPath, selfMounts);
   for (const record of await processMountInfos(runtime)) {
-    if (!Number.isSafeInteger(record?.pid) || record.pid < 1 || typeof record.value !== 'string') throw new MigrationError('process mountinfo identity is invalid');
-    if (record.pid === process.pid) continue;
+    if (!Number.isSafeInteger(record?.pid) || record.pid < 1 || !Number.isSafeInteger(record?.groupId) || record.groupId < 1 || typeof record.value !== 'string') throw new MigrationError('process mountinfo identity is invalid');
+    if (record.groupId === process.pid) continue;
     for (const mount of parseMountInfo(record.value)) {
       if (mountReferencesProtected(mount, protectedIdentity)) throw new MigrationError(`process ${record.pid} has a mount referencing protected migration tree`);
     }
@@ -221,21 +272,24 @@ async function assertNoMounts(path, runtime) {
 
 async function assertNoOpenReferences(path, runtime) {
   if (runtime.assertNoOpenReferences) return runtime.assertNoOpenReferences(path);
-  const proc = '/proc';
-  for (const name of await readdir(proc)) {
-    if (!/^[0-9]+$/.test(name)) continue;
-    const base = join(proc, name);
+  for (const task of await processTasks(runtime)) {
+    const label = `${task.groupId}/${task.taskId}`; const base = task.base; const statPath = `${base}/stat`; let before;
+    try { before = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId); }
+    catch (error) { if (['ENOENT', 'ESRCH'].includes(error?.code)) continue; throw error instanceof MigrationError ? error : new MigrationError(`cannot inspect process task ${label} identity`); }
+    if (before.state === 'Z') continue;
     for (const leaf of ['cwd', 'root', 'exe']) {
-      try { const target = await readlink(join(base, leaf)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process ${name} references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process ${name} ${leaf}`); }
+      try { const target = await readlink(join(base, leaf)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process task ${label} references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} ${leaf}`); }
     }
     try {
       for (const fd of await readdir(join(base, 'fd'))) {
-        try { const target = await readlink(join(base, 'fd', fd)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process ${name} has an open protected-tree descriptor`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process ${name} descriptor`); }
+        try { const target = await readlink(join(base, 'fd', fd)); if (target === path || target.startsWith(`${path}/`)) throw new MigrationError(`process task ${label} has an open protected-tree descriptor`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} descriptor`); }
       }
-    } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot enumerate process ${name} descriptors`); }
+    } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot enumerate process task ${label} descriptors`); }
     for (const leaf of ['cmdline', 'maps']) {
-      try { if ((await readFile(join(base, leaf))).includes(Buffer.from(path))) throw new MigrationError(`process ${name} text references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process ${name} ${leaf}`); }
+      try { if ((await readFile(join(base, leaf))).includes(Buffer.from(path))) throw new MigrationError(`process task ${label} text references protected migration tree`); } catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot inspect process task ${label} ${leaf}`); }
     }
+    try { const after = parseProcessStat(await readFile(statPath, 'utf8'), task.taskId); if (after.startTime !== before.startTime) throw new MigrationError(`process task ${label} identity changed during reference inspection`); }
+    catch (error) { if (error instanceof MigrationError) throw error; if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new MigrationError(`cannot re-inspect process task ${label} identity`); }
   }
 }
 

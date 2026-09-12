@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, parse } from 'node:path';
 import {
-  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, parseMountInfo, mountedObjectIdentity, mountReferencesProtected, SimulatedLegacyMigrationCrash,
+  runLegacyActiveMigration, listDockerContainers, hasExactSelfSecurityOptions, parseMountInfo, parseProcessStat, processMountInfos, mountedObjectIdentity, mountReferencesProtected, SimulatedLegacyMigrationCrash,
 } from '../release/migrate-booking-preprod-legacy-active-root.mjs';
 
 const MIGRATION = 'booking-legacy-active-20260913T010203Z-536b435723ae';
@@ -90,6 +90,22 @@ test('mountinfo identity exposes the actual mounted object rather than a stale D
   assert.throws(() => parseMountInfo('malformed'), /mountinfo row is invalid/);
 });
 
+test('process stat parsing distinguishes live and zombie identities without trusting the command name', () => {
+  const fields = ['S', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '987654'];
+  assert.deepEqual(parseProcessStat(`42 (worker ) name) ${fields.join(' ')}\n`, 42), { state: 'S', startTime: '987654' });
+  fields[0] = 'Z';
+  assert.deepEqual(parseProcessStat(`42 (defunct) ${fields.join(' ')}\n`, 42), { state: 'Z', startTime: '987654' });
+  fields[0] = 't';
+  assert.deepEqual(parseProcessStat(`42 (traced) ${fields.join(' ')}\n`, 42), { state: 't', startTime: '987654' });
+  assert.throws(() => parseProcessStat(`43 (worker) ${fields.join(' ')}\n`, 42), /process stat row is invalid/);
+});
+
+test('live proc scanner enumerates the current process thread group with stable task identities', { skip: process.platform === 'win32' }, async () => {
+  const records = await processMountInfos();
+  assert.ok(records.some((record) => record.groupId === process.pid && record.pid === process.pid));
+  assert.ok(records.every((record) => Number.isSafeInteger(record.groupId) && Number.isSafeInteger(record.pid) && record.value.length > 0));
+});
+
 test('running-process mount identity rejects a stale safe-looking Docker source alias', { skip: process.platform === 'win32' }, async (t) => {
   const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const selfMounts = parseMountInfo(await readFile('/proc/self/mountinfo', 'utf8'));
@@ -97,9 +113,20 @@ test('running-process mount identity rejects a stale safe-looking Docker source 
   const actualMount = `901 1 ${activeIdentity.device} ${activeIdentity.root} /foreign rw - testfs none rw\n`;
   const runtime = { ...f.runtime, assertQuiescent: undefined, assertNoMounts: undefined,
     listContainers: async () => [{ Name: '/foreign', State: { Running: true, Pid: 42 }, Mounts: [{ Source: '/safe-looking-alias', Destination: '/foreign', RW: false }] }],
-    processMountInfos: async () => [{ pid: process.pid + 100000, value: actualMount }], assertNoOpenReferences: async () => {} };
+    processMountInfos: async () => [{ pid: process.pid + 100000, groupId: process.pid + 100000, value: actualMount }], assertNoOpenReferences: async () => {} };
   await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /mount referencing protected migration tree/);
   assert.equal(await exists(f.raw), false); assert.equal(await exists(f.active), true);
+});
+
+test('mount inspection skips every task in the trusted migration executor thread group', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const selfMounts = parseMountInfo(await readFile('/proc/self/mountinfo', 'utf8'));
+  const activeIdentity = mountedObjectIdentity(await (await import('node:fs/promises')).realpath(f.active), selfMounts);
+  const selfSiblingMount = `902 1 ${activeIdentity.device} ${activeIdentity.root} /executor-sibling rw - testfs none rw\n`;
+  const runtime = { ...f.runtime, assertQuiescent: undefined, assertNoMounts: undefined,
+    listContainers: async () => [], processMountInfos: async () => [{ pid: process.pid + 1, groupId: process.pid, value: selfSiblingMount }], assertNoOpenReferences: async () => {} };
+  const receipt = await runLegacyActiveMigration(migrationArgs(f), runtime);
+  assert.equal(receipt.status, 'pass');
 });
 
 test('one-time migration keeps the entire raw tree and installs only the normalized reviewed payload', async (t) => {
