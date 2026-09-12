@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, parse } from 'node:path';
 import {
-  runLegacyActiveMigration, SimulatedLegacyMigrationCrash,
+  runLegacyActiveMigration, listDockerContainers, SimulatedLegacyMigrationCrash,
 } from '../release/migrate-booking-preprod-legacy-active-root.mjs';
 
 const MIGRATION = 'booking-legacy-active-20260913T010203Z-536b435723ae';
@@ -317,4 +318,75 @@ test('the post-stage quiescence gate rejects a newly mounted or opened normalize
     await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), scenario === 'mount' ? /foreign container mount overlaps/ : /stage open/);
     assert.equal(await exists(f.raw), false, scenario); assert.equal(await exists(f.active), true, scenario);
   }
+});
+
+test('Docker list API never inspects an unrelated container and rechecks every fixed identity', async () => {
+  const foreignId = 'a'.repeat(64); const fixedId = 'b'.repeat(64); const calls = [];
+  const foreign = { Id: foreignId, Names: ['/clash-mihomo'], State: 'running', Mounts: [{ Source: '/volume1/docker/clash', Destination: '/config', RW: true }] };
+  const fixedSummary = { Id: fixedId, Names: ['/booking-preprod-legacy-active-migration'], State: 'running', Mounts: [] };
+  const fixedInspect = { Id: fixedId, Name: '/booking-preprod-legacy-active-migration', State: { Running: true, Pid: 123 }, Mounts: [], Config: { Image: 'fixed' }, HostConfig: {} };
+  const containers = await listDockerContainers({ dockerJson: async (path) => {
+    calls.push(path); if (path === '/containers/json?all=1') return [foreign, fixedSummary];
+    if (path === `/containers/${fixedId}/json`) return fixedInspect;
+    throw new Error(`unexpected Docker API path: ${path}`);
+  } });
+  assert.deepEqual(calls, ['/containers/json?all=1', `/containers/${fixedId}/json`]);
+  assert.deepEqual(containers[0].Mounts, foreign.Mounts); assert.equal(containers[1], fixedInspect);
+  calls.length = 0; fixedSummary.State = 'paused'; fixedInspect.State.Paused = true;
+  await listDockerContainers({ dockerJson: async (path) => { calls.push(path); return path === '/containers/json?all=1' ? [fixedSummary] : fixedInspect; } });
+  assert.deepEqual(calls, ['/containers/json?all=1', `/containers/${fixedId}/json`]);
+  for (const inspected of [
+    { ...fixedInspect, State: {} }, { ...fixedInspect, State: { Running: true, Pid: '123' } }, { ...fixedInspect, Mounts: null },
+    { ...fixedInspect, Mounts: [{ Source: 'relative', Destination: '/x', RW: false }] }, { ...fixedInspect, Config: null },
+    { ...fixedInspect, Config: { Image: '' } }, { ...fixedInspect, HostConfig: null },
+  ]) {
+    await assert.rejects(listDockerContainers({ dockerJson: async (path) => path === '/containers/json?all=1' ? [fixedSummary] : inspected }), /inspection is invalid/);
+  }
+  await assert.rejects(listDockerContainers({ dockerJson: async () => [{ Id: foreignId, Names: ['/foreign'], State: 'running' }] }), /summary is invalid/);
+  await assert.rejects(listDockerContainers({ dockerJson: async () => [{ ...foreign, State: 'unknown' }] }), /summary is invalid/);
+});
+
+test('Docker socket transport fails closed on deadline, size, status and truncation', async (t) => {
+  let sequence = 0;
+  async function serve(handler, task) {
+    sequence += 1;
+    const socketPath = process.platform === 'win32'
+      ? `\\\\.\\pipe\\booking-docker-api-${process.pid}-${sequence}`
+      : join(await mkdtemp(join(tmpdir(), 'booking-docker-api-')), 'docker.sock');
+    const server = createServer(handler);
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+    try { await task(socketPath); } finally {
+      await new Promise((resolve) => server.close(resolve));
+      if (process.platform !== 'win32') await rm(dirname(socketPath), { recursive: true, force: true });
+    }
+  }
+
+  await serve((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' }); response.write('[');
+    const drip = setInterval(() => response.write(' '), 5); response.once('close', () => clearInterval(drip));
+  }, async (socketPath) => {
+    const started = Date.now();
+    await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath, dockerTimeoutMs: 40 }), /cannot enumerate containers/);
+    assert.ok(Date.now() - started < 1_000, 'wall-clock deadline must stop a continuously active response');
+  });
+  await serve((request, response) => {
+    if (request.url === '/containers/json?all=1') {
+      setTimeout(() => { response.writeHead(200); response.end(JSON.stringify([{ Id: 'b'.repeat(64), Names: ['/booking-preprod-control-plane'], State: 'running', Mounts: [] }])); }, 25);
+    } else {
+      response.writeHead(200); response.write('{'); const drip = setInterval(() => response.write(' '), 5); response.once('close', () => clearInterval(drip));
+    }
+  }, async (socketPath) => {
+    const started = Date.now();
+    await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath, dockerTimeoutMs: 40 }), /cannot inspect fixed control container/);
+    assert.ok(Date.now() - started < 1_000, 'one wall-clock deadline must cover list and every fixed inspect');
+  });
+  await serve((_request, response) => { response.writeHead(200); response.end(JSON.stringify([{ value: 'x'.repeat(256) }])); }, async (socketPath) => {
+    await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath, dockerResponseLimit: 64 }), /cannot enumerate containers/);
+  });
+  await serve((_request, response) => { response.writeHead(503); response.end('{}'); }, async (socketPath) => {
+    await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath }), /cannot enumerate containers/);
+  });
+  await serve((_request, response) => { response.writeHead(200); response.write('['); response.destroy(); }, async (socketPath) => {
+    await assert.rejects(listDockerContainers({ dockerSocketPath: socketPath }), /cannot enumerate containers/);
+  });
 });

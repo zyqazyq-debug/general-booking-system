@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { request } from 'node:http';
 import {
   chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, readlink,
   realpath, rename, rm, unlink,
@@ -19,6 +19,8 @@ const INSTALL_JOURNAL = `${PARENT}/.happybooking-control-plane-install.journal.j
 const DEPLOY_STATE = '/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json';
 const DOCKER = '/var/packages/ContainerManager/target/usr/bin/docker';
 const CONTROL_IMAGE = 'node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5';
+const DOCKER_SOCKET = '/var/run/docker.sock';
+const DOCKER_RESPONSE_LIMIT = 64 * 1024 * 1024;
 
 const REQUIRED_ACTIVE_ROOT_ENTRIES = Object.freeze([
   'control-plane',
@@ -183,6 +185,70 @@ async function assertNoOpenReferences(path, runtime) {
   }
 }
 
+async function dockerJson(path, runtime) {
+  if (runtime.dockerJson) return runtime.dockerJson(path);
+  const socketPath = runtime.dockerSocketPath || DOCKER_SOCKET;
+  const responseLimit = runtime.dockerResponseLimit || DOCKER_RESPONSE_LIMIT;
+  const configuredTimeoutMs = runtime.dockerTimeoutMs ?? 15_000;
+  const timeoutMs = runtime.dockerDeadlineAt === undefined ? configuredTimeoutMs : Math.min(configuredTimeoutMs, runtime.dockerDeadlineAt - Date.now());
+  if (!Number.isSafeInteger(responseLimit) || responseLimit < 1 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new MigrationError('Docker transport limits are invalid');
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false; let deadline;
+    const resolveOnce = (value) => { if (!settled) { settled = true; clearTimeout(deadline); resolvePromise(value); } };
+    const rejectOnce = (error) => { if (!settled) { settled = true; clearTimeout(deadline); rejectPromise(error); } };
+    const handle = request({ socketPath, path, method: 'GET', headers: { Host: 'localhost' } }, (response) => {
+      const chunks = []; let size = 0;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > responseLimit) { rejectOnce(new Error('Docker response exceeds the fixed limit')); handle.destroy(); }
+        else chunks.push(chunk);
+      });
+      response.on('end', () => {
+        if (response.statusCode !== 200) return rejectOnce(new Error(`Docker API returned ${response.statusCode}`));
+        try { resolveOnce(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { rejectOnce(error); }
+      });
+      response.on('aborted', () => rejectOnce(new Error('Docker API response was aborted')));
+      response.on('error', rejectOnce);
+    });
+    deadline = setTimeout(() => { rejectOnce(new Error('Docker API request timed out')); handle.destroy(); }, timeoutMs);
+    handle.on('error', rejectOnce); handle.end();
+  });
+}
+
+export async function listDockerContainers(runtime = {}) {
+  if (runtime.listContainers) return runtime.listContainers();
+  const configuredTimeoutMs = runtime.dockerTimeoutMs ?? 15_000;
+  if (!Number.isSafeInteger(configuredTimeoutMs) || configuredTimeoutMs < 1) throw new MigrationError('Docker transport limits are invalid');
+  const transportRuntime = runtime.dockerJson ? runtime : { ...runtime, dockerDeadlineAt: Date.now() + configuredTimeoutMs };
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const validMount = (mount) => isObject(mount) && typeof mount.Source === 'string' && isAbsolute(mount.Source) &&
+    typeof mount.Destination === 'string' && isAbsolute(mount.Destination) && typeof mount.RW === 'boolean';
+  let summaries;
+  try { summaries = await dockerJson('/containers/json?all=1', transportRuntime); } catch { throw new MigrationError('cannot enumerate containers'); }
+  if (!Array.isArray(summaries)) throw new MigrationError('Docker container list is invalid');
+  const containers = [];
+  for (const summary of summaries) {
+    if (!/^[0-9a-f]{64}$/.test(summary?.Id || '') || !Array.isArray(summary?.Names) || summary.Names.length < 1 || summary.Names.some((name) => typeof name !== 'string' || !name.startsWith('/')) ||
+        !Array.isArray(summary?.Mounts) || summary.Mounts.some((mount) => !validMount(mount)) ||
+        !['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(summary?.State)) throw new MigrationError('Docker container summary is invalid');
+    const fixedNames = summary.Names.filter((name) => ['/booking-preprod-control-plane', '/booking-preprod-legacy-active-migration', '/booking-preprod-legacy-active-migration-recovery'].includes(name));
+    if (fixedNames.length > 1) throw new MigrationError('Docker container summary has multiple fixed identities');
+    const fixedName = fixedNames[0];
+    if (fixedName) {
+      let inspected;
+      try { inspected = await dockerJson(`/containers/${summary.Id}/json`, transportRuntime); } catch { throw new MigrationError('cannot inspect fixed control container'); }
+      if (inspected?.Id !== summary.Id || inspected?.Name !== fixedName) throw new MigrationError('fixed control container identity changed during inspection');
+      if (!isObject(inspected.State) || typeof inspected.State.Running !== 'boolean' || !Number.isSafeInteger(inspected.State.Pid) || inspected.State.Pid < 0 ||
+          !Array.isArray(inspected.Mounts) || inspected.Mounts.some((mount) => !validMount(mount)) || !isObject(inspected.Config) ||
+          typeof inspected.Config.Image !== 'string' || inspected.Config.Image.length < 1 || !isObject(inspected.HostConfig)) throw new MigrationError('fixed control container inspection is invalid');
+      containers.push(inspected);
+    } else {
+      containers.push({ Name: fixedName || summary.Names[0], State: { Running: summary.State === 'running', Pid: 0 }, Mounts: summary.Mounts });
+    }
+  }
+  return containers;
+}
+
 async function assertQuiescent(paths, runtime, now, action = null, additionalProtectedPaths = []) {
   if (runtime.assertQuiescent) return runtime.assertQuiescent();
   for (const path of [paths.runtimeLock, paths.installLock, paths.installJournal, `${paths.deployState}.lock`]) if (await exists(path)) throw new MigrationError(`conflicting lock or journal exists: ${basename(path)}`);
@@ -190,16 +256,7 @@ async function assertQuiescent(paths, runtime, now, action = null, additionalPro
   async function scan(directory) { if (!await exists(directory)) return; for (const entry of await readdir(directory, { withFileTypes: true })) { const path = join(directory, entry.name); if (entry.isSymbolicLink()) throw new MigrationError('resource state contains a symbolic link'); if (entry.isDirectory()) await scan(path); else if (entry.name === 'resource-state.lock') throw new MigrationError('resource lock exists'); } }
   await scan(resources);
   if (await exists(paths.deployState)) { const state = JSON.parse(await readFile(paths.deployState, 'utf8')); if (state.lease && (!Number.isFinite(Date.parse(state.lease.expiresAt)) || Date.parse(state.lease.expiresAt) > Date.parse(now))) throw new MigrationError('deployment lease is active or invalid'); }
-  let containers;
-  if (runtime.listContainers) containers = await runtime.listContainers();
-  else {
-    const listed = spawnSync(DOCKER, ['ps', '-aq'], { encoding: 'utf8' }); if (listed.status !== 0) throw new MigrationError('cannot enumerate containers');
-    const ids = listed.stdout.trim().split(/\s+/).filter(Boolean); containers = [];
-    if (ids.length) {
-      const inspected = spawnSync(DOCKER, ['inspect', ...ids], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-      if (inspected.status !== 0) throw new MigrationError('cannot inspect containers'); containers = JSON.parse(inspected.stdout);
-    }
-  }
+  const containers = await listDockerContainers(runtime);
   const protectedPaths = [];
   for (const path of [paths.active, paths.rawArchive, ...additionalProtectedPaths]) if (path && await exists(path)) {
     const canonicalPath = await realpath(path); if (!protectedPaths.includes(canonicalPath)) protectedPaths.push(canonicalPath);
