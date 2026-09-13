@@ -42,12 +42,14 @@ async function sourceArchive(source, inv, gitSha) {
   blocks.push(Buffer.alloc(1024)); return Buffer.concat(blocks);
 }
 
-async function payload(root, marker) {
+async function payload(root, marker, cliGuardMarker = null) {
   await mkdir(join(root, 'control-plane', 'ops', 'release'), { recursive: true });
   const files = new Map([
     ['run-booking-preprod-control-plane', `#!/bin/sh\n# ${marker}\n`], ['switch-preprod-ingress', `#!/bin/sh\n# ${marker}\n`],
     ['switch-preprod-ingress.mjs', `export const marker='${marker}';\n`],
-    ['control-plane/ops/release/execute-fenced-action.mjs', `export const marker='${marker}-execute';\n`],
+    ['control-plane/ops/release/execute-fenced-action.mjs', cliGuardMarker
+      ? `import { writeFileSync } from 'node:fs';\nimport { resolve } from 'node:path';\nimport { fileURLToPath } from 'node:url';\nexport const marker='${marker}-execute';\nif (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) writeFileSync(${JSON.stringify(cliGuardMarker)}, 'CLI guard executed\\n');\n`
+      : `export const marker='${marker}-execute';\n`],
     ['control-plane/ops/release/manage-deploy-state.mjs', `export const marker='${marker}-state';\n`],
     ['control-plane/ops/release/generate-database-backup-receipt.mjs', `export const marker='${marker}-backup';\n`],
     ['control-plane/ops/release/generate-schema-diff-receipt.mjs', `export const marker='${marker}-schema';\n`],
@@ -60,8 +62,9 @@ async function payload(root, marker) {
   for (const path of [join(root, 'control-plane', 'ops', 'release'), join(root, 'control-plane', 'ops'), join(root, 'control-plane'), root]) await chmod(path, 0o555);
 }
 
-async function fixture() {
+async function fixture({ cliGuard = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'booking-installer-v2-'));
+  const cliGuardMarker = cliGuard ? join(root, 'cli-guard-executed.txt') : null;
   const parent = join(root, 'usr', 'local', 'libexec'); const installRoot = join(parent, 'happybooking'); const rollbackRoot = join(parent, 'happybooking.rollback');
   const g4 = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4'); const bundleRoot = join(g4, 'control-plane-install', 'bundles'); const approvalRoot = join(g4, 'control-plane-install', 'approvals'); const receiptRoot = join(g4, 'receipts');
   const paths = { installRoot, rollbackRoot, bundleRoot, receiptRoot, lockPath: join(parent, '.happybooking-control-plane-install.lock'),
@@ -70,7 +73,7 @@ async function fixture() {
   await mkdir(parent, { recursive: true }); await mkdir(bundleRoot, { recursive: true }); await mkdir(approvalRoot, { recursive: true }); await mkdir(receiptRoot, { recursive: true });
   await mkdir(dirname(paths.hostIdentityPath), { recursive: true }); await writeFile(paths.hostIdentityPath, '0123456789abcdef0123456789abcdef\n');
   await payload(installRoot, 'old'); await payload(rollbackRoot, 'older');
-  const bundle = join(bundleRoot, ID); const source = join(bundle, 'payload'); await mkdir(source, { recursive: true }); await payload(source, 'new');
+  const bundle = join(bundleRoot, ID); const source = join(bundle, 'payload'); await mkdir(source, { recursive: true }); await payload(source, 'new', cliGuardMarker);
   const installerBytes = await readFile(join(repo, 'ops', 'release', 'install-booking-preprod-control-plane.mjs'));
   await writeFile(join(bundle, 'installer.mjs'), installerBytes); await chmod(join(bundle, 'installer.mjs'), 0o555);
   const inv = await inspectControlPlaneInventory(source, { uid: null, source: true, enforceMode: false });
@@ -104,7 +107,7 @@ async function fixture() {
     '--bundle-declaration-digest', digest(canonical(declaration)), '--tracked-allowlist-digest', declaration.trackedAllowlistDigest,
     '--expected-inventory-digest', inv.digest,
     '--approval-tuple-digest', tuple.tupleDigest, '--approver-receipt-digest', approverReceipt.receiptDigest];
-  return { root, paths, source, runtime, inv, active, declaration, tuple, approverReceipt, installArgs };
+  return { root, paths, source, runtime, inv, active, declaration, tuple, approverReceipt, installArgs, cliGuardMarker };
 }
 const recoverArgs = (journal) => ['--action', 'recover', '--install-id', journal.installId, '--git-sha', journal.gitSha, '--approval-id', journal.approvalId, '--transaction-id', journal.transactionId];
 async function recoveryIdentity(paths) {
@@ -325,6 +328,17 @@ test('copy/smoke failures retain the durable journal and recover the exact old t
     assert.equal(recovered.status, 'rolled-back');
     assert.equal((await inspectControlPlaneInventory(f.paths.installRoot, { uid: null, enforceMode: false })).digest, f.active.digest);
   }
+});
+
+test('import smoke keeps real module CLI main guards dormant', async (t) => {
+  const f = await fixture({ cliGuard: true }); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const guardedModule = join(f.source, 'control-plane', 'ops', 'release', 'execute-fenced-action.mjs');
+  const oldProgram = "import {pathToFileURL} from 'node:url'; for (const p of process.argv.slice(1)) await import(pathToFileURL(p).href);";
+  const oldImport = spawnSync(process.execPath, ['--input-type=module', '--eval', oldProgram, guardedModule], { encoding: 'utf8' });
+  assert.equal(oldImport.status, 0); assert.equal(await readFile(f.cliGuardMarker, 'utf8'), 'CLI guard executed\n'); await rm(f.cliGuardMarker);
+  const runtime = { ...f.runtime }; delete runtime.smokeStage;
+  await assert.rejects(runControlPlaneInstaller(f.installArgs, runtime), /launcher dry-run smoke failed/);
+  assert.equal(await existsLocal(f.cliGuardMarker), false);
 });
 
 test('quiescence, mountpoint, dependency closure, receipt identity and readback path fail closed', async (t) => {
