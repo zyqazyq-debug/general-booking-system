@@ -151,7 +151,10 @@ export async function buildControlPlaneBundle(argv, runtime = {}) {
     await mkdir(receiptRoot, { recursive: true }); await mkdir(installParent, { recursive: true });
     const verified = await runControlPlaneInstaller(['--action', 'inventory', '--install-id', installId, '--git-sha', sha, '--approval-id', approvalId], {
       paths: { installRoot: join(installParent, 'happybooking'), rollbackRoot: join(installParent, 'happybooking.rollback'), bundleRoot: stagingParent, receiptRoot,
-        lockPath: join(installParent, '.happybooking-control-plane-install.lock'), journalPath: join(installParent, '.happybooking-control-plane-install.journal.json'), deployStatePath: join(validationRoot, 'deploy-state.json') },
+        lockPath: join(installParent, '.happybooking-control-plane-install.lock'), journalPath: join(installParent, '.happybooking-control-plane-install.journal.json'),
+        migrationLockPath: join(installParent, '.happybooking-legacy-active-migration.lock'),
+        migrationJournalPath: join(installParent, '.happybooking-legacy-active-migration.journal.json'),
+        deployStatePath: join(validationRoot, 'deploy-state.json') },
       expectedUid: null, enforceMode: true, assertQuiescent: async () => {}, assertNotMountpoints: async () => {}, syncDirectory: async () => {}, syncFile: async () => {},
     });
     await rm(validationRoot, { recursive: true, force: true });

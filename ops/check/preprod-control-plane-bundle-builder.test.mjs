@@ -35,6 +35,12 @@ async function committedFixture() {
 }
 const builderRuntime = (f) => ({ repoRoot: f.root, outputRoot: f.outputRoot });
 
+test('builder self-validation keeps installer and migration mutex artifacts under one isolated parent', async () => {
+  const source = await readFile(join(project, 'ops', 'release', 'build-booking-preprod-control-plane-bundle.mjs'), 'utf8');
+  assert.match(source, /migrationLockPath:\s*join\(installParent, '\.happybooking-legacy-active-migration\.lock'\)/);
+  assert.match(source, /migrationJournalPath:\s*join\(installParent, '\.happybooking-legacy-active-migration\.journal\.json'\)/);
+});
+
 test('builder uses exact clean HEAD committed bytes and emits an installer-verified approval tuple', { skip: process.platform === 'win32' }, async (t) => {
   const f = await committedFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const installId = `booking-control-20260913T010203Z-${f.sha.slice(0, 12)}`; const approvalId = 'approval.g4.control-plane.test';
