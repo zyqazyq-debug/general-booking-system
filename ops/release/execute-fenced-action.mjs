@@ -2661,7 +2661,9 @@ async function recoverPriorActionByDesiredReadback({ statePath, state, args, rel
   let replay;
   try {
     replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-      revalidateLease, statePath, adoptionReceipt: recorded || completedReceipts[0]?.receipt });
+      revalidateLease, statePath, adoptionReceipt: args.action === 'preprod-restore-active-runtime'
+        ? completedReceipts[0]?.receipt || null : recorded || completedReceipts[0]?.receipt,
+      recoveryPending: args.action === 'preprod-restore-active-runtime' });
   } catch {
     throw new ContractError(`prior-fence ${receiptMode} action is not exact desired state; recovery is ambiguous`, EXIT.SINGLETON);
   }
@@ -3018,7 +3020,8 @@ export async function runFencedAction(args, runtime = {}) {
         let replay;
         try {
           replay = await verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env,
-            revalidateLease, statePath, adoptionReceipt: priorReceipt });
+            revalidateLease, statePath, adoptionReceipt: args.action === 'preprod-restore-active-runtime' ? null : priorReceipt,
+            recoveryPending: args.action === 'preprod-restore-active-runtime' });
         } catch {
           if (ambiguousGroup.value.phase === 'MUTATING' && !priorReceipt) {
             // MUTATING is deliberately before the durable dispatch boundary.

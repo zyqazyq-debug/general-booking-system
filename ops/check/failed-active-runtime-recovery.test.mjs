@@ -193,6 +193,46 @@ test('same fence retries fixed docker start when all resources became pending be
   }
 });
 
+test('failed active restore replays a dispatched action group with pending predecessor heads', async (t) => {
+  const fixture = await installActiveRecoveryFixture(t);
+  const action = args(fixture.state, 'restore-group-f3');
+  let desired = false;
+  let starts = 0;
+  let replayContext;
+  const planBuilder = () => ({ executable: '/trusted/docker', argv: ['start', 'fixed-backend', 'fixed-gateway'], cwd: '/trusted',
+    preflightArtifacts: async () => ({ containers: { backend: { running: false }, gateway: { running: false } } }),
+    replayPreflightArtifacts: async (context) => {
+      replayContext = context;
+      if (!context.recoveryPending || context.adoptionReceipt !== null) throw new Error('pending recovery context is invalid');
+      return { containers: { backend: { running: true }, gateway: { running: true } } };
+    },
+    readback: { executable: '/trusted/docker', argv: ['container', 'inspect', 'fixed-backend', 'fixed-gateway'],
+      verify: () => {
+        if (!desired) throw new Error('runtime not healthy yet');
+        return { fixedLegacyRuntime: true };
+      } } });
+  const runner = async (_executable, argv) => {
+    if (argv[0] === 'start') starts += 1;
+    return { exitCode: 0, signal: null, overflow: false, stdout: '', stderr: '' };
+  };
+  await assert.rejects(runFencedAction(action, { deployStateRoot: fixture.root,
+    now: () => new Date('2026-09-10T10:05:30.000Z'), planBuilder, commandRunner: runner,
+    failedRestoreBinding: { operationId: fixture.state.operationId } }), /runtime not healthy yet/);
+  desired = true;
+  const recovered = await runFencedAction(action, { deployStateRoot: fixture.root,
+    now: () => new Date('2026-09-10T10:05:40.000Z'), planBuilder, commandRunner: runner,
+    failedRestoreBinding: { operationId: fixture.state.operationId } });
+  assert.equal(starts, 1);
+  assert.equal(recovered.status, 'pass');
+  assert.equal(recovered.verification.reconcile.mode, 'same-fence-proven-applied-read-only');
+  assert.equal(replayContext.recoveryPending, true);
+  for (const resourceId of fixture.resourceIds) {
+    const value = JSON.parse(await readFile(join(resourceDirectory(fixture.statePath, resourceId), 'resource-state.json'), 'utf8'));
+    assert.equal(value.pendingAction, null);
+    assert.equal(value.receiptChainHead, recovered.receiptDigest);
+  }
+});
+
 test('takeover retries both fixed IDs idempotently after only one legacy container started', async (t) => {
   const fixture = await installActiveRecoveryFixture(t);
   const snapshot = { backend: { running: false }, gateway: { running: false } };
