@@ -1017,7 +1017,8 @@ async function smokeStage(stage, runtime) {
   for (const file of mjs) { const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' }); if (check.status !== 0) throw new InstallError(`syntax smoke failed: ${basename(file)}`); }
   const importArgvMarker = 'booking-preprod-control-plane-import-smoke';
   const program = "import {pathToFileURL} from 'node:url'; for (const p of process.argv.slice(2)) await import(pathToFileURL(p).href);";
-  const imports = spawnSync(process.execPath, ['--input-type=module', '--eval', program, importArgvMarker, ...mjs], { encoding: 'utf8' }); if (imports.status !== 0) throw new InstallError('import smoke failed');
+  const imports = spawnSync(process.execPath, ['--input-type=module', '--eval', program, importArgvMarker, ...mjs], { encoding: 'utf8' });
+  if (imports.status !== 0 || imports.stdout !== '' || imports.stderr !== '') throw new InstallError('import smoke failed');
   const launcher = spawnSync('/bin/sh', [join(stage, 'run-booking-preprod-control-plane'), 'manage-deploy-state', '--action', 'renew', '--execute', 'true', '--environment', 'preprod', '--project', 'booking-preprod', '--approval-id', 'smoke', '--expected-generation', '1', '--expected-fencing-epoch', '1', '--manifest-digest', `sha256:${'0'.repeat(64)}`, '--lease-id', 'smoke', '--holder-id', 'smoke', '--lease-duration-ms', '30000'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', BOOKING_CONTROL_PLANE_DRY_RUN: 'true' } });
   if (launcher.status !== 0 || !launcher.stdout.includes('/var/packages/ContainerManager/target/usr/bin/docker')) throw new InstallError('launcher dry-run smoke failed');
 }

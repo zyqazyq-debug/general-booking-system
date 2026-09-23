@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectControlPlaneInventory, inspectControlPlaneSourceArchive, runControlPlaneInstaller, SimulatedInstallCrash } from '../release/install-booking-preprod-control-plane.mjs';
+import { FIXED_CONTROL_PLANE_SOURCES } from '../release/build-booking-preprod-control-plane-bundle.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GIT = 'b2c3d4e567890123456789012345678901234567';
@@ -15,6 +16,8 @@ const ID = `booking-control-20260912T020304Z-${GIT.slice(0, 12)}`;
 const APPROVAL = 'approval.user.g4.control-plane.r1';
 const INSTALLER_NAME = 'booking-preprod-control-plane-installer';
 const RECOVERY_NAME = 'booking-preprod-control-plane-installer-recovery';
+const IMPORT_SMOKE_MARKER = 'booking-preprod-control-plane-import-smoke';
+const IMPORT_SMOKE_PROGRAM = "import {pathToFileURL} from 'node:url'; for (const p of process.argv.slice(2)) await import(pathToFileURL(p).href);";
 const CONTROL_IMAGE = 'node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5';
 const digest = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
@@ -42,14 +45,14 @@ async function sourceArchive(source, inv, gitSha) {
   blocks.push(Buffer.alloc(1024)); return Buffer.concat(blocks);
 }
 
-async function payload(root, marker, cliGuardMarker = null) {
+async function payload(root, marker, cliGuardMarker = null, importSmokeEffect = '') {
   await mkdir(join(root, 'control-plane', 'ops', 'release'), { recursive: true });
   const files = new Map([
     ['run-booking-preprod-control-plane', `#!/bin/sh\n# ${marker}\n`], ['switch-preprod-ingress', `#!/bin/sh\n# ${marker}\n`],
     ['switch-preprod-ingress.mjs', `export const marker='${marker}';\n`],
     ['control-plane/ops/release/execute-fenced-action.mjs', cliGuardMarker
       ? `import { writeFileSync } from 'node:fs';\nimport { resolve } from 'node:path';\nimport { fileURLToPath } from 'node:url';\nexport const marker='${marker}-execute';\nif (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) writeFileSync(${JSON.stringify(cliGuardMarker)}, 'CLI guard executed\\n');\n`
-      : `export const marker='${marker}-execute';\n`],
+      : `export const marker='${marker}-execute';\n${importSmokeEffect}`],
     ['control-plane/ops/release/manage-deploy-state.mjs', `export const marker='${marker}-state';\n`],
     ['control-plane/ops/release/generate-database-backup-receipt.mjs', `export const marker='${marker}-backup';\n`],
     ['control-plane/ops/release/generate-schema-diff-receipt.mjs', `export const marker='${marker}-schema';\n`],
@@ -62,7 +65,7 @@ async function payload(root, marker, cliGuardMarker = null) {
   for (const path of [join(root, 'control-plane', 'ops', 'release'), join(root, 'control-plane', 'ops'), join(root, 'control-plane'), root]) await chmod(path, 0o555);
 }
 
-async function fixture({ cliGuard = false } = {}) {
+async function fixture({ cliGuard = false, importSmokeEffect = '' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'booking-installer-v2-'));
   const cliGuardMarker = cliGuard ? join(root, 'cli-guard-executed.txt') : null;
   const parent = join(root, 'usr', 'local', 'libexec'); const installRoot = join(parent, 'happybooking'); const rollbackRoot = join(parent, 'happybooking.rollback');
@@ -76,7 +79,7 @@ async function fixture({ cliGuard = false } = {}) {
   await mkdir(parent, { recursive: true }); await mkdir(bundleRoot, { recursive: true }); await mkdir(approvalRoot, { recursive: true }); await mkdir(receiptRoot, { recursive: true });
   await mkdir(dirname(paths.hostIdentityPath), { recursive: true }); await writeFile(paths.hostIdentityPath, '0123456789abcdef0123456789abcdef\n');
   await payload(installRoot, 'old'); await payload(rollbackRoot, 'older');
-  const bundle = join(bundleRoot, ID); const source = join(bundle, 'payload'); await mkdir(source, { recursive: true }); await payload(source, 'new', cliGuardMarker);
+  const bundle = join(bundleRoot, ID); const source = join(bundle, 'payload'); await mkdir(source, { recursive: true }); await payload(source, 'new', cliGuardMarker, importSmokeEffect);
   const installerBytes = await readFile(join(repo, 'ops', 'release', 'install-booking-preprod-control-plane.mjs'));
   await writeFile(join(bundle, 'installer.mjs'), installerBytes); await chmod(join(bundle, 'installer.mjs'), 0o555);
   const inv = await inspectControlPlaneInventory(source, { uid: null, source: true, enforceMode: false });
@@ -343,6 +346,34 @@ test('import smoke keeps real module CLI main guards dormant', async (t) => {
   const runtime = { ...f.runtime }; delete runtime.smokeStage;
   await assert.rejects(runControlPlaneInstaller(f.installArgs, runtime), /launcher dry-run smoke failed/);
   assert.equal(await existsLocal(f.cliGuardMarker), false);
+});
+
+test('every fixed control-plane module and the complete set import without process effects', () => {
+  const modules = FIXED_CONTROL_PLANE_SOURCES.filter((path) => path.endsWith('.mjs')).map((path) => join(repo, ...path.split('/')));
+  const smoke = (paths) => spawnSync(process.execPath,
+    ['--input-type=module', '--eval', IMPORT_SMOKE_PROGRAM, IMPORT_SMOKE_MARKER, ...paths], { encoding: 'utf8' });
+  const assertClean = (result, label) => {
+    assert.equal(result.status, 0, `${label}: exit status\n${result.stderr}`);
+    assert.equal(result.signal, null, `${label}: signal`);
+    assert.equal(result.stdout, '', `${label}: stdout`);
+    assert.equal(result.stderr, '', `${label}: stderr`);
+  };
+  for (const modulePath of modules) assertClean(smoke([modulePath]), modulePath);
+  assertClean(smoke(modules), 'complete fixed control-plane module set');
+});
+
+test('installer import smoke rejects stdout, stderr, and exit-code pollution', async (t) => {
+  for (const [label, importSmokeEffect] of [
+    ['stdout', "process.stdout.write('import pollution\\n');\n"],
+    ['stderr', "process.stderr.write('import pollution\\n');\n"],
+    ['exit code', 'process.exitCode = 23;\n'],
+  ]) {
+    await t.test(label, async (t) => {
+      const f = await fixture({ importSmokeEffect }); t.after(() => rm(f.root, { recursive: true, force: true }));
+      const runtime = { ...f.runtime }; delete runtime.smokeStage;
+      await assert.rejects(runControlPlaneInstaller(f.installArgs, runtime), /import smoke failed/);
+    });
+  }
 });
 
 test('quiescence, mountpoint, dependency closure, receipt identity and readback path fail closed', async (t) => {

@@ -7,8 +7,9 @@ import { canonicalDocument, cleanGitSource, createLocalProvenance, imageDigest, 
 import { ContractError, gateResult, parseArgs } from './lib/contracts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-try {
-  const args = parseArgs(process.argv.slice(2));
+
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const component = args.component;
   if (!['backend', 'gateway', 'telegram-egress'].includes(component) || !args.output || !args.sbom || !args['native-sbom']) {
     throw new ContractError('--component, --native-sbom, --sbom, and --output are required');
@@ -29,7 +30,14 @@ try {
   const document = createLocalProvenance({ component, gitSha: source.gitSha, image, digest, sbomDigest, baseImage, aptSources });
   await writeFile(args.output, canonicalDocument(document), 'utf8');
   process.stdout.write(`${JSON.stringify(gateResult({ gate: 'local-provenance', checks: [{ name: component, status: 'pass', code: 'LOCAL_PROVENANCE_GENERATED' }] }))}\n`);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 10;
 }
+
+export async function run(argv = process.argv.slice(2)) {
+  try { await main(argv); }
+  catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 10;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await run();

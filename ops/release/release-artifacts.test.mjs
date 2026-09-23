@@ -184,6 +184,20 @@ test('legacy source-only SBOM generator fails closed instead of claiming image e
   assert.match(result.stderr, /generate-image-sbom\.mjs/);
 });
 
+test('release generators are side-effect-free when imported', () => {
+  const modules = [
+    './generate-build-input-inventory.mjs',
+    './generate-manifest.mjs',
+    './generate-provenance.mjs',
+    './generate-sbom.mjs',
+  ].map((path) => new URL(path, import.meta.url).href);
+  const script = `await Promise.all(${JSON.stringify(modules)}.map((url) => import(url))); process.stdout.write('import-ok\\n');`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'import-ok\n');
+  assert.equal(result.stderr, '');
+});
+
 test('image SBOM requires exact image identity and non-empty package and file inventories', () => {
   const valid = imageSbom('backend', artifacts.backend);
   assert.equal(validateImageSbom(valid, {

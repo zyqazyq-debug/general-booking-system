@@ -7,8 +7,9 @@ import { canonicalDocument, createReleaseManifest, releaseInputs } from './lib/a
 import { ContractError, gateResult, parseArgs, sha256 } from './lib/contracts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-try {
-  const args = parseArgs(process.argv.slice(2));
+
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   if (!args.output) throw new ContractError('--output is required');
   const inputs = await releaseInputs(root, args);
   const rollbackCompatibleRelease = args['rollback-compatible-release'] || null;
@@ -21,7 +22,14 @@ try {
     { name: 'migration-compatibility', status: 'pass', code: 'EXPAND_CONTRACT' },
     { name: 'manifest', status: 'pass', code: `MANIFEST_DIGEST_${sha256(manifest).slice(7, 19)}` },
   ] }))}\n`);
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 10;
 }
+
+export async function run(argv = process.argv.slice(2)) {
+  try { await main(argv); }
+  catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 10;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await run();
