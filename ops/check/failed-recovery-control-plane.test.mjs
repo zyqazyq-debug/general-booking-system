@@ -46,6 +46,13 @@ function actionArgs(state, action, resourceId, actionId) {
 
 const planBuilder = () => ({ executable: '/trusted/readback', argv: ['verify'], cwd: '/trusted',
   readback: { executable: '/trusted/readback', argv: ['verify'], verify: () => ({ independentlyVerified: true }) } });
+const registryBoundPlanBuilder = (state) => {
+  const registrySupplyChainBinding = { schema: 'booking.registry-runtime-gate/v1',
+    operationId: state.operationId, fencingEpoch: state.fencingEpoch,
+    components: { backend: { digest: `sha256:${'c'.repeat(64)}` } } };
+  return { ...planBuilder(), registrySupplyChainBinding,
+    environmentBinding: { BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(registrySupplyChainBinding) } };
+};
 const runner = async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '', stderr: '' });
 const databaseResourceIds = ['database:booking-preprod', 'booking-preprod-data'];
 
@@ -71,9 +78,9 @@ function databaseResourcePath(statePath, resourceId) {
   return join(resourceDirectory(statePath, resourceId), 'resource-state.json');
 }
 
-async function installPriorDatabasePending(fixture, receiptMode, requestOverrides = {}) {
+async function installPriorDatabasePending(fixture, receiptMode, requestOverrides = {}, builder = planBuilder) {
   const actionId = 'database-attest-f3';
-  const commandDigest = planCommandDigest();
+  const commandDigest = planCommandDigest(builder(fixture.state));
   const request = { schema: 'booking.fenced-action-request/v2', environment: 'preprod', project: 'booking-preprod',
     action: 'preprod-attest-database-restore', actionId, operationId: fixture.state.operationId,
     approvalId: fixture.state.approvalId, generation: fixture.state.generation, fencingEpoch: fixture.state.fencingEpoch,
@@ -264,22 +271,38 @@ test('completed fence-3 Telegram abort is independently re-attested and chained 
   const atFenceThree = () => new Date('2026-09-10T11:02:00.000Z');
   const fenceThree = await runFencedAction(actionArgs(fixture.state, 'preprod-abort-telegram-egress',
     'telegram:booking-preprod', 'egress-abort-f3'), { deployStateRoot: fixture.root, now: atFenceThree,
-    planBuilder, commandRunner: runner, failedRestoreBinding: fixture.recoveryBinding });
+    planBuilder: registryBoundPlanBuilder, commandRunner: runner, failedRestoreBinding: fixture.recoveryBinding });
   const stateFour = await takeoverToFenceFour(fixture.statePath);
+  assert.notEqual(planCommandDigest(registryBoundPlanBuilder(fixture.state)),
+    planCommandDigest(registryBoundPlanBuilder(stateFour)));
   const completedThree = JSON.parse(await readFile(fixture.telegramPath, 'utf8'));
   await writeFile(fixture.telegramPath, `${JSON.stringify({ ...completedThree, receiptChainHead: `sha256:${'9'.repeat(64)}` })}\n`);
   let rejectedReadbacks = 0;
   await assert.rejects(runFencedAction(actionArgs(stateFour, 'preprod-abort-telegram-egress',
     'telegram:booking-preprod', 'egress-abort-f4'), { deployStateRoot: fixture.root,
-    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
     commandRunner: async () => { rejectedReadbacks += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding }),
   /canonical store/);
   assert.equal(rejectedReadbacks, 0);
   await writeFile(fixture.telegramPath, `${JSON.stringify(completedThree)}\n`);
+  let changedRegistryCalls = 0;
+  const changedRegistryPlanBuilder = (current) => {
+    const original = registryBoundPlanBuilder(current);
+    const registrySupplyChainBinding = { ...original.registrySupplyChainBinding,
+      components: { backend: { digest: `sha256:${'d'.repeat(64)}` } } };
+    return { ...original, registrySupplyChainBinding,
+      environmentBinding: { BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(registrySupplyChainBinding) } };
+  };
+  await assert.rejects(runFencedAction(actionArgs(stateFour, 'preprod-abort-telegram-egress',
+    'telegram:booking-preprod', 'egress-abort-f4'), { deployStateRoot: fixture.root,
+    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: changedRegistryPlanBuilder,
+    commandRunner: async () => { changedRegistryCalls += 1; return runner(); },
+    failedRestoreBinding: fixture.recoveryBinding }), /prior receipt is not canonically bound/);
+  assert.equal(changedRegistryCalls, 0);
   let readbacks = 0;
   const fenceFour = await runFencedAction(actionArgs(stateFour, 'preprod-abort-telegram-egress',
     'telegram:booking-preprod', 'egress-abort-f4'), { deployStateRoot: fixture.root,
-    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
     commandRunner: async () => { readbacks += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding });
   assert.equal(readbacks, 2);
   assert.equal(fenceFour.fencingEpoch, 4);
@@ -299,13 +322,13 @@ for (const priorReceiptMode of ['missing', 'pass']) {
     if (priorReceiptMode === 'missing') {
       let calls = 0;
       await assert.rejects(runFencedAction(argsThree, { deployStateRoot: fixture.root,
-        now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder,
+        now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
         commandRunner: async () => { calls += 1; return calls === 1 ? runner() : { ...(await runner()), exitCode: 1 }; },
         failedRestoreBinding: fixture.recoveryBinding }), /external action failed/);
       assert.equal(calls, 2);
     } else {
       fenceThreeReceipt = await runFencedAction(argsThree, { deployStateRoot: fixture.root,
-        now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder, commandRunner: runner,
+        now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder: registryBoundPlanBuilder, commandRunner: runner,
         failedRestoreBinding: fixture.recoveryBinding });
       const pending = { actionId: fenceThreeReceipt.actionId, requestDigest: fenceThreeReceipt.requestDigest,
         action: fenceThreeReceipt.action, approvalId: fenceThreeReceipt.approvalId, leaseId: fenceThreeReceipt.leaseId,
@@ -319,7 +342,7 @@ for (const priorReceiptMode of ['missing', 'pass']) {
     const stateFour = await takeoverToFenceFour(fixture.statePath);
     if (priorReceiptMode === 'missing') {
       let rejectedReadbacks = 0;
-      const changedPlanBuilder = () => ({ ...planBuilder(), argv: ['changed'] });
+      const changedPlanBuilder = (current) => ({ ...registryBoundPlanBuilder(current), argv: ['changed'] });
       await assert.rejects(runFencedAction(actionArgs(stateFour, 'preprod-abort-telegram-egress',
         'telegram:booking-preprod', 'egress-abort-f4'), { deployStateRoot: fixture.root,
         now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: changedPlanBuilder,
@@ -330,7 +353,7 @@ for (const priorReceiptMode of ['missing', 'pass']) {
     let readbacks = 0;
     const fenceFour = await runFencedAction(actionArgs(stateFour, 'preprod-abort-telegram-egress',
       'telegram:booking-preprod', 'egress-abort-f4'), { deployStateRoot: fixture.root,
-      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
       commandRunner: async () => { readbacks += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding });
     assert.equal(readbacks, 2);
     assert.equal(fenceFour.fencingEpoch, 4);
@@ -393,14 +416,14 @@ test('completed fence-3 database restore is freshly re-attested at fence 4 and c
   const fixture = await installTelegramFailureFixture(t);
   const argsThree = actionArgs(fixture.state, 'preprod-attest-database-restore', 'database:booking-preprod', 'database-attest-f3');
   const fenceThree = await runFencedAction(argsThree, { deployStateRoot: fixture.root,
-    now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder, commandRunner: runner,
+    now: () => new Date('2026-09-10T11:02:00.000Z'), planBuilder: registryBoundPlanBuilder, commandRunner: runner,
     failedRestoreBinding: fixture.recoveryBinding });
   assert.equal(fenceThree.verification.continuity.mode, 'fixed-evidence-predecessor');
   const stateFour = await takeoverToFenceFour(fixture.statePath);
   const argsFour = actionArgs(stateFour, 'preprod-attest-database-restore', 'database:booking-preprod', 'database-attest-f4');
   let freshCalls = 0;
   const fenceFour = await runFencedAction(argsFour, { deployStateRoot: fixture.root,
-    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+    now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
     commandRunner: async () => { freshCalls += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding });
   assert.equal(freshCalls, 2);
   assert.equal(fenceFour.verification.continuity.mode, 'prior-completed-re-attested');
@@ -415,7 +438,7 @@ test('completed fence-3 database restore is freshly re-attested at fence 4 and c
   }
   let replayCalls = 0;
   const replay = await runFencedAction(argsFour, { deployStateRoot: fixture.root,
-    now: () => new Date('2026-09-10T12:03:00.000Z'), planBuilder,
+    now: () => new Date('2026-09-10T12:03:00.000Z'), planBuilder: registryBoundPlanBuilder,
     commandRunner: async () => { replayCalls += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding });
   assert.equal(replayCalls, 1);
   assert.equal(replay.receiptDigest, fenceFour.receiptDigest);
@@ -442,12 +465,12 @@ test('fixed database restore rejects a shared forged predecessor head before any
 for (const receiptMode of ['missing', 'fail', 'pass']) {
   test(`fence-4 database restore safely continues a fence-3 pending action with ${receiptMode} receipt`, async (t) => {
     const fixture = await installTelegramFailureFixture(t);
-    const prior = await installPriorDatabasePending(fixture, receiptMode);
+    const prior = await installPriorDatabasePending(fixture, receiptMode, {}, registryBoundPlanBuilder);
     const stateFour = await takeoverToFenceFour(fixture.statePath);
     let freshCalls = 0;
     const fenceFour = await runFencedAction(actionArgs(stateFour, 'preprod-attest-database-restore',
       'database:booking-preprod', `database-attest-f4-${receiptMode}`), { deployStateRoot: fixture.root,
-      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
       commandRunner: async () => { freshCalls += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding });
     assert.equal(freshCalls, 2);
     assert.equal(fenceFour.verification.continuity.mode, receiptMode === 'pass'
@@ -470,7 +493,7 @@ for (const drift of ['one-resource', 'predecessor', 'runtime-env', 'command', 'r
     const overrides = drift === 'runtime-env' ? { runtimeEnvDigest: `sha256:${'7'.repeat(64)}` }
       : drift === 'command' ? { commandDigest: `sha256:${'8'.repeat(64)}` }
         : drift === 'resources' ? { resourceIds: ['database:booking-preprod'] } : {};
-    await installPriorDatabasePending(fixture, 'pass', overrides);
+    await installPriorDatabasePending(fixture, 'pass', overrides, registryBoundPlanBuilder);
     if (drift === 'one-resource' || drift === 'predecessor') {
       const path = databaseResourcePath(fixture.statePath, 'booking-preprod-data');
       const resource = JSON.parse(await readFile(path, 'utf8'));
@@ -482,7 +505,7 @@ for (const drift of ['one-resource', 'predecessor', 'runtime-env', 'command', 'r
     let calls = 0;
     await assert.rejects(runFencedAction(actionArgs(stateFour, 'preprod-attest-database-restore',
       'database:booking-preprod', `database-attest-f4-drift-${drift}`), { deployStateRoot: fixture.root,
-      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder,
+      now: () => new Date('2026-09-10T12:02:00.000Z'), planBuilder: registryBoundPlanBuilder,
       commandRunner: async () => { calls += 1; return runner(); }, failedRestoreBinding: fixture.recoveryBinding }),
     /database restore (prior pending|resources do not share)/);
     assert.equal(calls, 0);

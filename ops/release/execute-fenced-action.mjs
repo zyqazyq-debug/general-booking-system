@@ -1891,6 +1891,31 @@ function commandIdentity(plan) {
     registrySupplyChainBinding: plan.registrySupplyChainBinding || null });
 }
 
+function historicalRecoveryCommandDigest(plan, fencingEpoch) {
+  if (!Number.isInteger(fencingEpoch) || fencingEpoch < 1) {
+    throw new ContractError('historical recovery command identity cannot be reconstructed', EXIT.IDENTITY);
+  }
+  const hasRegistryBinding = plan.registrySupplyChainBinding !== null && plan.registrySupplyChainBinding !== undefined;
+  const hasEnvironmentBinding = plan.environmentBinding !== null && plan.environmentBinding !== undefined;
+  if (!hasRegistryBinding && !hasEnvironmentBinding) return commandIdentity(plan);
+  if (!hasRegistryBinding || !hasEnvironmentBinding ||
+      !plan.registrySupplyChainBinding || typeof plan.registrySupplyChainBinding !== 'object' ||
+      Array.isArray(plan.registrySupplyChainBinding) ||
+      !Number.isInteger(plan.registrySupplyChainBinding.fencingEpoch) ||
+      !plan.environmentBinding || typeof plan.environmentBinding !== 'object' ||
+      Array.isArray(plan.environmentBinding)) {
+    throw new ContractError('historical recovery command identity cannot be reconstructed', EXIT.IDENTITY);
+  }
+  const currentRegistryDigest = sha256(plan.registrySupplyChainBinding);
+  if (plan.environmentBinding.BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST !== currentRegistryDigest) {
+    throw new ContractError('recovery command registry binding is internally inconsistent', EXIT.IDENTITY);
+  }
+  const registrySupplyChainBinding = { ...plan.registrySupplyChainBinding, fencingEpoch };
+  return commandIdentity({ ...plan, registrySupplyChainBinding,
+    environmentBinding: { ...plan.environmentBinding,
+      BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(registrySupplyChainBinding) } });
+}
+
 function replaceCliValue(argv, name, value) {
   const next = [...argv];
   const index = next.indexOf(name);
@@ -2321,7 +2346,7 @@ function assertTelegramAbortReceipt(receipt, acceptedReceipt, state, releaseIden
 }
 
 async function assertTelegramAbortReceiptChain(statePath, head, baseHead, state, releaseIdentity, binding, fixedFailure,
-  expectedResourceId, expectedCommandDigest, maximumFencingEpoch) {
+  expectedResourceId, expectedCommandDigestForFence, maximumFencingEpoch) {
   let cursor = head;
   let upperFence = maximumFencingEpoch;
   const visited = new Set();
@@ -2334,7 +2359,8 @@ async function assertTelegramAbortReceiptChain(statePath, head, baseHead, state,
       throw new ContractError('Telegram abort receipt chain head is not the canonical accepted receipt', EXIT.IDENTITY);
     }
     const receipt = assertTelegramAbortReceipt(canonical.receipt, canonical.acceptedReceipt, state, releaseIdentity, binding, fixedFailure,
-      expectedResourceId, canonical.receipt.resources?.[0]?.previousReceiptDigest, expectedCommandDigest);
+      expectedResourceId, canonical.receipt.resources?.[0]?.previousReceiptDigest,
+      expectedCommandDigestForFence(canonical.receipt.fencingEpoch));
     if (receipt.fencingEpoch >= upperFence) throw new ContractError('Telegram abort receipt chain fencing epochs are not strictly increasing', EXIT.IDENTITY);
     if (!newest) newest = { ...canonical, receipt };
     upperFence = receipt.fencingEpoch;
@@ -2407,7 +2433,7 @@ async function verifyFixedDatabaseMigrationPredecessor(statePath, state, release
 }
 
 async function prepareFailedDatabaseAttestationContinuity({ statePath, state, args, releaseIdentity, resourceIds,
-  locks, requestBody, requestDigest, binding, revalidateLease }) {
+  locks, requestBody, requestDigest, binding, revalidateLease, commandDigestForFence }) {
   const resources = [];
   for (const lock of locks) resources.push(await inspectLockedResourceState(lock, {
     environment: state.environment, project: state.project, resourceId: lock.resourceId,
@@ -2468,7 +2494,7 @@ async function prepareFailedDatabaseAttestationContinuity({ statePath, state, ar
     }
     const canonical = await readCanonicalExecutorReceiptByDigest(statePath, head);
     assertDatabaseAttestationReceipt(canonical.receipt, canonical.acceptedReceipt, state, releaseIdentity, resourceIds,
-      requestBody.commandDigest, resourceEpoch);
+      commandDigestForFence(resourceEpoch), resourceEpoch);
     if (canonical.receipt.status !== 'pass') {
       throw new ContractError('database restore completed prior fence is not backed by a pass receipt', EXIT.IDENTITY);
     }
@@ -2478,7 +2504,7 @@ async function prepareFailedDatabaseAttestationContinuity({ statePath, state, ar
     const pending = resources[0].pendingAction;
     if (resources.some((resource) => canonicalJson(resource.pendingAction) !== canonicalJson(pending)) ||
         pending.action !== args.action || pending.fencingEpoch !== resourceEpoch ||
-        pending.commandDigest !== requestBody.commandDigest) {
+        pending.commandDigest !== commandDigestForFence(resourceEpoch)) {
       throw new ContractError('database restore prior pending resources do not share one immutable action identity', EXIT.IDENTITY);
     }
     const priorRequest = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
@@ -2497,7 +2523,7 @@ async function prepareFailedDatabaseAttestationContinuity({ statePath, state, ar
         throw new ContractError('database restore prior pending receipt is not canonical', EXIT.IDENTITY);
       }
       assertDatabaseAttestationReceipt(recorded, canonical.acceptedReceipt, state, releaseIdentity, resourceIds,
-        requestBody.commandDigest, resourceEpoch, pending, previousByResource);
+        commandDigestForFence(resourceEpoch), resourceEpoch, pending, previousByResource);
       if (recorded.status === 'pass') {
         for (let index = 0; index < locks.length; index += 1) {
           const mutationAt = revalidateLease().observedAt;
@@ -3029,6 +3055,7 @@ export async function runFencedAction(args, runtime = {}) {
       if (args.action === 'preprod-abort-telegram-egress') {
         if (locks.length !== 1) throw new ContractError('Telegram abort requires exactly one fenced resource', EXIT.SINGLETON);
         const recoveryBinding = runtime.failedRestoreBinding || FAILED_RESTORE_BINDING;
+        const commandDigestForFence = (fencingEpoch) => historicalRecoveryCommandDigest(plan, fencingEpoch);
         if (state.operationId !== recoveryBinding.operationId || releaseIdentity.manifestDigest !== recoveryBinding.manifestDigest) {
           throw new ContractError('Telegram abort is not bound to this failed operation', EXIT.IDENTITY);
         }
@@ -3064,7 +3091,7 @@ export async function runFencedAction(args, runtime = {}) {
           } else {
             const newest = resource.pendingAction === null && resource.highestAcceptedFencingEpoch === state.fencingEpoch
               ? await assertTelegramAbortReceiptChain(statePath, resource.receiptChainHead, baseReceiptChainHead, state,
-                releaseIdentity, recoveryBinding, failed, resource.resourceId, requestBody.commandDigest, state.fencingEpoch + 1)
+                releaseIdentity, recoveryBinding, failed, resource.resourceId, commandDigestForFence, state.fencingEpoch + 1)
               : null;
             if (!newest || newest.acceptedReceipt.receiptDigest !== resource.receiptChainHead ||
                 newest.receipt.receiptDigest !== priorReceipt.receiptDigest || newest.receipt.requestDigest !== requestDigest) {
@@ -3078,7 +3105,7 @@ export async function runFencedAction(args, runtime = {}) {
           const prior = { fencingEpoch: resource.highestAcceptedFencingEpoch,
             pendingAction: pending === null ? null : structuredClone(pending), receiptChainHead: resource.receiptChainHead };
           const newest = await assertTelegramAbortReceiptChain(statePath, resource.receiptChainHead, baseReceiptChainHead, state,
-            releaseIdentity, recoveryBinding, failed, resource.resourceId, requestBody.commandDigest, state.fencingEpoch);
+            releaseIdentity, recoveryBinding, failed, resource.resourceId, commandDigestForFence, state.fencingEpoch);
           const nextBinding = {
             environment: state.environment, project: state.project, resourceId: resource.resourceId,
             fencingEpoch: state.fencingEpoch, operationId: state.operationId, manifestDigest: releaseIdentity.manifestDigest,
@@ -3103,7 +3130,8 @@ export async function runFencedAction(args, runtime = {}) {
               generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId, holderId: pending.holderId,
               manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds: expectedResources,
               runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
-            if (pending.fencingEpoch !== resource.highestAcceptedFencingEpoch || pending.commandDigest !== requestBody.commandDigest ||
+            if (pending.fencingEpoch !== resource.highestAcceptedFencingEpoch ||
+                pending.commandDigest !== commandDigestForFence(pending.fencingEpoch) ||
                 pending.requestDigest !== sha256(priorRequest)) {
               throw new ContractError('Telegram abort prior pending request identity is invalid', EXIT.IDENTITY);
             }
@@ -3115,7 +3143,7 @@ export async function runFencedAction(args, runtime = {}) {
                 throw new ContractError('Telegram abort prior pending receipt is not canonical', EXIT.IDENTITY);
               }
               assertTelegramAbortReceipt(completedPending, canonical.acceptedReceipt, state, releaseIdentity, recoveryBinding, failed,
-                resource.resourceId, resource.receiptChainHead, requestBody.commandDigest, pending);
+                resource.resourceId, resource.receiptChainHead, commandDigestForFence(pending.fencingEpoch), pending);
               await adoptPriorEpochPendingAction(locks[0], prior, { environment: state.environment, project: state.project,
                 resourceId: resource.resourceId, fencingEpoch: state.fencingEpoch, operationId: state.operationId,
                 manifestDigest: releaseIdentity.manifestDigest, now: nextBinding.now }, completedPending.receiptDigest);
@@ -3220,7 +3248,8 @@ export async function runFencedAction(args, runtime = {}) {
           throw new ContractError('failed database recovery continuity is not bound to the fixed restore evidence', EXIT.IDENTITY);
         }
         failedDatabaseContinuity = await prepareFailedDatabaseAttestationContinuity({ statePath, state, args, releaseIdentity,
-          resourceIds, locks, requestBody, requestDigest, binding: recoveryBinding, revalidateLease });
+          resourceIds, locks, requestBody, requestDigest, binding: recoveryBinding, revalidateLease,
+          commandDigestForFence: (fencingEpoch) => historicalRecoveryCommandDigest(plan, fencingEpoch) });
         if (priorReceipt) {
           const canonical = await readCanonicalExecutorReceiptByDigest(statePath, priorReceipt.receiptDigest);
           if (canonicalJson(canonical.receipt) !== canonicalJson(priorReceipt)) {
@@ -3252,7 +3281,7 @@ export async function runFencedAction(args, runtime = {}) {
               pending.holderId === state.lease.holderId && pending.generation === state.generation && pending.requestDigest === requestDigest;
             if (resource.highestAcceptedFencingEpoch !== pending.fencingEpoch || resource.operationId !== state.operationId ||
                 resource.manifestDigest !== releaseIdentity.manifestDigest || pending.action !== args.action ||
-                pending.commandDigest !== requestBody.commandDigest || pending.fencingEpoch > state.fencingEpoch ||
+                pending.commandDigest !== historicalRecoveryCommandDigest(plan, pending.fencingEpoch) || pending.fencingEpoch > state.fencingEpoch ||
                 pending.requestDigest !== sha256(pendingRequest) || (pending.fencingEpoch === state.fencingEpoch && !currentPending)) {
               throw new ContractError('active runtime restore pending resource identity is inconsistent', EXIT.SINGLETON);
             }

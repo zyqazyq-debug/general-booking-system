@@ -69,6 +69,16 @@ function recoverableRuntimePlan(snapshot) {
       verify: () => ({ fixedLegacyRuntime: true }) } });
 }
 
+function registryBoundPlan(builder) {
+  return (state) => {
+    const registrySupplyChainBinding = { schema: 'booking.registry-runtime-gate/v1',
+      operationId: state.operationId, fencingEpoch: state.fencingEpoch,
+      components: { backend: { digest: `sha256:${'c'.repeat(64)}` } } };
+    return { ...builder(state), registrySupplyChainBinding,
+      environmentBinding: { BOOKING_REGISTRY_SUPPLY_CHAIN_DIGEST: sha256(registrySupplyChainBinding) } };
+  };
+}
+
 function legacyNetworkFixture(binding, fixedContainers = { backend: { running: true }, gateway: { running: true } },
   includeRogue = false) {
   const postgresId = '7'.repeat(64);
@@ -176,7 +186,7 @@ test('same fence retries fixed docker start when all resources became pending be
 test('takeover retries both fixed IDs idempotently after only one legacy container started', async (t) => {
   const fixture = await installActiveRecoveryFixture(t);
   const snapshot = { backend: { running: false }, gateway: { running: false } };
-  const planBuilder = recoverableRuntimePlan(snapshot);
+  const planBuilder = registryBoundPlan(recoverableRuntimePlan(snapshot));
   let calls = 0;
   await assert.rejects(runFencedAction(args(fixture.state, 'restore-f3'), { deployStateRoot: fixture.root,
     now: () => new Date('2026-09-10T10:05:30.000Z'), planBuilder,
@@ -216,9 +226,9 @@ test('fence 4 re-attests a fence 3 started active restore without executing dock
       [RESOURCES.databaseRef, RESOURCES.dataNetwork].includes(resourceId) ? `sha256:${'d'.repeat(64)}` :
         resourceId === 'telegram:booking-preprod' ? `sha256:${'e'.repeat(64)}` : null))}\n`);
   }
-  const planBuilder = () => ({ executable: '/trusted/docker', argv: ['start', 'fixed-backend', 'fixed-gateway'], cwd: '/trusted',
+  const planBuilder = registryBoundPlan(() => ({ executable: '/trusted/docker', argv: ['start', 'fixed-backend', 'fixed-gateway'], cwd: '/trusted',
     readback: { executable: '/trusted/docker', argv: ['container', 'inspect', 'fixed-backend', 'fixed-gateway'],
-      verify: () => ({ fixedLegacyRuntime: true }) } });
+      verify: () => ({ fixedLegacyRuntime: true }) } }));
   let calls = 0;
   await assert.rejects(runFencedAction(args(stateThree, 'restore-f3'), { deployStateRoot: root,
     now: () => new Date('2026-09-10T10:05:30.000Z'), planBuilder,
