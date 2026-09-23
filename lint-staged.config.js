@@ -15,6 +15,6 @@ module.exports = {
     'cd frontend && npm run type-check -- --noEmit',
   ],
   'backend/**/*.{js,ts}': [
-    'cd backend && npm run lint -- --max-warnings 0 --no-fix',
+    'node tools/lint/lint-staged-backend.mjs',
   ],
 };

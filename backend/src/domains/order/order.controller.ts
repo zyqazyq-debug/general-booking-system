@@ -12,7 +12,11 @@ import {
   UsePipes,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { ApiCreatedResponse, ApiExtraModels, ApiOkResponse } from '@nestjs/swagger';
+import {
+  ApiCreatedResponse,
+  ApiExtraModels,
+  ApiOkResponse,
+} from '@nestjs/swagger';
 import { OrderService } from './order.service';
 import {
   CreateOrderDto,
@@ -42,11 +46,18 @@ import {
 @UseGuards(JwtAuthGuard)
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 @ApiExtraModels(
-  OrderResponseDto, MyOrdersResponseDto, ManagedOrdersResponseDto,
-  CreditSummaryResponseDto, CreditCheckResponseDto, OrderContextResponseDto,
-  OrderCreatedResponseEnvelopeDto, MyOrdersResponseEnvelopeDto,
-  ManagedOrdersResponseEnvelopeDto, CreditSummaryResponseEnvelopeDto,
-  CreditCheckResponseEnvelopeDto, OrderContextResponseEnvelopeDto,
+  OrderResponseDto,
+  MyOrdersResponseDto,
+  ManagedOrdersResponseDto,
+  CreditSummaryResponseDto,
+  CreditCheckResponseDto,
+  OrderContextResponseDto,
+  OrderCreatedResponseEnvelopeDto,
+  MyOrdersResponseEnvelopeDto,
+  ManagedOrdersResponseEnvelopeDto,
+  CreditSummaryResponseEnvelopeDto,
+  CreditCheckResponseEnvelopeDto,
+  OrderContextResponseEnvelopeDto,
 )
 export class OrderController {
   private readonly logger = new Logger(OrderController.name);
@@ -179,7 +190,6 @@ export class OrderController {
     return this.orderService.checkCreditForService(req.user.id, serviceId);
   }
 
-  // TODO: Add ownership check for these actions (ensure it's the owner of the schedule)
   @Post(':id/confirm')
   @ApiCreatedResponse({ type: OrderCreatedResponseEnvelopeDto })
   confirm(@Param('id') id: string, @Request() req: AuthenticatedRequest) {

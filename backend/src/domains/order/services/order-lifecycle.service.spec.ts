@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { Order, OrderStatus } from '../entities/order.entity';
@@ -8,11 +7,6 @@ import { OrderStatusNotifierService } from './order-status-notifier.service';
 
 describe('OrderLifecycleService', () => {
   let service: OrderLifecycleService;
-
-  const orderRepository = {
-    findOne: jest.fn(),
-    save: jest.fn(),
-  };
 
   const queryRunner = {
     connect: jest.fn(),
@@ -44,10 +38,6 @@ describe('OrderLifecycleService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrderLifecycleService,
-        {
-          provide: getRepositoryToken(Order),
-          useValue: orderRepository,
-        },
         {
           provide: DataSource,
           useValue: dataSource,
@@ -87,18 +77,30 @@ describe('OrderLifecycleService', () => {
       status: OrderStatus.RESERVED,
     } as Order;
 
-    orderRepository.findOne.mockResolvedValue(pendingOrder);
-    orderRepository.save.mockResolvedValue(savedOrder);
+    queryRunner.manager.findOne.mockResolvedValue(pendingOrder);
+    queryRunner.manager.save.mockResolvedValue(savedOrder);
 
     await expect(service.confirm('order-1', 'provider-2')).resolves.toEqual(
       savedOrder,
     );
 
-    expect(orderRepository.save).toHaveBeenCalledWith(
+    expect(queryRunner.manager.findOne).toHaveBeenCalledWith(Order, {
+      where: { id: 'order-1' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(queryRunner.manager.save).toHaveBeenCalledWith(
+      Order,
       expect.objectContaining({
         id: 'order-1',
         status: OrderStatus.RESERVED,
       }),
+    );
+    expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.release).toHaveBeenCalledTimes(1);
+    expect(
+      queryRunner.commitTransaction.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      orderStatusNotifierService.notifyStatusChange.mock.invocationCallOrder[0],
     );
     expect(orderStatusNotifierService.notifyStatusChange).toHaveBeenCalledWith({
       orderId: 'order-1',
@@ -106,6 +108,26 @@ describe('OrderLifecycleService', () => {
       oldStatus: OrderStatus.PENDING,
       newStatus: OrderStatus.RESERVED,
     });
+  });
+
+  it('does not confirm a non-pending order or notify before rollback', async () => {
+    queryRunner.manager.findOne.mockResolvedValue({
+      id: 'order-1',
+      owner_id: 'provider-2',
+      status: OrderStatus.RESERVED,
+    } as Order);
+
+    await expect(service.confirm('order-1', 'provider-2')).rejects.toThrow(
+      'Order status is not PENDING',
+    );
+
+    expect(queryRunner.manager.save).not.toHaveBeenCalled();
+    expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+    expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.release).toHaveBeenCalledTimes(1);
+    expect(
+      orderStatusNotifierService.notifyStatusChange,
+    ).not.toHaveBeenCalled();
   });
 
   it('completes reserved order inside transaction and emits event after commit', async () => {

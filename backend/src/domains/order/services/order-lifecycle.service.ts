@@ -3,8 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { Order, OrderStatus } from '../entities/order.entity';
 import { OrderFinancialService } from './order-financial.service';
 import { OrderStatusNotifierService } from './order-status-notifier.service';
@@ -19,29 +18,44 @@ import {
 @Injectable()
 export class OrderLifecycleService {
   constructor(
-    @InjectRepository(Order)
-    private readonly orderRepository: Repository<Order>,
     private readonly dataSource: DataSource,
     private readonly orderFinancialService: OrderFinancialService,
     private readonly orderStatusNotifierService: OrderStatusNotifierService,
   ) {}
 
   async confirm(id: string, actorId: string) {
-    const order = await this.orderRepository.findOne({
-      where: { id },
-      relations: ['service'],
-    });
-    if (!order) throw new NotFoundException('Order not found');
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    OrderRolePolicy.ensureProviderAction(order, actorId, 'confirm');
-    OrderStatusTransitionPolicy.ensureConfirmable(order.status);
+    let saved: Order;
+    let oldStatus: OrderStatus;
+    let serviceId: string | undefined;
+    try {
+      const order = await queryRunner.manager.findOne(Order, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!order) throw new NotFoundException('Order not found');
 
-    const oldStatus = order.status;
-    order.status = OrderStatus.RESERVED;
-    const saved = await this.orderRepository.save(order);
+      OrderRolePolicy.ensureProviderAction(order, actorId, 'confirm');
+      OrderStatusTransitionPolicy.ensureConfirmable(order.status);
+
+      oldStatus = order.status;
+      serviceId = order.service_id ?? undefined;
+      order.status = OrderStatus.RESERVED;
+      saved = await queryRunner.manager.save(Order, order);
+      await queryRunner.commitTransaction();
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+
     this.notifyStatusChange({
       orderId: id,
-      serviceId: order.service_id ?? undefined,
+      serviceId,
       oldStatus,
       newStatus: saved.status,
     });
