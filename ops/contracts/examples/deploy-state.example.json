@@ -27,6 +27,7 @@
   "evidence": {
     "baselineReceiptDigest": null,
     "expandMigrationReceiptDigest": null,
+    "telegramEgressReceiptDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
     "stageReceiptDigest": null,
     "candidateProbeDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
     "rollbackPreSwitchProbeDigest": null,

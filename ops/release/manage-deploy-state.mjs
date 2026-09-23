@@ -6,6 +6,7 @@ import { canonicalJson, ContractError, EXIT, gateResult, parseArgs, sha256 } fro
 import { canonicalStatePath, initializeStateFile, mutateStateFile, verifyCanonicalDeployReceiptChain } from './lib/deploy-state-store.mjs';
 import { readCanonicalExecutorReceiptByDigest, readCompletedExecutorReceiptByDigest, resourceDirectory } from './lib/fenced-resource-store.mjs';
 import { schemaForAction } from './lib/external-action-contract.mjs';
+import { verifyStageRuntimeForTransition } from './execute-fenced-action.mjs';
 import { LEGACY_OLD_BINDING } from './lib/legacy-preprod.mjs';
 import { acquireLease, initialDeployState, MAX_OBSERVATION_WINDOW_MINUTES, renewLease, ROLLBACK_MODE, rollbackModeForState, takeoverExpiredLease, transitionDeployState } from './lib/state-machine.mjs';
 
@@ -87,7 +88,7 @@ const RECEIPT_TRANSITIONS = Object.freeze({
     { argument: 'expand-migration-receipt-digest', action: 'preprod-expand-migrate', identity: 'candidate', resources: ['databaseRef', 'dataNetwork'] },
     { argument: 'baseline-receipt-digest', action: 'preprod-baseline-ledger', identity: 'candidate', resources: ['databaseRef', 'dataNetwork'], legacyOnly: true, predecessorOf: 'preprod-expand-migrate' },
   ],
-  CANDIDATE_STARTED: [{ argument: 'stage-receipt-digest', action: 'preprod-stage', identity: 'candidate', resources: ['edgeNetwork'] }],
+  CANDIDATE_STARTED: [{ argument: 'stage-receipt-digest', action: 'preprod-stage', identity: 'candidate', resources: ['edgeNetwork', 'telegram'] }],
   CANDIDATE_READY: [{ argument: 'candidate-probe-digest', action: 'preprod-probe-candidate', identity: 'candidate', resources: ['candidateProbe'] }],
   SINGLETON_TRANSFERRED: [
     { argument: 'rollback-pre-switch-probe-digest', action: 'preprod-probe-active', identity: 'active', resources: ['activeProbe'] },
@@ -131,6 +132,61 @@ async function inspectRuntimeEnvironment(args, runtime) {
     throw new ContractError('runtime environment file must be the fixed canonical root-owned 0600 regular file', EXIT.IDENTITY);
   }
   return sha256(await readFile(canonical, 'utf8'));
+}
+
+function executorRequestBody(receipt) {
+  return {
+    schema: schemaForAction(receipt.action).request, environment: receipt.environment, project: receipt.project,
+    action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
+    generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
+    manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
+    runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest,
+    ...(receipt.action === 'preprod-stage' ? { telegramEgressReceiptDigest: receipt.telegramEgressReceiptDigest } : {}),
+  };
+}
+
+async function verifyStageTelegramEgressPredecessor(statePath, state, stageReceipt) {
+  const digest = stageReceipt.telegramEgressReceiptDigest;
+  if (!DIGEST.test(digest || '')) throw new ContractError('candidate stage receipt has no Telegram egress predecessor', EXIT.READINESS);
+  const { receipt, acceptedReceipt } = await readCanonicalExecutorReceiptByDigest(statePath, digest);
+  const telegramResource = `telegram:${state.project}`;
+  const telegramStageResource = stageReceipt.resources?.find((resource) => resource.resourceId === telegramResource);
+  const edgeStageResource = stageReceipt.resources?.find((resource) => resource.resourceId === state.resources.edgeNetwork);
+  const resourceIds = (stageReceipt.resources || []).map((resource) => resource?.resourceId);
+  let edgePredecessorInvalid = false;
+  if (DIGEST.test(edgeStageResource?.previousReceiptDigest || '')) {
+    try {
+      const edgePredecessor = await readCanonicalExecutorReceiptByDigest(statePath, edgeStageResource.previousReceiptDigest);
+      const prior = edgePredecessor.receipt;
+      const allowedManifests = new Set([state.active?.manifestDigest, state.candidate?.manifestDigest].filter(Boolean));
+      edgePredecessorInvalid = edgePredecessor.acceptedReceipt.receiptDigest !== edgeStageResource.previousReceiptDigest ||
+        prior.status !== 'pass' || prior.environment !== state.environment || prior.project !== state.project ||
+        prior.operationId !== stageReceipt.operationId || prior.fencingEpoch > stageReceipt.fencingEpoch ||
+        !allowedManifests.has(prior.manifestDigest) || !prior.resourceIds?.includes(state.resources.edgeNetwork) ||
+        prior.requestDigest !== sha256(executorRequestBody(prior));
+    } catch { edgePredecessorInvalid = true; }
+  }
+  const mismatches = [
+    acceptedReceipt.receiptDigest !== digest, receipt.schema !== schemaForAction('preprod-prepare-telegram-egress').receipt,
+    receipt.status !== 'pass', receipt.action !== 'preprod-prepare-telegram-egress', receipt.environment !== state.environment,
+    receipt.project !== state.project, receipt.operationId !== stageReceipt.operationId, receipt.approvalId !== stageReceipt.approvalId,
+    receipt.generation !== stageReceipt.generation, receipt.fencingEpoch !== stageReceipt.fencingEpoch,
+    receipt.leaseId !== stageReceipt.leaseId, receipt.holderId !== stageReceipt.holderId,
+    receipt.manifestDigest !== state.candidate?.manifestDigest, !sameIdentity(receipt.releaseIdentity, state.candidate),
+    receipt.runtimeEnvDigest !== state.runtimeEnvDigest, canonicalJson(receipt.resourceIds) !== canonicalJson([telegramResource]),
+    receipt.requestDigest !== sha256(executorRequestBody(receipt)),
+    resourceIds.length !== 2, new Set(resourceIds).size !== 2,
+    canonicalJson([...resourceIds].sort()) !== canonicalJson([state.resources.edgeNetwork, telegramResource].sort()),
+    !(edgeStageResource?.previousReceiptDigest === null || DIGEST.test(edgeStageResource?.previousReceiptDigest || '')),
+    state.phase === 'ROLLED_BACK' && edgeStageResource?.previousReceiptDigest === null,
+    edgePredecessorInvalid,
+    edgeStageResource?.highestAcceptedFencingEpoch !== stageReceipt.fencingEpoch,
+    telegramStageResource?.highestAcceptedFencingEpoch !== stageReceipt.fencingEpoch,
+    telegramStageResource?.previousReceiptDigest !== digest,
+  ];
+  if (mismatches.some(Boolean)) {
+    throw new ContractError('candidate stage Telegram egress predecessor is not current and canonical', EXIT.READINESS);
+  }
 }
 
 async function verifyTransitionReceipts(statePath, state, args) {
@@ -184,13 +240,7 @@ async function verifyTransitionReceipts(statePath, state, args) {
       approvalId: priorFenceSuccessor.approvalId, fencingEpoch: priorFenceSuccessor.fencingEpoch,
       leaseId: priorFenceSuccessor.leaseId, holderId: priorFenceSuccessor.holderId,
     } : { approvalId: state.approvalId, fencingEpoch: state.fencingEpoch, leaseId: state.lease?.leaseId, holderId: state.lease?.holderId };
-    const requestBody = {
-      schema: schemaForAction(receipt.action).request, environment: receipt.environment, project: receipt.project,
-      action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
-      generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
-      manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
-      runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest,
-    };
+    const requestBody = executorRequestBody(receipt);
     const mismatches = [
       [receipt.schema === schemaForAction(receipt.action).receipt, 'schema'], [receipt.status === 'pass', 'status'],
       [acceptedReceipt.receiptDigest === args[requirement.argument], 'digest'], [receipt.action === requirement.action, 'action'],
@@ -203,6 +253,7 @@ async function verifyTransitionReceipts(statePath, state, args) {
       [canonicalJson(receipt.resourceIds) === canonicalJson(expectedResources), 'resources'], [receipt.requestDigest === sha256(requestBody), 'request'],
     ].filter(([matches]) => !matches).map(([, name]) => name);
     if (mismatches.length) throw new ContractError(`${args.to} executor receipt does not match the canonical transition identity: ${mismatches.join(',')}`, EXIT.IDENTITY);
+    if (requirement.action === 'preprod-stage') await verifyStageTelegramEgressPredecessor(statePath, state, receipt);
     verified.set(requirement.action, { receipt, acceptedReceipt, expectedResources });
     if (requirement.predecessorOf) {
       if (!successor) throw new ContractError(`${args.to} executor receipt predecessor proof is unavailable`, EXIT.IDENTITY);
@@ -223,6 +274,7 @@ async function verifyTransitionReceipts(statePath, state, args) {
       }
     }
   }
+  return verified;
 }
 
 async function verifyTerminalResourceClosure(statePath, state, nextPhase, args) {
@@ -321,12 +373,16 @@ export async function runManageDeployState(args, runtime = {}) {
       if (state.schema === 'booking.deploy-state/v2' && ['FAILED_RECOVERED', 'IDLE'].includes(args.to)) {
         required(args, ['observation-window-minutes']);
       }
-      await verifyTransitionReceipts(statePath, state, args);
+      const verifiedReceipts = await verifyTransitionReceipts(statePath, state, args);
+      if (args.to === 'CANDIDATE_STARTED') {
+        await verifyStageRuntimeForTransition(statePath, state, verifiedReceipts.get('preprod-stage').receipt, runtime);
+      }
       await verifyTerminalResourceClosure(statePath, state, args.to, args);
       return transitionDeployState(state, {
         ...lease, to: args.to, manifestDigest: args['manifest-digest'],
         baselineReceiptDigest: args['baseline-receipt-digest'], expandMigrationReceiptDigest: args['expand-migration-receipt-digest'],
         stageReceiptDigest: args['stage-receipt-digest'],
+        telegramEgressReceiptDigest: verifiedReceipts.get('preprod-stage')?.receipt.telegramEgressReceiptDigest,
         candidateProbeDigest: args['candidate-probe-digest'], rollbackPreSwitchProbeDigest: args['rollback-pre-switch-probe-digest'],
         singletonTransferReceiptDigest: args['singleton-transfer-receipt-digest'],
         switchReceiptDigest: args['switch-receipt-digest'], webhookReceiptDigest: args['webhook-receipt-digest'], observationReceiptDigest: args['observation-receipt-digest'],

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -69,6 +69,9 @@ async function fixture({ cliGuard = false } = {}) {
   const g4 = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4'); const bundleRoot = join(g4, 'control-plane-install', 'bundles'); const approvalRoot = join(g4, 'control-plane-install', 'approvals'); const receiptRoot = join(g4, 'receipts');
   const paths = { installRoot, rollbackRoot, bundleRoot, receiptRoot, lockPath: join(parent, '.happybooking-control-plane-install.lock'),
     approvalRoot, hostIdentityPath: join(root, 'etc', 'machine-id'), journalPath: join(parent, '.happybooking-control-plane-install.journal.json'),
+    runtimeLockPath: join(parent, '.happybooking-control-plane-runtime.lock'),
+    migrationLockPath: join(parent, '.happybooking-legacy-active-migration.lock'),
+    migrationJournalPath: join(parent, '.happybooking-legacy-active-migration.journal.json'),
     deployStatePath: join(root, 'var', 'lib', 'happybooking', 'deploy-state', 'preprod', 'booking-preprod', 'deploy-state.json') };
   await mkdir(parent, { recursive: true }); await mkdir(bundleRoot, { recursive: true }); await mkdir(approvalRoot, { recursive: true }); await mkdir(receiptRoot, { recursive: true });
   await mkdir(dirname(paths.hostIdentityPath), { recursive: true }); await writeFile(paths.hostIdentityPath, '0123456789abcdef0123456789abcdef\n');
@@ -158,7 +161,8 @@ test('bundle inventory verifies only the immutable bundle before receipt and qui
   const missingParent = join(f.root, 'missing-install-parent');
   const result = await runControlPlaneInstaller(['--action', 'bundle-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], {
     ...f.runtime, paths: { ...f.paths, installRoot: join(missingParent, 'happybooking'), rollbackRoot: join(missingParent, 'happybooking.rollback'),
-      lockPath: join(missingParent, '.install.lock'), journalPath: join(missingParent, '.install.journal.json'), receiptRoot: join(f.root, 'missing-receipts') },
+      lockPath: join(missingParent, '.install.lock'), journalPath: join(missingParent, '.install.journal.json'),
+      migrationLockPath: join(missingParent, '.migration.lock'), migrationJournalPath: join(missingParent, '.migration.journal.json'), receiptRoot: join(f.root, 'missing-receipts') },
     assertQuiescent: async () => { throw new Error('must not run'); },
   });
   assert.equal(result.action, 'bundle-inventory'); assert.equal(result.inventoryDigest, f.inv.digest);
@@ -381,6 +385,43 @@ test('quiescence, mountpoint, dependency closure, receipt identity and readback 
     altered.unreviewed = true; delete altered.receiptDigest; altered.receiptDigest = digest(canonical(altered)); await chmod(receiptPath, 0o600); await writeFile(receiptPath, `${canonical(altered)}\n`); await chmod(receiptPath, 0o400);
     await assert.rejects(runControlPlaneInstaller(['--action', 'readback', '--install-id', ID, '--expected-receipt-digest', altered.receiptDigest], f.runtime), /fields are invalid/);
   }
+});
+
+test('installer refuses legacy migration lock and journal before any install transaction mutation', async (t) => {
+  for (const [label, conflictPath, message] of [
+    ['migration lock', 'migrationLockPath', /legacy active migration lock exists/],
+    ['migration journal', 'migrationJournalPath', /legacy active migration journal exists/],
+  ]) {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    const activeBefore = await inspectControlPlaneInventory(f.paths.installRoot, { uid: null, enforceMode: false });
+    const rollbackBefore = await inspectControlPlaneInventory(f.paths.rollbackRoot, { uid: null, enforceMode: false });
+    await writeFile(f.paths[conflictPath], `${label}\n`);
+    await assert.rejects(runControlPlaneInstaller(f.installArgs, f.runtime), message);
+    assert.equal(await existsLocal(f.paths.lockPath), false, label);
+    assert.equal(await existsLocal(f.paths.journalPath), false, label);
+    assert.equal((await inspectControlPlaneInventory(f.paths.installRoot, { uid: null, enforceMode: false })).digest, activeBefore.digest, label);
+    assert.equal((await inspectControlPlaneInventory(f.paths.rollbackRoot, { uid: null, enforceMode: false })).digest, rollbackBefore.digest, label);
+  }
+});
+
+test('migration lock appearing after initial quiescence but before installer lock publication stops before stage or rename', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const activeBefore = await inspectControlPlaneInventory(f.paths.installRoot, { uid: null, enforceMode: false });
+  const rollbackBefore = await inspectControlPlaneInventory(f.paths.rollbackRoot, { uid: null, enforceMode: false });
+  let injected = false; let installerLockPublished = false;
+  const runtime = { ...f.runtime, checkpoint: async (point) => {
+    if (point === 'quiescence:before-install-lock' && !injected) {
+      injected = true;
+      await writeFile(f.paths.migrationLockPath, 'late migration lock\n');
+    }
+    if (point === 'lock:acquired') installerLockPublished = true;
+  } };
+  await assert.rejects(runControlPlaneInstaller(f.installArgs, runtime), /legacy active migration lock exists/);
+  assert.equal(injected, true); assert.equal(installerLockPublished, true);
+  assert.equal(await existsLocal(f.paths.lockPath), false);
+  assert.equal(await existsLocal(f.paths.journalPath), false);
+  assert.equal((await inspectControlPlaneInventory(f.paths.installRoot, { uid: null, enforceMode: false })).digest, activeBefore.digest);
+  assert.equal((await inspectControlPlaneInventory(f.paths.rollbackRoot, { uid: null, enforceMode: false })).digest, rollbackBefore.digest);
 });
 
 test('archive bytes, lock owner and journal-derived paths cannot be forged during recovery', async (t) => {
@@ -643,7 +684,9 @@ async function existsLocal(path) { try { await readFile(path); return true; } ca
 
 test('production source keeps fixed roots, root:root enforcement, fsync, hard-link receipt publication and no environment path override', async () => {
   const source = await readFile(join(repo, 'ops', 'release', 'install-booking-preprod-control-plane.mjs'), 'utf8');
-  for (const fixed of ['/usr/local/libexec/happybooking', '/usr/local/libexec/happybooking.rollback', '/volume1/happybooking/booking-preprod/.g4/receipts', '/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json']) assert.ok(source.includes(fixed));
+  for (const fixed of ['/usr/local/libexec/happybooking', '/usr/local/libexec/happybooking.rollback', '/usr/local/libexec/.happybooking-legacy-active-migration.lock',
+    '/usr/local/libexec/.happybooking-legacy-active-migration.journal.json', '/volume1/happybooking/booking-preprod/.g4/receipts',
+    '/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json']) assert.ok(source.includes(fixed));
   assert.match(source, /!key\.toUpperCase\(\)\.startsWith\('COSIGN_'\)/); assert.match(source, /info\.uid !== uid \|\| info\.gid !== 0/); assert.match(source, /await handle\.sync\(\)/); assert.match(source, /await link\(temp, path\)/);
 });
 
@@ -677,6 +720,243 @@ async function bootstrapFixture() {
   return { root, launcher, active, hostIdentity, bundle, approval, receiptRoot, stateProject, trust, cosign, migrator, env, args, tuple, receipt, keyDigest, activeInventory };
 }
 
+async function publishBootstrapApproval(f, tupleValue, receiptValue) {
+  await writeFile(join(f.approval, 'approval-tuple.json'), `${canonical(tupleValue)}\n`);
+  await writeFile(join(f.approval, 'approver-receipt.json'), `${canonical(receiptValue)}\n`);
+  await writeFile(join(f.approval, 'approver-receipt.sig'), 'valid\n');
+  f.tuple = tupleValue;
+  f.receipt = receiptValue;
+}
+
+async function executableBootstrapFixture() {
+  const f = await bootstrapFixture();
+  const docker = join(f.root, 'test-only-host-docker');
+  const log = join(f.root, 'test-only-host-docker.log');
+  const socket = join(f.root, 'var', 'run', 'docker.sock');
+  await mkdir(dirname(socket), { recursive: true });
+  await writeFile(socket, 'test-only socket sentinel\n');
+  const pollution = [
+    'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION',
+    'DOCKER_AUTH_CONFIG', 'DOCKER_CUSTOM_HEADERS', 'DOCKER_CONTENT_TRUST',
+    'DOCKER_CONTENT_TRUST_SERVER', 'DOCKER_DEFAULT_PLATFORM', 'LD_PRELOAD', 'LD_LIBRARY_PATH',
+  ];
+  const mock = `#!/bin/sh
+{
+  printf '%s\\n' CALL
+  printf 'DOCKER_HOST=%s\\n' "\${DOCKER_HOST-<unset>}"
+  printf 'DOCKER_CONFIG=%s\\n' "\${DOCKER_CONFIG-<unset>}"
+${pollution.map((name) => `  if [ "\${${name}+set}" = set ]; then printf '${name}=<set>:%s\\n' "\${${name}}"; else printf '%s\\n' '${name}=<unset>'; fi`).join('\n')}
+  for value do printf 'ARG=%s\\n' "$value"; done
+  printf '%s\\n' END
+} >> '${shellPath(log)}'
+exit 0
+`;
+  await writeFile(docker, mock); await chmod(docker, 0o755);
+  const original = await readFile(f.launcher, 'utf8');
+  const source = original
+    .replace("HOST_DOCKER='/var/packages/ContainerManager/target/usr/bin/docker'", `HOST_DOCKER='${shellPath(docker)}'`)
+    .replace("[ \"\${BOOKING_CONTROL_PLANE_DRY_RUN:-}\" = 'true' ] || fail", "[ \"\${BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_EXECUTE:-}\" = 'true' ] || fail")
+    .replaceAll("[ \"$(id -u)\" = '0' ]", '[ "$(id -u)" = "$EXPECTED_UID" ]')
+    .replaceAll('[ -S /var/run/docker.sock ]', `[ -f '${shellPath(socket)}' ]`);
+  assert.notEqual(source, original);
+  assert.ok(source.includes(`HOST_DOCKER='${shellPath(docker)}'`));
+  assert.equal(source.includes("[ \"$(id -u)\" = '0' ]"), false);
+  assert.equal(source.includes('[ -S /var/run/docker.sock ]'), false);
+  await writeFile(f.launcher, source); await chmod(f.launcher, 0o755);
+  const tupleBody = { ...f.tuple, bootstrapInstallerLauncherDigest: digest(await readFile(f.launcher)) }; delete tupleBody.tupleDigest;
+  const tuple = { ...tupleBody, tupleDigest: digest(canonical(tupleBody)) };
+  const receiptBody = { ...f.receipt, tupleDigest: tuple.tupleDigest }; delete receiptBody.receiptDigest;
+  const receipt = { ...receiptBody, receiptDigest: digest(canonical(receiptBody)) };
+  await publishBootstrapApproval(f, tuple, receipt);
+  f.docker = docker; f.log = log; f.socket = socket; f.pollution = pollution;
+  f.hostDockerConfig = join(f.root, 'usr', 'local', 'libexec', '.happybooking-host-docker-empty');
+  f.env = {
+    ...process.env,
+    BOOKING_CONTROL_PLANE_DRY_RUN: '',
+    BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_ROOT: shellPath(f.root),
+    BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_EXECUTE: 'true',
+    DOCKER_HOST: 'tcp://attacker.invalid:2376',
+    DOCKER_CONTEXT: 'attacker-context',
+    DOCKER_TLS: '1',
+    DOCKER_CONFIG: shellPath(join(f.root, 'attacker-docker-config')),
+    DOCKER_TLS_VERIFY: '1',
+    DOCKER_CERT_PATH: shellPath(join(f.root, 'attacker-certs')),
+    DOCKER_API_VERSION: '1.24',
+    DOCKER_AUTH_CONFIG: '{"auths":{"attacker.invalid":{}}}',
+    DOCKER_CUSTOM_HEADERS: 'X-Attacker=present',
+    DOCKER_CONTENT_TRUST: '1',
+    DOCKER_CONTENT_TRUST_SERVER: 'https://attacker.invalid',
+    DOCKER_DEFAULT_PLATFORM: 'linux/amd64',
+    LD_PRELOAD: '',
+    LD_LIBRARY_PATH: shellPath(join(f.root, 'attacker-libraries')),
+  };
+  return f;
+}
+
+async function dockerCalls(f) {
+  const source = await readFile(f.log, 'utf8');
+  return source.trim().split(/\r?\nCALL\r?\n/).map((record) => record.replace(/^CALL\r?\n/, '').split(/\r?\n/));
+}
+
+function assertFixedHostDockerCall(f, call) {
+  assert.ok(call.includes('DOCKER_HOST=unix:///var/run/docker.sock'), call.join('\n'));
+  assert.ok(call.includes(`DOCKER_CONFIG=${shellPath(f.hostDockerConfig)}`), call.join('\n'));
+  for (const name of f.pollution) assert.ok(call.includes(`${name}=<unset>`), `${name}:\n${call.join('\n')}`);
+  const args = call.filter((line) => line.startsWith('ARG=')).map((line) => line.slice(4));
+  assert.deepEqual(args.slice(0, 4), ['--host', 'unix:///var/run/docker.sock', '--config', shellPath(f.hostDockerConfig)]);
+  assert.equal(args[4], 'run');
+}
+
+function assertIsolatedContainerDockerClient(argv) {
+  assert.ok(argv.includes('/root/.docker:ro,nosuid,nodev,noexec,size=64k'));
+  for (const value of [
+    'DOCKER_HOST=unix:///var/run/docker.sock', 'DOCKER_CONFIG=/root/.docker',
+    'DOCKER_CONTEXT=', 'DOCKER_TLS=', 'DOCKER_TLS_VERIFY=', 'DOCKER_CERT_PATH=', 'DOCKER_API_VERSION=',
+    'DOCKER_AUTH_CONFIG=', 'DOCKER_CUSTOM_HEADERS=', 'DOCKER_CONTENT_TRUST=',
+    'DOCKER_CONTENT_TRUST_SERVER=', 'DOCKER_DEFAULT_PLATFORM=', 'LD_PRELOAD=', 'LD_LIBRARY_PATH=',
+  ]) assert.ok(argv.includes(value), value);
+}
+
+const hasDockerSocketMount = (values) => values.some((value) => value === '/var/run/docker.sock'
+  || value.includes('src=/var/run/docker.sock') || value.includes('dst=/var/run/docker.sock'));
+
+test('executable bootstrap copy pins every host Docker call and clears hostile client and loader environment', async (t) => {
+  const sampleDigest = digest('bootstrap-host-docker-boundary');
+  const transactionId = '10000000-0000-4000-8000-000000000071';
+  const scenarios = [
+    ['inventory', 1, ['--action', 'inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL]],
+    ['active-inventory', 1, ['--action', 'active-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL]],
+    ['legacy-inventory', 2, ['--action', 'legacy-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+      '--migration-id', 'booking-legacy-active-20260913T010203Z-536b435723ae']],
+    ['install', 1, ['--action', 'install', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+      '--source-archive-digest', sampleDigest, '--installer-digest', sampleDigest, '--bundle-declaration-digest', sampleDigest,
+      '--tracked-allowlist-digest', sampleDigest, '--expected-inventory-digest', sampleDigest,
+      '--approval-tuple-digest', sampleDigest, '--approver-receipt-digest', sampleDigest]],
+    ['recover', 1, ['--action', 'recover', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL, '--transaction-id', transactionId]],
+  ];
+  for (const [name, expectedCalls, args] of scenarios) {
+    const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    const result = spawnSync(shell, [shellPath(f.launcher), ...args], { encoding: 'utf8', env: f.env });
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    const calls = await dockerCalls(f);
+    assert.equal(calls.length, expectedCalls, name);
+    for (const call of calls) assertFixedHostDockerCall(f, call);
+  }
+});
+
+test('signed legacy executable bootstrap pins hostile environment independently on all three Docker stages', async (t) => {
+  const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  const migrationId = 'booking-legacy-active-20260913T010203Z-536b435723ae';
+  const transactionId = '10000000-0000-4000-8000-000000000072';
+  const body = { ...f.receipt, schema: 'booking.preprod.control-plane-approval-receipt/v3', migrationContext: { migrationId, allowedActions: ['migrate', 'recover'], transactionId,
+    predecessorReceiptDigest: null, expectedNormalizedInventoryDigest: null } }; delete body.receiptDigest;
+  const receipt = { ...body, receiptDigest: digest(canonical(body)) };
+  await publishBootstrapApproval(f, f.tuple, receipt);
+  const result = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--migration-id', migrationId, '--transaction-id', transactionId, '--expected-raw-inventory-digest', f.activeInventory.digest, '--execute', 'true'],
+  { encoding: 'utf8', env: f.env });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = await dockerCalls(f);
+  assert.equal(calls.length, 3);
+  for (const call of calls) assertFixedHostDockerCall(f, call);
+  const names = calls.map((call) => {
+    const args = call.filter((line) => line.startsWith('ARG=')).map((line) => line.slice(4));
+    return args[args.indexOf('--name') + 1];
+  });
+  assert.deepEqual(names, ['booking-preprod-legacy-bundle-preflight', 'booking-preprod-legacy-approval-preflight', 'booking-preprod-legacy-active-migration']);
+});
+
+test('terminal host Docker launch replaces the bootstrap process instead of leaving an orphaned Docker child', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  await writeFile(f.docker, `#!/bin/sh
+printf '%s\\n' START >> '${shellPath(f.log)}'
+sleep 1
+printf '%s\\n' SURVIVED >> '${shellPath(f.log)}'
+`);
+  await chmod(f.docker, 0o755);
+  const child = spawn(shell, [shellPath(f.launcher), '--action', 'active-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL],
+    { env: f.env, stdio: 'ignore' });
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const log = await readFile(f.log, 'utf8').catch(() => '');
+    if (log.includes('START')) break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  assert.match(await readFile(f.log, 'utf8'), /START/);
+  assert.equal(child.kill('SIGTERM'), true);
+  await new Promise((resolvePromise) => child.once('exit', resolvePromise));
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 1400));
+  assert.doesNotMatch(await readFile(f.log, 'utf8'), /SURVIVED/);
+});
+
+test('host bootstrap refuses file, directory and symlink pollution at its fixed empty Docker config before first invocation', async (t) => {
+  const scenarios = process.platform === 'win32' ? ['file', 'directory'] : ['file', 'directory', 'symlink'];
+  for (const scenario of scenarios) {
+    const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    if (scenario === 'file') await writeFile(f.hostDockerConfig, 'attacker config\n');
+    if (scenario === 'directory') await mkdir(f.hostDockerConfig);
+    if (scenario === 'symlink') await symlink(f.docker, f.hostDockerConfig);
+    const result = spawnSync(shell, [shellPath(f.launcher), ...f.args], { encoding: 'utf8', env: f.env });
+    assert.notEqual(result.status, 0, scenario);
+    assert.equal(await existsLocal(f.log), false, scenario);
+  }
+});
+
+test('host bootstrap refuses legacy migration lock and journal before launching a mutating installer', async (t) => {
+  const sampleDigest = digest('bootstrap-migration-exclusion');
+  const args = ['--action', 'install', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--source-archive-digest', sampleDigest, '--installer-digest', sampleDigest, '--bundle-declaration-digest', sampleDigest,
+    '--tracked-allowlist-digest', sampleDigest, '--expected-inventory-digest', sampleDigest,
+    '--approval-tuple-digest', sampleDigest, '--approver-receipt-digest', sampleDigest];
+  for (const name of ['.happybooking-legacy-active-migration.lock', '.happybooking-legacy-active-migration.journal.json']) {
+    const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    await writeFile(join(f.root, 'usr', 'local', 'libexec', name), 'conflict\n');
+    const result = spawnSync(shell, [shellPath(f.launcher), ...args], { encoding: 'utf8', env: f.env });
+    assert.notEqual(result.status, 0, name);
+    assert.equal(await existsLocal(f.log), false, name);
+  }
+});
+
+test('legacy migrate, recover and rollback bootstraps fail before Docker when installer lock or journal exists', async (t) => {
+  for (const name of ['.happybooking-control-plane-install.lock', '.happybooking-control-plane-install.journal.json']) {
+    const f = await bootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    await writeFile(join(f.root, 'usr', 'local', 'libexec', name), 'installer conflict\n');
+    for (const action of ['legacy-migrate', 'legacy-recover', 'legacy-rollback']) {
+      const result = spawnSync(shell, [shellPath(f.launcher), '--action', action, '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], { encoding: 'utf8', env: f.env });
+      assert.notEqual(result.status, 0, `${name}:${action}`);
+      assert.equal(result.stdout.trim(), '', `${name}:${action}`);
+    }
+  }
+});
+
+test('host fail-fast rejects dangling lock and journal symlinks in both installer-to-migrator directions', async (t) => {
+  const sampleDigest = digest('bootstrap-dangling-lock-exclusion');
+  const installArgs = ['--action', 'install', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
+    '--source-archive-digest', sampleDigest, '--installer-digest', sampleDigest, '--bundle-declaration-digest', sampleDigest,
+    '--tracked-allowlist-digest', sampleDigest, '--expected-inventory-digest', sampleDigest,
+    '--approval-tuple-digest', sampleDigest, '--approver-receipt-digest', sampleDigest];
+  {
+    const f = await executableBootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    for (const name of ['.happybooking-legacy-active-migration.lock', '.happybooking-legacy-active-migration.journal.json']) {
+      const conflict = join(f.root, 'usr', 'local', 'libexec', name);
+      await symlink(join(f.root, `missing-${name}`), conflict);
+      const result = spawnSync(shell, [shellPath(f.launcher), ...installArgs], { encoding: 'utf8', env: f.env });
+      assert.notEqual(result.status, 0, name); assert.equal(await existsLocal(f.log), false, name);
+      await rm(conflict);
+    }
+  }
+  {
+    const f = await bootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+    for (const name of ['.happybooking-control-plane-install.lock', '.happybooking-control-plane-install.journal.json']) {
+      const conflict = join(f.root, 'usr', 'local', 'libexec', name);
+      await symlink(join(f.root, `missing-${name}`), conflict);
+      const result = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-migrate', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL], { encoding: 'utf8', env: f.env });
+      assert.notEqual(result.status, 0, name); assert.equal(result.stdout.trim(), '', name);
+      await rm(conflict);
+    }
+  }
+});
+
 test('NAS no-Node launcher verifies its signed host bootstrap before emitting the isolated Docker plan', async (t) => {
   const f = await bootstrapFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const launcher = shellPath(f.launcher);
@@ -686,6 +966,7 @@ test('NAS no-Node launcher verifies its signed host bootstrap before emitting th
   for (const value of ['--network', 'none', '--pid', 'host', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'DAC_OVERRIDE', '--security-opt', 'no-new-privileges:true',
     '/usr/local/libexec', '/volume1/happybooking/booking-preprod/.g4/control-plane-install', '/volume1/happybooking/booking-preprod/.g4/receipts',
     '/usr/local/bin/cosign', '/etc/happybooking/trust/control-plane-approver.pub', '/etc/happybooking/trust/control-plane-approver.pub.sha256']) assert.ok(argv.some((item) => item.includes(value)), value);
+  assertIsolatedContainerDockerClient(argv);
   assert.ok(argv.some((value) => value.endsWith(`/volume1/happybooking/booking-preprod/.g4/control-plane-install/bundles/${ID}/installer.mjs`)));
   const rejected = spawnSync(shell, [launcher, '--action', 'inventory', '--install-id', '../../prod', '--git-sha', GIT, '--approval-id', APPROVAL], { encoding: 'utf8', env: f.env }); assert.notEqual(rejected.status, 0);
 });
@@ -709,7 +990,7 @@ test('pre-approval active inventory bootstrap has a read-only Docker boundary an
   assert.ok(argv.includes('--network') && argv.includes('none') && argv.includes('--read-only'));
   assert.ok(argv.some((value) => value.includes('src=') && value.includes('/usr/local/libexec/happybooking') && value.endsWith(',readonly')));
   assert.ok(argv.some((value) => value.includes('/etc/machine-id') && value.endsWith(',readonly')));
-  assert.equal(argv.some((value) => value.includes('docker.sock')), false);
+  assert.equal(hasDockerSocketMount(argv), false);
   assert.equal(argv.some((value) => value.includes('/var/lib/happybooking')), false);
   assert.equal(argv.includes('--pid'), false);
 });
@@ -734,9 +1015,10 @@ test('legacy mutation is rejected before signed v3 context and then emits only t
   assert.ok(argv.includes('booking-preprod-legacy-bundle-preflight')); assert.ok(argv.includes('booking-preprod-legacy-active-migration'));
   assert.ok(argv.some((value) => value.endsWith('/payload/control-plane/ops/release/migrate-booking-preprod-legacy-active-root.mjs')));
   assert.ok(argv.includes('--network') && argv.includes('none') && argv.includes('--pid') && argv.includes('host'));
+  assertIsolatedContainerDockerClient(argv.slice(argv.lastIndexOf('LEGACY_MIGRATION')));
   const preflight = argv.slice(argv.indexOf('LEGACY_BUNDLE_PREFLIGHT'), argv.indexOf('LEGACY_MIGRATION'));
-  assert.ok(preflight.includes('bundle-inventory')); assert.equal(preflight.includes('--pid'), false); assert.equal(preflight.some((value) => value.includes('docker.sock')), false);
-  assert.equal(preflight.some((value) => value.includes('/var/lib/happybooking')), false); assert.equal(preflight.some((value) => value.includes('/usr/local/libexec') && !value.includes('/bundles/')), false);
+  assert.ok(preflight.includes('bundle-inventory')); assert.equal(preflight.includes('--pid'), false); assert.equal(hasDockerSocketMount(preflight), false);
+  assert.equal(preflight.some((value) => value.includes('/var/lib/happybooking')), false); assert.equal(preflight.some((value) => value.startsWith('type=bind,src=') && value.includes('/usr/local/libexec') && !value.includes('/bundles/')), false);
   assert.equal(preflight.includes('type=bind,src=/,dst=/host,readonly'), false);
   assert.equal(argv.includes('type=bind,src=/,dst=/host,readonly'), false);
   assert.ok(argv.includes('--cap-add') && argv.includes('DAC_OVERRIDE')); assert.equal(argv.some((value) => value.includes('booking-prod')), false);
@@ -752,7 +1034,7 @@ test('legacy inventory has no PID namespace, Docker socket, state or writable ho
   const result = spawnSync(shell, [shellPath(f.launcher), '--action', 'legacy-inventory', '--install-id', ID, '--git-sha', GIT, '--approval-id', APPROVAL,
     '--migration-id', 'booking-legacy-active-20260913T010203Z-536b435723ae'], { encoding: 'utf8', env: f.env });
   assert.equal(result.status, 0, result.stderr); const argv = result.stdout.trim().split(/\r?\n/); const migration = argv.slice(argv.indexOf('LEGACY_MIGRATION'));
-  assert.equal(migration.includes('--pid'), false); assert.equal(migration.some((value) => value.includes('docker.sock')), false);
+  assert.equal(migration.includes('--pid'), false); assert.equal(hasDockerSocketMount(migration), false);
   assert.equal(migration.some((value) => value.includes('/var/lib/happybooking')), false);
   for (const value of migration.filter((item) => item.startsWith('type=bind,src='))) assert.ok(value.endsWith(',readonly'), value);
 });
@@ -794,6 +1076,12 @@ test('host bootstrap source fixes all trust roots and verifies before Docker or 
   const source = await readFile(join(repo, 'ops', 'release', 'run-booking-preprod-control-plane-installer'), 'utf8');
   for (const fixed of [
     "SELF='/usr/local/libexec/run-booking-preprod-control-plane-installer'",
+    "INSTALL_LOCK='/usr/local/libexec/.happybooking-control-plane-install.lock'",
+    "INSTALL_JOURNAL='/usr/local/libexec/.happybooking-control-plane-install.journal.json'",
+    "MIGRATION_LOCK='/usr/local/libexec/.happybooking-legacy-active-migration.lock'",
+    "MIGRATION_JOURNAL='/usr/local/libexec/.happybooking-legacy-active-migration.journal.json'",
+    "HOST_DOCKER_ENDPOINT='unix:///var/run/docker.sock'",
+    "HOST_DOCKER_CONFIG='/usr/local/libexec/.happybooking-host-docker-empty'",
     "EVIDENCE_TRUST_ROOT='/volume1/happybooking/booking-preprod/.g4'",
     "APPROVER_TRUST_ROOT='/etc/happybooking'",
     "COSIGN='/usr/local/bin/cosign'",
@@ -809,9 +1097,26 @@ test('host bootstrap source fixes all trust roots and verifies before Docker or 
   assert.match(source, /trusted_chain "\$APPROVAL_ROOT" "\$EVIDENCE_TRUST_ROOT"/);
   assert.match(source, /trusted_chain "\$APPROVER_KEY" "\$APPROVER_TRUST_ROOT"/);
   assert.match(source, /trusted_chain "\$COSIGN" "\$COSIGN_TRUST_ROOT"/);
+  assert.match(source, /unset DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION/);
+  assert.match(source, /DOCKER_AUTH_CONFIG DOCKER_CUSTOM_HEADERS DOCKER_CONTENT_TRUST/);
+  assert.match(source, /DOCKER_CONTENT_TRUST_SERVER DOCKER_DEFAULT_PLATFORM LD_PRELOAD LD_LIBRARY_PATH/);
+  assert.match(source, /path_absent\(\) \{\s*\[ ! -e "\$1" \] && \[ ! -L "\$1" \] \|\| fail\s*\}/);
+  for (const protectedPath of ['RUNTIME_LOCK', 'INSTALL_LOCK', 'INSTALL_JOURNAL', 'MIGRATION_LOCK', 'MIGRATION_JOURNAL', 'HOST_DOCKER_CONFIG']) {
+    assert.ok(source.includes(`path_absent "$${protectedPath}"`), protectedPath);
+  }
+  assert.equal(source.includes('BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_EXECUTE'), false);
+  const directHostDockerCalls = source.split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => /^(?:exec\s+)?"\$HOST_DOCKER"\s/.test(line));
+  assert.deepEqual(directHostDockerCalls, [
+    '"$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"',
+    'exec "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"',
+  ]);
+  assert.equal((source.match(/host_docker "\$@"/g) ?? []).length, 2);
+  assert.equal((source.match(/host_docker_exec "\$@"/g) ?? []).length, 4);
+  assert.equal((source.match(/--tmpfs \/root\/\.docker:ro,nosuid,nodev,noexec,size=64k/g) ?? []).length, 2);
   const verify = source.indexOf('"$COSIGN" verify-blob');
   const dryRun = source.lastIndexOf('case "${BOOKING_CONTROL_PLANE_DRY_RUN');
-  const docker = source.lastIndexOf('exec "$HOST_DOCKER"');
+  const docker = source.lastIndexOf('host_docker_exec "$@"');
   assert.ok(verify > 0 && dryRun > verify && docker > dryRun);
 });
 

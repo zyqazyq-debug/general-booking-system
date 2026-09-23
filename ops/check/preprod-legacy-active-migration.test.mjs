@@ -55,7 +55,7 @@ async function fixture() {
   const receipts = join(root, 'volume1', 'happybooking', 'booking-preprod', '.g4', 'receipts');
   const deployState = join(root, 'var', 'lib', 'happybooking', 'deploy-state', 'preprod', 'booking-preprod', 'deploy-state.json');
   await mkdir(active, { recursive: true }); await mkdir(receipts, { recursive: true }); await mkdir(dirname(deployState), { recursive: true }); await legacyTree(active);
-  const runtime = { parent, active, receipts, deployState, runtimeLock: join(parent, '.runtime.lock'), installLock: join(parent, '.install.lock'), installJournal: join(parent, '.install.journal'), expectedUid: null, enforceMode: false, portableReplace: true,
+  const runtime = { parent, active, receipts, deployState, runtimeLock: join(parent, '.happybooking-control-plane-runtime.lock'), installLock: join(parent, '.happybooking-control-plane-install.lock'), installJournal: join(parent, '.happybooking-control-plane-install.journal.json'), expectedUid: null, enforceMode: false, portableReplace: true,
     now: '2026-09-13T01:02:03.000Z', syncDirectory: async () => {}, syncFile: async () => {}, assertQuiescent: async () => {}, assertNoMounts: async () => {}, assertNoProcessCommands: async () => {} };
   const identity = ['--migration-id', MIGRATION, '--approval-id', APPROVAL];
   const inventory = await runLegacyActiveMigration(['--action', 'inventory', ...identity], runtime);
@@ -159,6 +159,50 @@ test('migration rejects root-entry drift, symbolic links, raw digest drift and e
     await assert.rejects(runLegacyActiveMigration(args, runtime));
     assert.equal(await exists(f.raw), false, scenario); assert.equal(await exists(f.active), true, scenario);
   }
+});
+
+test('runtime lock appearing after migration precheck aborts migrate and rollback before journal, stage, or rename', async (t) => {
+  await t.test('migrate', async (st) => {
+    const f = await fixture(); st.after(() => rm(f.root, { recursive: true, force: true })); let checks = 0;
+    const runtime = { ...f.runtime, assertQuiescent: async () => {
+      checks += 1; if (checks === 2) { await writeFile(f.runtime.runtimeLock, 'runtime-owner'); throw new Error('runtime acquired'); }
+    } };
+    await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /runtime acquired/);
+    assert.equal(checks, 2); assert.equal(await exists(f.lock), false); assert.equal(await exists(f.journal), false);
+    assert.equal(await exists(f.raw), false); assert.deepEqual((await readdir(f.active)).sort(), EXPECTED_TOP);
+    assert.equal((await readdir(f.parent)).some((name) => name.includes('normalized-stage')), false);
+  });
+  await t.test('rollback', async (st) => {
+    const f = await fixture(); st.after(() => rm(f.root, { recursive: true, force: true }));
+    const migration = await runLegacyActiveMigration(migrationArgs(f), f.runtime); const normalizedBefore = (await readdir(f.active)).sort(); let checks = 0;
+    const runtime = { ...f.runtime, assertQuiescent: async () => {
+      checks += 1; if (checks === 2) { await writeFile(f.runtime.runtimeLock, 'runtime-owner'); throw new Error('runtime acquired'); }
+    } };
+    await assert.rejects(runLegacyActiveMigration(rollbackArgs(f, migration), runtime), /runtime acquired/);
+    assert.equal(checks, 2); assert.equal(await exists(f.lock), false); assert.equal(await exists(f.journal), false);
+    assert.equal(await exists(f.raw), true); assert.deepEqual((await readdir(f.active)).sort(), normalizedBefore);
+    assert.equal((await readdir(f.parent)).some((name) => name.includes('normalized-retired')), false);
+  });
+});
+
+test('installer lock appearing after migrator fixed-lock publication is rejected by production quiescence and safely clears pre-journal migration state', async (t) => {
+  const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
+  let injected = false; let migrationLockWasPublished = false; const parentSyncStates = [];
+  const runtime = { ...f.runtime, assertQuiescent: undefined, listContainers: async () => [],
+    syncDirectory: async (path) => { if (path === f.parent) parentSyncStates.push(await exists(f.lock) ? 'lock-present' : 'lock-absent'); },
+    checkpoint: async (point) => {
+    if (point === 'lock:acquired' && !injected) {
+      migrationLockWasPublished = await exists(f.lock);
+      await mkdir(f.runtime.installLock);
+      injected = true;
+    }
+  } };
+  await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /conflicting lock or journal exists: \.happybooking-control-plane-install\.lock/);
+  assert.equal(injected, true); assert.equal(migrationLockWasPublished, true);
+  assert.equal(await exists(f.lock), false); assert.equal(await exists(f.journal), false);
+  assert.ok(parentSyncStates.includes('lock-present')); assert.equal(parentSyncStates.at(-1), 'lock-absent');
+  assert.equal(await exists(f.raw), false); assert.deepEqual((await readdir(f.active)).sort(), EXPECTED_TOP);
+  assert.equal((await readdir(f.parent)).some((name) => name.includes('normalized-stage')), false);
 });
 
 test('every migrate rename, journal and receipt crash point recovers to an exact raw or completed normalized state', async (t) => {
@@ -374,7 +418,7 @@ test('the post-stage quiescence gate rejects a newly mounted or command-referenc
 test('post-rename quiescence failures preserve the journal and recovery cannot cross a busy gate', async (t) => {
   {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); let checks = 0;
-    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 3) throw new Error('busy after raw retire'); } };
+    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 4) throw new Error('busy after raw retire'); } };
     await assert.rejects(runLegacyActiveMigration(migrationArgs(f), runtime), /busy after raw retire/);
     assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true); assert.equal(await exists(f.journal), true);
     const args = await recoverArgs(f); await assert.rejects(runLegacyActiveMigration(args, { ...f.runtime, assertQuiescent: async () => { throw new Error('still busy'); } }), /still busy/);
@@ -383,7 +427,7 @@ test('post-rename quiescence failures preserve the journal and recovery cannot c
   }
   {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true })); const migration = await runLegacyActiveMigration(migrationArgs(f), f.runtime); let checks = 0;
-    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 2) throw new Error('busy after normalized retire'); } };
+    const runtime = { ...f.runtime, assertQuiescent: async () => { checks += 1; if (checks === 3) throw new Error('busy after normalized retire'); } };
     await assert.rejects(runLegacyActiveMigration(rollbackArgs(f, migration), runtime), /busy after normalized retire/);
     assert.equal(await exists(f.active), false); assert.equal(await exists(f.raw), true); assert.equal(await exists(f.journal), true);
     const args = await recoverArgs(f); await assert.rejects(runLegacyActiveMigration(args, { ...f.runtime, assertQuiescent: async () => { throw new Error('still busy'); } }), /still busy/);

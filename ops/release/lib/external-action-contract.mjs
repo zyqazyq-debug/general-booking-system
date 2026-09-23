@@ -4,7 +4,6 @@ export const LEGACY_EXTERNAL_ACTIONS = Object.freeze([
   'preprod-baseline-ledger',
   'preprod-expand-migrate',
   'preprod-prepare-telegram-egress',
-  'preprod-stage',
   'preprod-probe-candidate',
   'preprod-probe-active',
   'preprod-probe-observation',
@@ -29,6 +28,7 @@ export const RECOVERY_EXTERNAL_ACTIONS = Object.freeze([
 const LEGACY = new Set(LEGACY_EXTERNAL_ACTIONS);
 const RECOVERY = new Set(RECOVERY_EXTERNAL_ACTIONS);
 const LOCAL_INGRESS = new Set(LOCAL_INGRESS_EXTERNAL_ACTIONS);
+const STAGE = new Set(['preprod-stage']);
 
 /**
  * External-action versions are selected by the immutable action name.  This
@@ -36,6 +36,12 @@ const LOCAL_INGRESS = new Set(LOCAL_INGRESS_EXTERNAL_ACTIONS);
  * every request reconstruction and receipt validation one source of truth.
  */
 export function schemaForAction(action) {
+  if (STAGE.has(action)) {
+    return Object.freeze({
+      request: 'booking.fenced-action-request/v4',
+      receipt: 'booking.external-action-receipt/v4',
+    });
+  }
   if (LEGACY.has(action)) {
     return Object.freeze({
       request: 'booking.fenced-action-request/v1',

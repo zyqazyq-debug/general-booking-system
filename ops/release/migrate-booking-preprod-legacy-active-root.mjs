@@ -776,6 +776,7 @@ export async function runLegacyActiveMigration(input, runtime = {}) {
   }
   const transactionId = args['transaction-id']; const journal = await acquire(paths, args, transactionId, settings, runtime); let preserve = false;
   try {
+    await assertQuiescent(paths, runtime, runtime.now || new Date().toISOString(), args.action);
     if (args.action === 'migrate') journal.stageName = `.happybooking-legacy-normalized-stage-${transactionId}`;
     else { journal.normalizedRetiredName = `.happybooking-legacy-normalized-retired-${transactionId}`; journal.predecessorReceiptDigest = rollbackPreflight.migration.receiptDigest; journal.rawInventoryDigest = rollbackPreflight.raw.digest; journal.normalizedInventoryDigest = rollbackPreflight.active.digest; }
     await writeJournal(paths, journal, settings, runtime, 'PREPARED');
@@ -808,7 +809,12 @@ export async function runLegacyActiveMigration(input, runtime = {}) {
     const hasJournalTemp = (await readdir(paths.parent)).some((name) => name.startsWith(journalTempPrefix) && name.endsWith('.tmp'));
     if (error instanceof SimulatedLegacyMigrationCrash || await exists(paths.journal) || hasJournalTemp) preserve = true;
     throw error;
-  } finally { if (!preserve && await exists(paths.lock)) await unlink(paths.lock); }
+  } finally {
+    if (!preserve && await exists(paths.lock)) {
+      await unlink(paths.lock);
+      await syncDirectory(paths.parent, runtime);
+    }
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

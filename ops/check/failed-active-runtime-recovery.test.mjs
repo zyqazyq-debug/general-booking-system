@@ -263,6 +263,8 @@ test('fixed legacy runtime inspect binds exact containers, security configuratio
   const container = (component) => {
     const expected = binding[component];
     const backend = component === 'backend';
+    const composeName = `booking-preprod-${expected.service}-1`;
+    const aliases = [composeName, expected.service, ...(backend ? [] : [expected.service]), expected.id.slice(0, 12)];
     return { Id: expected.id, Name: `/booking-preprod-${expected.service}-1`, Image: expected.imageId,
       State: { Running: true, Health: { Status: 'healthy' } }, Config: { Image: expected.image, User: backend ? '' : '101',
         Labels: { 'com.docker.compose.project': 'booking-preprod', 'com.docker.compose.service': expected.service,
@@ -277,8 +279,8 @@ test('fixed legacy runtime inspect binds exact containers, security configuratio
         { Type: 'tmpfs', Destination: '/var/cache/nginx', RW: true },
         { Type: 'tmpfs', Destination: '/var/run', RW: true },
       ], NetworkSettings: { Networks: backend ? {
-        'booking-preprod-data': { Aliases: ['backend-green'] }, 'booking-preprod-edge': { Aliases: ['backend-green'] },
-      } : { 'booking-preprod-edge': { Aliases: ['gateway-green'] } } } };
+        'booking-preprod-data': { Aliases: [...aliases] }, 'booking-preprod-edge': { Aliases: [...aliases] },
+      } : { 'booking-preprod-edge': { Aliases: [...aliases] } } } };
   };
   const values = [container('backend'), container('gateway')];
   const verified = verifyLegacyActiveRuntimeInspect(JSON.stringify(values), { project: 'booking-preprod', resources: RESOURCES }, binding);
@@ -297,6 +299,16 @@ test('fixed legacy runtime inspect binds exact containers, security configuratio
   assert.throws(() => verifyLegacyActiveRuntimeInspect(JSON.stringify(values),
     { project: 'booking-preprod', resources: RESOURCES }, binding), /network alias drifted/);
   values[0].NetworkSettings.Networks['booking-preprod-data'].Aliases.pop();
+  values[1].NetworkSettings.Networks['booking-preprod-edge'].Aliases.splice(2, 1);
+  assert.throws(() => verifyLegacyActiveRuntimeInspect(JSON.stringify(values),
+    { project: 'booking-preprod', resources: RESOURCES }, binding), /network alias drifted/,
+  'gateway duplicate business-alias count is part of the frozen legacy multiset');
+  values[1].NetworkSettings.Networks['booking-preprod-edge'].Aliases.splice(2, 0, 'gateway-green');
+  values[0].NetworkSettings.Networks['booking-preprod-edge'].Aliases.pop();
+  assert.throws(() => verifyLegacyActiveRuntimeInspect(JSON.stringify(values),
+    { project: 'booking-preprod', resources: RESOURCES }, binding), /network alias drifted/,
+  'Compose short container ID is required');
+  values[0].NetworkSettings.Networks['booking-preprod-edge'].Aliases.push(binding.backend.id.slice(0, 12));
   values[1].Config.Labels['com.docker.compose.config-hash'] = 'drift';
   assert.throws(() => verifyLegacyActiveRuntimeInspect(JSON.stringify(values), { project: 'booking-preprod', resources: RESOURCES }, binding), /identity or isolation drifted/);
   assert.deepEqual(verifyLegacyDockerStartOutput(`${binding.backend.id}\nbooking-preprod-gateway-green-1\n`, binding),

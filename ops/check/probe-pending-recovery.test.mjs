@@ -50,7 +50,7 @@ function phaseState(action) {
     move('FAILED');
     return state;
   }
-  move('CANDIDATE_STARTED', { stageReceiptDigest: `sha256:${'2'.repeat(64)}` });
+  move('CANDIDATE_STARTED', { telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'2'.repeat(64)}` });
   if (action === 'preprod-probe-candidate') return state;
   move('CANDIDATE_READY', { candidateProbeDigest: `sha256:${'3'.repeat(64)}` });
   if (action === 'preprod-probe-active') return state;

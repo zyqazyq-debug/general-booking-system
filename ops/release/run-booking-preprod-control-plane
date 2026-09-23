@@ -16,12 +16,808 @@ COSIGN='/usr/local/bin/cosign'
 TRUST_ROOT='/etc/happybooking/trust'
 LEGACY_RELEASE='booking-20260908T202714Z-317be4dec675'
 INSTALL_LOCK='/usr/local/libexec/.happybooking-control-plane-install.lock'
+INSTALL_JOURNAL='/usr/local/libexec/.happybooking-control-plane-install.journal.json'
 RUNTIME_LOCK='/usr/local/libexec/.happybooking-control-plane-runtime.lock'
+MIGRATION_LOCK='/usr/local/libexec/.happybooking-legacy-active-migration.lock'
+MIGRATION_JOURNAL='/usr/local/libexec/.happybooking-legacy-active-migration.journal.json'
+RUNTIME_TXN_PREFIX='/usr/local/libexec/.happybooking-control-plane-runtime-txn'
+HOST_DOCKER_CONFIG='/usr/local/libexec/happybooking/control-plane/ops/release/.host-docker-empty'
+PROC_ROOT='/proc'
+BOOT_ID_PATH='/proc/sys/kernel/random/boot_id'
+SHA256SUM='/usr/bin/sha256sum'
+STAT='/usr/bin/stat'
+READLINK='/usr/bin/readlink'
+SYNC='/usr/bin/sync'
+LINK='/usr/bin/link'
+AWK='/bin/awk'
+CAT='/bin/cat'
+CHMOD='/bin/chmod'
+DIRNAME='/usr/bin/dirname'
+ID='/usr/bin/id'
+MKDIR='/bin/mkdir'
+RMDIR='/bin/rmdir'
+SED='/bin/sed'
+UNLINK='/usr/bin/unlink'
+EXPECTED_UID='0'
+EXPECTED_GID='0'
 
 fail() {
   printf '%s\n' "booking-preprod control-plane launcher rejected the request" >&2
   exit 64
 }
+
+path_absent() {
+  [ ! -e "$1" ] && [ ! -L "$1" ]
+}
+
+[ -z "${BOOKING_CONTROL_PLANE_RUNTIME_LOCK_TEST_ROOT:-}" ] || fail
+[ -z "${BOOKING_CONTROL_PLANE_RUNTIME_LOCK_TEST_EXECUTE:-}" ] || fail
+[ -z "${BOOKING_CONTROL_PLANE_RUNTIME_LOCK_TEST_STAT:-}" ] || fail
+[ -z "${BOOKING_CONTROL_PLANE_RUNTIME_LOCK_TEST_TRUST:-}" ] || fail
+[ -z "${BOOKING_CONTROL_PLANE_RUNTIME_LOCK_TEST_CRASH_AT:-}" ] || fail
+
+DOCKER_HOST='unix:///var/run/docker.sock'
+DOCKER_CONFIG=$HOST_DOCKER_CONFIG
+HOME='/root'
+unset DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION DOCKER_AUTH_CONFIG DOCKER_CUSTOM_HEADERS
+unset DOCKER_CONTENT_TRUST DOCKER_CONTENT_TRUST_SERVER DOCKER_DEFAULT_PLATFORM DOCKER_HIDE_LEGACY_COMMANDS DOCKER_SCAN_SUGGEST DOCKER_CLI_HINTS BUILDKIT_HOST
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PARALLEL_LIMIT COMPOSE_ANSI COMPOSE_STATUS_STDOUT COMPOSE_PROGRESS
+unset LD_PRELOAD LD_LIBRARY_PATH
+export DOCKER_HOST DOCKER_CONFIG HOME
+
+docker_host() {
+  "$HOST_DOCKER" --host unix:///var/run/docker.sock --config "$HOST_DOCKER_CONFIG" "$@"
+}
+
+runtime_start_ticks() {
+  runtime_pid=$1
+  runtime_stat_path="$PROC_ROOT/$runtime_pid/stat"
+  [ -r "$runtime_stat_path" ] || return 1
+  runtime_stat=$("$CAT" "$runtime_stat_path") || return 1
+  case "$runtime_stat" in *') '*) runtime_stat=${runtime_stat##*) } ;; *) return 1 ;; esac
+  set -- $runtime_stat
+  [ "$#" -ge 20 ] || return 1
+  shift 19
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$1"
+}
+
+runtime_sha256() {
+  "$SHA256SUM" | "$AWK" '{printf "sha256:%s", $1}'
+}
+
+runtime_trusted_item() {
+  runtime_item=$1
+  runtime_kind=$2
+  [ -e "$runtime_item" ] && [ ! -L "$runtime_item" ] || fail
+  [ "$("$READLINK" -f "$runtime_item")" = "$runtime_item" ] || fail
+  runtime_metadata=$("$STAT" --format='%u %g %a %h' "$runtime_item") || fail
+  set -- $runtime_metadata
+  [ "$1" = "$EXPECTED_UID" ] && [ "$2" = "$EXPECTED_GID" ] || fail
+  case "$runtime_kind" in
+    directory)
+      [ -d "$runtime_item" ] || fail
+      case "$3" in 500|700) ;; *) fail ;; esac
+      ;;
+    file)
+      [ -f "$runtime_item" ] || fail
+      [ "$3" = '400' ] || fail
+      ;;
+    *) fail ;;
+  esac
+}
+
+runtime_trusted_directory() {
+  runtime_directory=$1
+  [ -d "$runtime_directory" ] && [ ! -L "$runtime_directory" ] || fail
+  runtime_metadata=$("$STAT" --format='%u %g %a' "$runtime_directory") || fail
+  set -- $runtime_metadata
+  [ "$1" = "$EXPECTED_UID" ] || fail
+  case "$3" in
+    [0-7][0-7][0-7]) ;;
+    *) fail ;;
+  esac
+  runtime_non_owner_mode=${3#?}
+  case "$runtime_non_owner_mode" in *[2367]*) fail ;; esac
+}
+
+runtime_trusted_executable() {
+  runtime_executable=$1
+  [ -f "$runtime_executable" ] && [ ! -L "$runtime_executable" ] && [ -x "$runtime_executable" ] || fail
+  runtime_metadata=$("$STAT" --format='%u %g %a %h' "$runtime_executable") || fail
+  set -- $runtime_metadata
+  [ "$1" = "$EXPECTED_UID" ] && [ "$4" = '1' ] || fail
+  case "$3" in
+    [0-7][0-7][0-7]) ;;
+    *) fail ;;
+  esac
+  runtime_non_owner_mode=${3#?}
+  runtime_owner_mode=${3%$runtime_non_owner_mode}
+  case "$runtime_owner_mode" in 1|3|5|7) ;; *) fail ;; esac
+  case "$runtime_non_owner_mode" in *[2367]*) fail ;; esac
+}
+
+runtime_trusted_resolved_chain() {
+  runtime_chain_item=$1
+  while [ "$runtime_chain_item" != '/' ]; do
+    runtime_chain_item=$("$DIRNAME" "$runtime_chain_item") || fail
+    runtime_trusted_directory "$runtime_chain_item"
+  done
+}
+
+runtime_trusted_tool() {
+  runtime_tool_alias=$1
+  case "$runtime_tool_alias" in /*) ;; *) fail ;; esac
+  runtime_tool_resolved=$("$READLINK" -f "$runtime_tool_alias") || fail
+  case "$runtime_tool_resolved" in /*) ;; *) fail ;; esac
+  runtime_trusted_executable "$runtime_tool_resolved"
+  runtime_trusted_resolved_chain "$runtime_tool_resolved"
+  runtime_alias_parent=$("$READLINK" -f "$("$DIRNAME" "$runtime_tool_alias")") || fail
+  runtime_trusted_directory "$runtime_alias_parent"
+  runtime_trusted_resolved_chain "$runtime_alias_parent"
+}
+
+runtime_trusted_recovery_environment() {
+  [ "$("$ID" -u)" = "$EXPECTED_UID" ] || fail
+  for runtime_tool in "$SHA256SUM" "$STAT" "$READLINK" "$SYNC" "$LINK" "$AWK" "$CAT" "$CHMOD" "$DIRNAME" "$ID" "$MKDIR" "$RMDIR" "$SED" "$UNLINK" "$HOST_DOCKER"; do
+    runtime_trusted_tool "$runtime_tool"
+  done
+  runtime_lock_parent=$("$READLINK" -f "$("$DIRNAME" "$RUNTIME_LOCK")") || fail
+  runtime_trusted_directory "$runtime_lock_parent"
+  runtime_trusted_resolved_chain "$runtime_lock_parent"
+  path_absent "$HOST_DOCKER_CONFIG" || fail
+  runtime_config_parent=$("$READLINK" -f "$("$DIRNAME" "$HOST_DOCKER_CONFIG")") || fail
+  runtime_trusted_directory "$runtime_config_parent"
+  runtime_trusted_resolved_chain "$runtime_config_parent"
+}
+
+runtime_conflicts_absent() {
+  path_absent "$HOST_DOCKER_CONFIG" &&
+    path_absent "$INSTALL_LOCK" && path_absent "$INSTALL_JOURNAL" &&
+    path_absent "$MIGRATION_LOCK" && path_absent "$MIGRATION_JOURNAL"
+}
+
+runtime_lock_body() {
+  printf '%s' "{\"bootId\":\"$runtime_owner_boot_id\",\"containerIdentity\":\"$runtime_owner_container\",\"imageDigest\":\"$runtime_owner_image\",\"pid\":$runtime_owner_pid,\"requestDigest\":\"$runtime_owner_request_digest\",\"schema\":\"booking.preprod-runtime-lock-intent/v2\",\"startTicks\":\"$runtime_owner_start_ticks\"}"
+}
+
+runtime_lock_document() {
+  printf '%s\n' "{\"bootId\":\"$runtime_owner_boot_id\",\"containerIdentity\":\"$runtime_owner_container\",\"imageDigest\":\"$runtime_owner_image\",\"lockDigest\":\"$runtime_lock_digest\",\"pid\":$runtime_owner_pid,\"requestDigest\":\"$runtime_owner_request_digest\",\"schema\":\"booking.preprod-runtime-lock-intent/v2\",\"startTicks\":\"$runtime_owner_start_ticks\"}"
+}
+
+runtime_json_string() {
+  runtime_json_file=$1
+  runtime_json_field=$2
+  runtime_json_value=$("$SED" -n "s/.*\"$runtime_json_field\":\"\([^\"]*\)\".*/\1/p" "$runtime_json_file")
+  [ -n "$runtime_json_value" ] || fail
+  printf '%s' "$runtime_json_value"
+}
+
+runtime_file_digest() {
+  "$SHA256SUM" "$1" | "$AWK" '{printf "sha256:%s", $1}'
+}
+
+runtime_exact_file() {
+  runtime_exact_path=$1
+  runtime_exact_document=$2
+  runtime_exact_links=$3
+  runtime_trusted_item "$runtime_exact_path" file
+  runtime_exact_metadata=$("$STAT" --format='%h' "$runtime_exact_path") || fail
+  [ "$runtime_exact_metadata" = "$runtime_exact_links" ] || fail
+  runtime_exact_expected=$(printf '%s\n' "$runtime_exact_document" | runtime_sha256)
+  [ "$(runtime_file_digest "$runtime_exact_path")" = "$runtime_exact_expected" ] || fail
+}
+
+runtime_publish_stage_inventory() {
+  runtime_publish_entries=0
+  for runtime_publish_entry in "$runtime_publish_stage"/* "$runtime_publish_stage"/.[!.]* "$runtime_publish_stage"/..?*; do
+    [ -e "$runtime_publish_entry" ] || [ -L "$runtime_publish_entry" ] || continue
+    runtime_publish_entries=$((runtime_publish_entries + 1))
+    [ "$runtime_publish_entry" = "$runtime_publish_source" ] || fail
+  done
+  if [ -e "$runtime_publish_source" ] || [ -L "$runtime_publish_source" ]; then
+    [ "$runtime_publish_entries" -eq 1 ] || fail
+  else
+    [ "$runtime_publish_entries" -eq 0 ] || fail
+  fi
+}
+
+runtime_publish_partial_source() {
+  [ -f "$runtime_publish_source" ] && [ ! -L "$runtime_publish_source" ] || return 1
+  [ "$("$READLINK" -f "$runtime_publish_source")" = "$runtime_publish_source" ] || return 1
+  runtime_publish_metadata=$("$STAT" --format='%u %g %a %h' "$runtime_publish_source") || return 1
+  set -- $runtime_publish_metadata
+  [ "$1" = "$EXPECTED_UID" ] && [ "$2" = "$EXPECTED_GID" ] && [ "$4" = '1' ] || return 1
+  runtime_publish_mode=$3
+  case "$runtime_publish_mode" in 400|600) ;; *) return 1 ;; esac
+}
+
+runtime_publish_record() {
+  runtime_publish_path=$1
+  runtime_publish_document=$2
+  runtime_publish_parent=$("$DIRNAME" "$runtime_publish_path")
+  runtime_publish_digest=$(printf '%s\n' "$runtime_publish_document" | runtime_sha256)
+  runtime_publish_stage="$runtime_publish_path.publish-${runtime_publish_digest#sha256:}"
+  runtime_publish_source="$runtime_publish_stage/record.json"
+
+  if [ -e "$runtime_publish_path" ] && [ ! -e "$runtime_publish_stage" ]; then
+    runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 1
+    return
+  fi
+
+  if [ -e "$runtime_publish_stage" ]; then
+    runtime_trusted_item "$runtime_publish_stage" directory
+    runtime_publish_stage_inventory
+    if [ -e "$runtime_publish_path" ]; then
+      if [ -e "$runtime_publish_source" ]; then
+        runtime_exact_file "$runtime_publish_source" "$runtime_publish_document" 2
+        runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 2
+        [ "$("$STAT" --format='%d:%i' "$runtime_publish_source")" = "$("$STAT" --format='%d:%i' "$runtime_publish_path")" ] || fail
+        sync_runtime_path "$runtime_publish_parent"
+        "$UNLINK" "$runtime_publish_source" || fail
+        "$RMDIR" "$runtime_publish_stage" || fail
+        sync_runtime_path "$runtime_publish_parent"
+        runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 1
+        return
+      else
+        runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 1
+        "$RMDIR" "$runtime_publish_stage" || fail
+        sync_runtime_path "$runtime_publish_parent"
+        return
+      fi
+    elif [ -e "$runtime_publish_source" ]; then
+      runtime_publish_partial_source || fail
+      if [ "$(runtime_file_digest "$runtime_publish_source")" != "$runtime_publish_digest" ]; then
+        "$UNLINK" "$runtime_publish_source" || fail
+        "$RMDIR" "$runtime_publish_stage" || fail
+        sync_runtime_path "$runtime_publish_parent"
+      fi
+    else
+      "$RMDIR" "$runtime_publish_stage" || fail
+      sync_runtime_path "$runtime_publish_parent"
+    fi
+  fi
+
+  if [ ! -e "$runtime_publish_stage" ]; then
+    "$MKDIR" -m 700 "$runtime_publish_stage" || fail
+    # RUNTIME_TEST_CHECKPOINT record-stage-created
+    ( umask 077; printf '%s\n' "$runtime_publish_document" > "$runtime_publish_source" ) || fail
+    # RUNTIME_TEST_CHECKPOINT record-source-written
+  fi
+
+  runtime_publish_stage_inventory
+  runtime_publish_partial_source || fail
+  [ "$(runtime_file_digest "$runtime_publish_source")" = "$runtime_publish_digest" ] || fail
+  if [ "$runtime_publish_mode" = '600' ]; then "$CHMOD" 400 "$runtime_publish_source" || fail; fi
+  # RUNTIME_TEST_CHECKPOINT record-source-chmodded
+  runtime_exact_file "$runtime_publish_source" "$runtime_publish_document" 1
+  sync_runtime_path "$runtime_publish_source"
+  # RUNTIME_TEST_CHECKPOINT record-source-synced
+  sync_runtime_path "$runtime_publish_stage"
+  # RUNTIME_TEST_CHECKPOINT record-stage-synced
+
+  if [ ! -e "$runtime_publish_path" ]; then
+    "$LINK" "$runtime_publish_source" "$runtime_publish_path" || fail
+    # RUNTIME_TEST_CHECKPOINT record-linked
+    sync_runtime_path "$runtime_publish_parent"
+    # RUNTIME_TEST_CHECKPOINT record-parent-synced
+  fi
+  runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 2
+  runtime_publish_source_inode=$("$STAT" --format='%d:%i' "$runtime_publish_source") || fail
+  runtime_publish_final_inode=$("$STAT" --format='%d:%i' "$runtime_publish_path") || fail
+  [ "$runtime_publish_source_inode" = "$runtime_publish_final_inode" ] || fail
+  "$UNLINK" "$runtime_publish_source" || fail
+  # RUNTIME_TEST_CHECKPOINT record-source-unlinked
+  "$RMDIR" "$runtime_publish_stage" || fail
+  sync_runtime_path "$runtime_publish_parent"
+  runtime_exact_file "$runtime_publish_path" "$runtime_publish_document" 1
+}
+
+read_runtime_lock_at() {
+  runtime_lock_file=$1
+  runtime_lock_links=$2
+  runtime_owner_boot_id=$(runtime_json_string "$runtime_lock_file" bootId)
+  runtime_owner_container=$(runtime_json_string "$runtime_lock_file" containerIdentity)
+  runtime_owner_image=$(runtime_json_string "$runtime_lock_file" imageDigest)
+  runtime_lock_digest=$(runtime_json_string "$runtime_lock_file" lockDigest)
+  runtime_owner_request_digest=$(runtime_json_string "$runtime_lock_file" requestDigest)
+  runtime_owner_start_ticks=$(runtime_json_string "$runtime_lock_file" startTicks)
+  runtime_owner_pid=$("$SED" -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$runtime_lock_file")
+  case "$runtime_owner_boot_id" in ????????-????-????-????-????????????) ;; *) fail ;; esac
+  case "$runtime_owner_boot_id" in *[!0-9a-f-]*) fail ;; esac
+  case "$runtime_owner_container" in booking-preprod-control-plane|booking-preprod-lock-recovery) ;; *) fail ;; esac
+  [ "$runtime_owner_image" = "$IMAGE" ] || fail
+  case "$runtime_lock_digest:$runtime_owner_request_digest" in sha256:????????????????????????????????????????????????????????????????:sha256:????????????????????????????????????????????????????????????????) ;; *) fail ;; esac
+  case "$runtime_owner_pid:$runtime_owner_start_ticks" in *[!0-9:]*) fail ;; esac
+  [ -n "$runtime_owner_pid" ] && [ -n "$runtime_owner_start_ticks" ] || fail
+  runtime_request_hex=${runtime_owner_request_digest#sha256:}
+  [ "${#runtime_request_hex}" -eq 64 ] || fail
+  case "$runtime_request_hex" in *[!0-9a-f]*) fail ;; esac
+  [ "$(runtime_lock_body | runtime_sha256)" = "$runtime_lock_digest" ] || fail
+  runtime_lock_doc=$(runtime_lock_document)
+  runtime_exact_file "$runtime_lock_file" "$runtime_lock_doc" "$runtime_lock_links"
+  runtime_txn="$RUNTIME_TXN_PREFIX-${runtime_lock_digest#sha256:}"
+}
+
+read_runtime_lock() {
+  read_runtime_lock_at "$RUNTIME_LOCK" 2
+  runtime_trusted_item "$runtime_txn" directory
+  runtime_txn_intent="$runtime_txn/intent.json"
+  runtime_exact_file "$runtime_txn_intent" "$runtime_lock_doc" 2
+  [ "$("$STAT" --format='%d:%i' "$RUNTIME_LOCK")" = "$("$STAT" --format='%d:%i' "$runtime_txn_intent")" ] || fail
+}
+
+runtime_owner_is_live() {
+  runtime_current_boot=$("$CAT" "$BOOT_ID_PATH") || fail
+  case "$runtime_current_boot" in ????????-????-????-????-????????????) ;; *) fail ;; esac
+  case "$runtime_current_boot" in *[!0-9a-f-]*) fail ;; esac
+  [ "$runtime_current_boot" = "$runtime_owner_boot_id" ] || return 1
+  [ -d "$PROC_ROOT/$runtime_owner_pid" ] || return 1
+  [ -r "$PROC_ROOT/$runtime_owner_pid/stat" ] || { [ ! -d "$PROC_ROOT/$runtime_owner_pid" ] && return 1; fail; }
+  runtime_current_ticks=$(runtime_start_ticks "$runtime_owner_pid") || { [ ! -d "$PROC_ROOT/$runtime_owner_pid" ] && return 1; fail; }
+  [ "$runtime_current_ticks" = "$runtime_owner_start_ticks" ]
+}
+
+runtime_docker_record() {
+  runtime_reference=$1
+  docker_host container inspect --format '{{.Id}}|{{.Name}}|{{.State.Status}}|{{.State.Running}}|{{.State.ExitCode}}|{{.Config.Image}}|{{index .Config.Labels "uk.happybooking.runtime-lock-digest"}}' "$runtime_reference" 2>/dev/null
+}
+
+runtime_docker_daemon() {
+  runtime_server_version=$(docker_host version --format '{{.Server.Version}}' 2>/dev/null) || fail
+  [ -n "$runtime_server_version" ] || fail
+}
+
+runtime_validate_container_record() {
+  runtime_first=$1
+  runtime_container_id=${runtime_first%%|*}
+  runtime_remainder=${runtime_first#*|}; runtime_container_name=${runtime_remainder%%|*}
+  runtime_remainder=${runtime_remainder#*|}; runtime_container_status=${runtime_remainder%%|*}
+  runtime_remainder=${runtime_remainder#*|}; runtime_container_running=${runtime_remainder%%|*}
+  runtime_remainder=${runtime_remainder#*|}; runtime_container_exit_code=${runtime_remainder%%|*}
+  runtime_remainder=${runtime_remainder#*|}; runtime_container_image=${runtime_remainder%%|*}
+  runtime_container_label=${runtime_remainder#*|}
+  case "$runtime_container_id" in *[!0-9a-f]*|'') fail ;; esac
+  [ "${#runtime_container_id}" -eq 64 ] || fail
+  [ "$runtime_container_name" = "/$runtime_owner_container" ] || fail
+  case "$runtime_container_status:$runtime_container_running" in created:false|running:true|exited:false) ;; *) fail ;; esac
+  case "$runtime_container_exit_code" in ''|*[!0-9]*) fail ;; esac
+  [ "$runtime_container_image" = "$runtime_owner_image" ] || fail
+  [ "$runtime_container_label" = "$runtime_lock_digest" ] || fail
+}
+
+runtime_label_ids() {
+  runtime_label_filter=$1
+  runtime_label_output=$(docker_host ps -a --no-trunc --filter "$runtime_label_filter" --format '{{.ID}}') || fail
+  case "$runtime_label_output" in *' '*|*'	'*) fail ;; esac
+  case "$runtime_label_output" in *'
+'*) fail ;; esac
+  if [ -n "$runtime_label_output" ]; then
+    case "$runtime_label_output" in *[!0-9a-f]*) fail ;; esac
+    [ "${#runtime_label_output}" -eq 64 ] || fail
+  fi
+  printf '%s' "$runtime_label_output"
+}
+
+runtime_name_ids() {
+  runtime_name_output=$(docker_host ps -a --no-trunc --filter "name=^/$runtime_owner_container$" --format '{{.ID}}') || fail
+  case "$runtime_name_output" in *' '*|*'	'*) fail ;; esac
+  case "$runtime_name_output" in *'
+'*) fail ;; esac
+  if [ -n "$runtime_name_output" ]; then
+    case "$runtime_name_output" in *[!0-9a-f]*) fail ;; esac
+    [ "${#runtime_name_output}" -eq 64 ] || fail
+  fi
+  printf '%s' "$runtime_name_output"
+}
+
+read_runtime_container_by_id() {
+  runtime_reference=$1
+  runtime_docker_daemon
+  runtime_first=''
+  runtime_first=$(runtime_docker_record "$runtime_reference") || {
+    runtime_docker_daemon
+    runtime_container_id=''
+    runtime_container_running=''
+    runtime_container_status=''
+    runtime_container_exit_code=''
+    return 0
+  }
+  runtime_validate_container_record "$runtime_first"
+  [ "$runtime_container_id" = "$runtime_reference" ] || fail
+  runtime_docker_daemon
+}
+
+read_runtime_bound_container_twice() {
+  runtime_bound_read_id=$1
+  read_runtime_container_by_id "$runtime_bound_read_id"
+  runtime_bound_first=${runtime_first:-absent}
+  runtime_bound_first_id=${runtime_container_id:-absent}
+  read_runtime_container_by_id "$runtime_bound_read_id"
+  runtime_bound_second=${runtime_first:-absent}
+  [ "$runtime_bound_first" = "$runtime_bound_second" ] || fail
+  [ "${runtime_container_id:-absent}" = "$runtime_bound_first_id" ] || fail
+}
+
+runtime_prestart_absent_once() {
+  runtime_docker_daemon
+  [ -z "$(runtime_label_ids 'label=uk.happybooking.runtime-lock-digest')" ] || fail
+  [ -z "$(runtime_name_ids)" ] || fail
+  runtime_docker_daemon
+}
+
+runtime_prestart_absent() {
+  runtime_prestart_absent_once
+  runtime_prestart_absent_once
+}
+
+prove_runtime_absent_once() {
+  runtime_absent_id=$1
+  runtime_docker_daemon
+  if [ "$runtime_absent_id" != 'absent' ]; then
+    read_runtime_container_by_id "$runtime_absent_id"
+    [ -z "${runtime_container_id:-}" ] || fail
+  fi
+  [ -z "$(runtime_label_ids "label=uk.happybooking.runtime-lock-digest=$runtime_lock_digest")" ] || fail
+  [ -z "$(runtime_name_ids)" ] || fail
+  runtime_docker_daemon
+}
+
+prove_runtime_absent() {
+  prove_runtime_absent_once "$1"
+  prove_runtime_absent_once "$1"
+}
+
+sync_runtime_path() {
+  "$SYNC" -f "$1" || fail
+}
+
+runtime_create_body() { printf '%s' "{\"containerId\":\"$runtime_created_id\",\"lockDigest\":\"$runtime_lock_digest\",\"schema\":\"booking.preprod-runtime-create/v1\"}"; }
+runtime_create_document() { printf '%s\n' "{\"containerId\":\"$runtime_created_id\",\"createDigest\":\"$runtime_create_digest\",\"lockDigest\":\"$runtime_lock_digest\",\"schema\":\"booking.preprod-runtime-create/v1\"}"; }
+
+publish_runtime_create() {
+  runtime_create_digest=$(runtime_create_body | runtime_sha256)
+  runtime_create_doc=$(runtime_create_document)
+  runtime_publish_record "$runtime_txn/create.json" "$runtime_create_doc"
+}
+
+read_runtime_create() {
+  runtime_create_file="$runtime_txn/create.json"
+  [ -e "$runtime_create_file" ] || return 1
+  runtime_created_id=$(runtime_json_string "$runtime_create_file" containerId)
+  runtime_create_digest=$(runtime_json_string "$runtime_create_file" createDigest)
+  runtime_create_lock=$(runtime_json_string "$runtime_create_file" lockDigest)
+  case "$runtime_created_id" in *[!0-9a-f]*|'') fail ;; esac
+  [ "${#runtime_created_id}" -eq 64 ] && [ "$runtime_create_lock" = "$runtime_lock_digest" ] || fail
+  [ "$(runtime_create_body | runtime_sha256)" = "$runtime_create_digest" ] || fail
+  runtime_create_doc=$(runtime_create_document)
+  runtime_publish_record "$runtime_create_file" "$runtime_create_doc"
+}
+
+runtime_owner_body() { printf '%s' "{\"containerId\":\"$runtime_container_id\",\"createDigest\":\"$runtime_create_digest\",\"lockDigest\":\"$runtime_lock_digest\",\"schema\":\"booking.preprod-runtime-owner/v3\"}"; }
+runtime_owner_document() { printf '%s\n' "{\"containerId\":\"$runtime_container_id\",\"createDigest\":\"$runtime_create_digest\",\"lockDigest\":\"$runtime_lock_digest\",\"ownerDigest\":\"$runtime_owner_digest\",\"schema\":\"booking.preprod-runtime-owner/v3\"}"; }
+
+publish_runtime_owner() {
+  runtime_owner_digest=$(runtime_owner_body | runtime_sha256)
+  runtime_owner_doc=$(runtime_owner_document)
+  runtime_publish_record "$runtime_txn/owner.json" "$runtime_owner_doc"
+}
+
+read_runtime_owner_record() {
+  runtime_owner_file="$runtime_txn/owner.json"
+  [ -e "$runtime_owner_file" ] || return 1
+  runtime_container_id=$(runtime_json_string "$runtime_owner_file" containerId)
+  runtime_owner_create=$(runtime_json_string "$runtime_owner_file" createDigest)
+  runtime_record_lock=$(runtime_json_string "$runtime_owner_file" lockDigest)
+  runtime_owner_digest=$(runtime_json_string "$runtime_owner_file" ownerDigest)
+  [ "$runtime_record_lock" = "$runtime_lock_digest" ] && [ "$runtime_owner_create" = "$runtime_create_digest" ] || fail
+  case "$runtime_container_id" in *[!0-9a-f]*|'') fail ;; esac
+  [ "${#runtime_container_id}" -eq 64 ] || fail
+  [ "$(runtime_owner_body | runtime_sha256)" = "$runtime_owner_digest" ] || fail
+  runtime_owner_doc=$(runtime_owner_document)
+  runtime_publish_record "$runtime_owner_file" "$runtime_owner_doc"
+  runtime_bound_container=$runtime_container_id
+}
+
+publish_completion_intent() {
+  runtime_completion_body="{\"containerId\":\"$runtime_container_id\",\"exitCode\":\"$runtime_container_exit_code\",\"lockDigest\":\"$runtime_lock_digest\",\"ownerDigest\":\"$runtime_owner_digest\",\"schema\":\"booking.preprod-runtime-completion-intent/v1\",\"status\":\"prepared\"}"
+  runtime_completion_digest=$(printf '%s' "$runtime_completion_body" | runtime_sha256)
+  runtime_completion_doc="{\"completionDigest\":\"$runtime_completion_digest\",\"containerId\":\"$runtime_container_id\",\"exitCode\":\"$runtime_container_exit_code\",\"lockDigest\":\"$runtime_lock_digest\",\"ownerDigest\":\"$runtime_owner_digest\",\"schema\":\"booking.preprod-runtime-completion-intent/v1\",\"status\":\"prepared\"}"
+  runtime_publish_record "$runtime_txn/completion-intent.json" "$runtime_completion_doc"
+}
+
+read_completion_intent() {
+  runtime_completion_file="$runtime_txn/completion-intent.json"
+  [ -e "$runtime_completion_file" ] || return 1
+  runtime_completion_digest=$(runtime_json_string "$runtime_completion_file" completionDigest)
+  runtime_completion_container=$(runtime_json_string "$runtime_completion_file" containerId)
+  runtime_completion_exit=$(runtime_json_string "$runtime_completion_file" exitCode)
+  runtime_completion_lock=$(runtime_json_string "$runtime_completion_file" lockDigest)
+  runtime_completion_owner=$(runtime_json_string "$runtime_completion_file" ownerDigest)
+  case "$runtime_completion_exit" in ''|*[!0-9]*) fail ;; esac
+  [ "$runtime_completion_container" = "$runtime_container_id" ] && [ "$runtime_completion_lock" = "$runtime_lock_digest" ] && [ "$runtime_completion_owner" = "$runtime_owner_digest" ] || fail
+  runtime_container_exit_code=$runtime_completion_exit
+  runtime_completion_body="{\"containerId\":\"$runtime_container_id\",\"exitCode\":\"$runtime_container_exit_code\",\"lockDigest\":\"$runtime_lock_digest\",\"ownerDigest\":\"$runtime_owner_digest\",\"schema\":\"booking.preprod-runtime-completion-intent/v1\",\"status\":\"prepared\"}"
+  [ "$(printf '%s' "$runtime_completion_body" | runtime_sha256)" = "$runtime_completion_digest" ] || fail
+  runtime_completion_doc="{\"completionDigest\":\"$runtime_completion_digest\",\"containerId\":\"$runtime_container_id\",\"exitCode\":\"$runtime_container_exit_code\",\"lockDigest\":\"$runtime_lock_digest\",\"ownerDigest\":\"$runtime_owner_digest\",\"schema\":\"booking.preprod-runtime-completion-intent/v1\",\"status\":\"prepared\"}"
+  runtime_publish_record "$runtime_completion_file" "$runtime_completion_doc"
+}
+
+publish_recovery_intent() {
+  runtime_recovery_body="{\"containerId\":\"$runtime_recovered_id\",\"createDigest\":\"$runtime_recovery_create\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_recovery_exit\",\"ownerDigest\":\"$runtime_recovery_owner\",\"recoveryId\":\"$runtime_recovery_id\",\"schema\":\"booking.preprod-runtime-recovery-intent/v3\",\"status\":\"prepared\"}"
+  runtime_recovery_intent_digest=$(printf '%s' "$runtime_recovery_body" | runtime_sha256)
+  runtime_recovery_doc="{\"containerId\":\"$runtime_recovered_id\",\"createDigest\":\"$runtime_recovery_create\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_recovery_exit\",\"ownerDigest\":\"$runtime_recovery_owner\",\"recoveryId\":\"$runtime_recovery_id\",\"recoveryIntentDigest\":\"$runtime_recovery_intent_digest\",\"schema\":\"booking.preprod-runtime-recovery-intent/v3\",\"status\":\"prepared\"}"
+  runtime_publish_record "$runtime_txn/recovery-intent.json" "$runtime_recovery_doc"
+}
+
+read_recovery_intent() {
+  runtime_recovery_file="$runtime_txn/recovery-intent.json"
+  [ -e "$runtime_recovery_file" ] || return 1
+  runtime_recovered_id=$(runtime_json_string "$runtime_recovery_file" containerId)
+  runtime_receipt_create=$(runtime_json_string "$runtime_recovery_file" createDigest)
+  runtime_recovery_lock=$(runtime_json_string "$runtime_recovery_file" lockDigest)
+  runtime_receipt_exit=$(runtime_json_string "$runtime_recovery_file" observedExitCode)
+  runtime_recovery_owner=$(runtime_json_string "$runtime_recovery_file" ownerDigest)
+  runtime_receipt_recovery_id=$(runtime_json_string "$runtime_recovery_file" recoveryId)
+  runtime_recovery_intent_digest=$(runtime_json_string "$runtime_recovery_file" recoveryIntentDigest)
+  [ "$runtime_recovery_lock" = "$runtime_lock_digest" ] && [ "$runtime_receipt_recovery_id" = "$runtime_recovery_id" ] || fail
+  [ "$runtime_receipt_create" = "$runtime_recovery_create" ] && [ "$runtime_receipt_exit" = "$runtime_recovery_exit" ] || fail
+  runtime_recovery_body="{\"containerId\":\"$runtime_recovered_id\",\"createDigest\":\"$runtime_recovery_create\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_recovery_exit\",\"ownerDigest\":\"$runtime_recovery_owner\",\"recoveryId\":\"$runtime_recovery_id\",\"schema\":\"booking.preprod-runtime-recovery-intent/v3\",\"status\":\"prepared\"}"
+  [ "$(printf '%s' "$runtime_recovery_body" | runtime_sha256)" = "$runtime_recovery_intent_digest" ] || fail
+  runtime_recovery_doc="{\"containerId\":\"$runtime_recovered_id\",\"createDigest\":\"$runtime_recovery_create\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_recovery_exit\",\"ownerDigest\":\"$runtime_recovery_owner\",\"recoveryId\":\"$runtime_recovery_id\",\"recoveryIntentDigest\":\"$runtime_recovery_intent_digest\",\"schema\":\"booking.preprod-runtime-recovery-intent/v3\",\"status\":\"prepared\"}"
+  runtime_publish_record "$runtime_recovery_file" "$runtime_recovery_doc"
+}
+
+read_runtime_final() {
+  runtime_final_file="$runtime_txn/final.json"
+  [ -e "$runtime_final_file" ] || return 1
+  runtime_final_action=$(runtime_json_string "$runtime_final_file" action)
+  runtime_final_business=$(runtime_json_string "$runtime_final_file" businessOutcome)
+  runtime_final_cleanup=$(runtime_json_string "$runtime_final_file" cleanupStatus)
+  runtime_final_completion=$(runtime_json_string "$runtime_final_file" completionDigest)
+  runtime_final_container=$(runtime_json_string "$runtime_final_file" containerId)
+  runtime_final_exit=$(runtime_json_string "$runtime_final_file" observedExitCode)
+  runtime_final_lock=$(runtime_json_string "$runtime_final_file" lockDigest)
+  runtime_final_owner=$(runtime_json_string "$runtime_final_file" ownerDigest)
+  runtime_final_digest=$(runtime_json_string "$runtime_final_file" receiptDigest)
+  runtime_final_recovery=$(runtime_json_string "$runtime_final_file" recoveryId)
+  runtime_final_recovery_intent=$(runtime_json_string "$runtime_final_file" recoveryIntentDigest)
+  runtime_final_result=$(runtime_json_string "$runtime_final_file" result)
+  [ "$runtime_final_lock" = "$runtime_lock_digest" ] || fail
+  [ "$runtime_final_cleanup" = 'pass' ] || fail
+  case "$runtime_final_action:$runtime_final_recovery" in normal:normal) ;; recovery:"$runtime_recovery_id") ;; *) fail ;; esac
+  case "$runtime_final_container" in absent|*[!0-9a-f]*) [ "$runtime_final_container" = 'absent' ] || fail ;; esac
+  if [ "$runtime_final_container" != 'absent' ]; then [ "${#runtime_final_container}" -eq 64 ] || fail; fi
+  case "$runtime_final_result" in absent|removed) ;; *) fail ;; esac
+  case "$runtime_final_exit" in unknown) ;; *[!0-9]*|'') fail ;; esac
+  case "$runtime_final_business:$runtime_final_exit" in succeeded:0|failed:[1-9]*|unknown:unknown) ;; *) fail ;; esac
+  runtime_final_body="{\"action\":\"$runtime_final_action\",\"businessOutcome\":\"$runtime_final_business\",\"cleanupStatus\":\"pass\",\"completionDigest\":\"$runtime_final_completion\",\"containerId\":\"$runtime_final_container\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_final_exit\",\"ownerDigest\":\"$runtime_final_owner\",\"recoveryId\":\"$runtime_final_recovery\",\"recoveryIntentDigest\":\"$runtime_final_recovery_intent\",\"result\":\"$runtime_final_result\",\"schema\":\"booking.preprod-runtime-final/v3\"}"
+  [ "$(printf '%s' "$runtime_final_body" | runtime_sha256)" = "$runtime_final_digest" ] || fail
+  runtime_final_doc="{\"action\":\"$runtime_final_action\",\"businessOutcome\":\"$runtime_final_business\",\"cleanupStatus\":\"pass\",\"completionDigest\":\"$runtime_final_completion\",\"containerId\":\"$runtime_final_container\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_final_exit\",\"ownerDigest\":\"$runtime_final_owner\",\"receiptDigest\":\"$runtime_final_digest\",\"recoveryId\":\"$runtime_final_recovery\",\"recoveryIntentDigest\":\"$runtime_final_recovery_intent\",\"result\":\"$runtime_final_result\",\"schema\":\"booking.preprod-runtime-final/v3\"}"
+  runtime_publish_record "$runtime_final_file" "$runtime_final_doc"
+}
+
+publish_runtime_final() {
+  runtime_final_body="{\"action\":\"$runtime_final_action\",\"businessOutcome\":\"$runtime_final_business\",\"cleanupStatus\":\"pass\",\"completionDigest\":\"$runtime_final_completion\",\"containerId\":\"$runtime_final_container\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_final_exit\",\"ownerDigest\":\"$runtime_final_owner\",\"recoveryId\":\"$runtime_final_recovery\",\"recoveryIntentDigest\":\"$runtime_final_recovery_intent\",\"result\":\"$runtime_final_result\",\"schema\":\"booking.preprod-runtime-final/v3\"}"
+  runtime_final_digest=$(printf '%s' "$runtime_final_body" | runtime_sha256)
+  runtime_final_doc="{\"action\":\"$runtime_final_action\",\"businessOutcome\":\"$runtime_final_business\",\"cleanupStatus\":\"pass\",\"completionDigest\":\"$runtime_final_completion\",\"containerId\":\"$runtime_final_container\",\"lockDigest\":\"$runtime_lock_digest\",\"observedExitCode\":\"$runtime_final_exit\",\"ownerDigest\":\"$runtime_final_owner\",\"receiptDigest\":\"$runtime_final_digest\",\"recoveryId\":\"$runtime_final_recovery\",\"recoveryIntentDigest\":\"$runtime_final_recovery_intent\",\"result\":\"$runtime_final_result\",\"schema\":\"booking.preprod-runtime-final/v3\"}"
+  runtime_publish_record "$runtime_txn/final.json" "$runtime_final_doc"
+  "$CHMOD" 500 "$runtime_txn" || fail
+  sync_runtime_path "$runtime_txn"
+}
+
+remove_runtime_lock_link() {
+  read_runtime_lock
+  [ "$runtime_lock_digest" = "$runtime_expected_digest" ] || fail
+  if [ "$runtime_allow_live" = 'true' ]; then runtime_owner_is_live || fail; else runtime_owner_is_live && fail; fi
+  "$UNLINK" "$RUNTIME_LOCK" || fail
+  # RUNTIME_TEST_CHECKPOINT fixed-lock-unlinked
+  sync_runtime_path "$("$DIRNAME" "$RUNTIME_LOCK")"
+  path_absent "$RUNTIME_LOCK" || fail
+  runtime_exact_file "$runtime_txn/intent.json" "$runtime_lock_doc" 1
+}
+
+recover_runtime_lock() {
+  runtime_expected_digest=$1
+  [ ! -L "$RUNTIME_LOCK" ] && [ ! -d "$RUNTIME_LOCK" ] || fail
+  runtime_conflicts_absent || fail
+  runtime_txn="$RUNTIME_TXN_PREFIX-${runtime_expected_digest#sha256:}"
+  runtime_trusted_item "$runtime_txn" directory
+  runtime_txn_intent="$runtime_txn/intent.json"
+  if [ -e "$RUNTIME_LOCK" ]; then runtime_intent_links=2; else runtime_intent_links=1; fi
+  read_runtime_lock_at "$runtime_txn_intent" "$runtime_intent_links"
+  [ "$runtime_lock_digest" = "$runtime_expected_digest" ] || fail
+  if [ -e "$runtime_txn/final.json" ]; then
+    path_absent "$RUNTIME_LOCK" || fail
+    read_runtime_final
+    prove_runtime_absent "$runtime_final_container"
+    printf '%s\n' RUNTIME_LOCK_ALREADY_RECOVERED
+    return
+  else path_absent "$runtime_txn/final.json" || fail; fi
+  runtime_owner_is_live && fail
+  runtime_recovery_owner='absent'
+  runtime_recovery_create='absent'
+  runtime_recovery_completion='absent'
+  runtime_recovery_exit='unknown'
+  runtime_recovered_id='absent'
+  runtime_container_present='false'
+
+  if read_runtime_create; then
+    runtime_recovery_create=$runtime_create_digest
+    runtime_recovered_id=$runtime_created_id
+  else
+    path_absent "$runtime_txn/create.json" || fail
+    path_absent "$runtime_txn/owner.json" && path_absent "$runtime_txn/completion-intent.json" || fail
+    [ -z "$(runtime_label_ids "label=uk.happybooking.runtime-lock-digest=$runtime_lock_digest")" ] || fail
+    [ -z "$(runtime_name_ids)" ] || fail
+  fi
+  if [ "$runtime_recovery_create" != 'absent' ]; then
+    if read_runtime_owner_record; then
+      runtime_recovery_owner=$runtime_owner_digest
+      [ "$runtime_bound_container" = "$runtime_recovered_id" ] || fail
+      if read_completion_intent; then
+        runtime_recovery_completion=$runtime_completion_digest
+        runtime_recovery_exit=$runtime_container_exit_code
+      else path_absent "$runtime_txn/completion-intent.json" || fail; fi
+    else
+      path_absent "$runtime_txn/owner.json" && path_absent "$runtime_txn/completion-intent.json" || fail
+    fi
+  fi
+
+  runtime_exact_label_id=$(runtime_label_ids "label=uk.happybooking.runtime-lock-digest=$runtime_lock_digest")
+  if [ "$runtime_recovered_id" = 'absent' ]; then
+    [ -z "$runtime_exact_label_id" ] || fail
+    [ -z "$(runtime_name_ids)" ] || fail
+  else
+    [ -z "$runtime_exact_label_id" ] || [ "$runtime_exact_label_id" = "$runtime_recovered_id" ] || fail
+    read_runtime_bound_container_twice "$runtime_recovered_id"
+    if [ "$runtime_bound_first_id" != 'absent' ]; then
+      [ "$runtime_exact_label_id" = "$runtime_recovered_id" ] || fail
+      [ "$runtime_container_running" = 'false' ] || fail
+      runtime_container_present='true'
+      if [ "$runtime_container_status" = 'exited' ]; then
+        if [ "$runtime_recovery_exit" = 'unknown' ]; then runtime_recovery_exit=$runtime_container_exit_code; fi
+        [ "$runtime_recovery_exit" = "$runtime_container_exit_code" ] || fail
+      else
+        [ "$runtime_container_status" = 'created' ] && [ "$runtime_recovery_exit" = 'unknown' ] || fail
+      fi
+    else
+      prove_runtime_absent "$runtime_recovered_id"
+      if [ -e "$runtime_txn/recovery-intent.json" ]; then
+        runtime_recovery_exit=$(runtime_json_string "$runtime_txn/recovery-intent.json" observedExitCode)
+        case "$runtime_recovery_exit" in unknown|*[!0-9]*) [ "$runtime_recovery_exit" = 'unknown' ] || fail ;; esac
+      fi
+    fi
+  fi
+
+  runtime_derived_id=$runtime_recovered_id
+  runtime_derived_create=$runtime_recovery_create
+  runtime_derived_owner=$runtime_recovery_owner
+  runtime_derived_exit=$runtime_recovery_exit
+  if read_recovery_intent; then
+    [ "$runtime_recovered_id" = "$runtime_derived_id" ] && [ "$runtime_recovery_create" = "$runtime_derived_create" ] || fail
+    [ "$runtime_recovery_owner" = "$runtime_derived_owner" ] && [ "$runtime_recovery_exit" = "$runtime_derived_exit" ] || fail
+  else
+    publish_recovery_intent
+  fi
+  # RUNTIME_TEST_CHECKPOINT recovery-intent-published
+  if [ "$runtime_container_present" = 'true' ]; then
+    read_runtime_bound_container_twice "$runtime_recovered_id"
+    [ "$runtime_bound_first_id" = "$runtime_recovered_id" ] && [ "$runtime_container_running" = 'false' ] || fail
+    docker_host container rm "$runtime_recovered_id" >/dev/null || fail
+  fi
+  prove_runtime_absent "$runtime_recovered_id"
+  # RUNTIME_TEST_CHECKPOINT container-removed
+  runtime_owner_is_live && fail
+  runtime_conflicts_absent || fail
+  prove_runtime_absent "$runtime_recovered_id"
+  if [ -e "$RUNTIME_LOCK" ]; then runtime_allow_live='false'; remove_runtime_lock_link; else path_absent "$RUNTIME_LOCK" || fail; fi
+  runtime_final_action='recovery'; runtime_final_completion=$runtime_recovery_completion; runtime_final_container=$runtime_recovered_id
+  runtime_final_exit=$runtime_recovery_exit; runtime_final_owner=$runtime_recovery_owner; runtime_final_recovery=$runtime_recovery_id
+  runtime_final_recovery_intent=$runtime_recovery_intent_digest
+  if [ "$runtime_final_exit" = 'unknown' ]; then runtime_final_business='unknown'; elif [ "$runtime_final_exit" = '0' ]; then runtime_final_business='succeeded'; else runtime_final_business='failed'; fi
+  if [ "$runtime_container_present" = 'true' ]; then runtime_final_result='removed'; else runtime_final_result='absent'; fi
+  prove_runtime_absent "$runtime_recovered_id"
+  publish_runtime_final
+  printf '%s\n' RUNTIME_LOCK_RECOVERED
+}
+
+prepare_runtime_owner() {
+  runtime_owner_container=$1
+  runtime_owner_pid=$$
+  runtime_owner_image=$IMAGE
+  runtime_owner_request_digest=$(printf '%s\n' "$entrypoint|$action|$forwarded|$runtime_owner_container|$IMAGE" | runtime_sha256)
+  if [ "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" = 'true' ]; then
+    runtime_owner_boot_id='00000000-0000-0000-0000-000000000000'
+    runtime_owner_start_ticks='1'
+  else
+    runtime_owner_boot_id=$("$CAT" "$BOOT_ID_PATH") || fail
+    runtime_owner_start_ticks=$(runtime_start_ticks "$runtime_owner_pid") || fail
+  fi
+  case "$runtime_owner_boot_id" in ????????-????-????-????-????????????) ;; *) fail ;; esac
+  runtime_lock_digest=$(runtime_lock_body | runtime_sha256)
+}
+
+acquire_runtime_lock() {
+  path_absent "$RUNTIME_LOCK" || fail
+  runtime_parent=$("$DIRNAME" "$RUNTIME_LOCK")
+  runtime_txn="$RUNTIME_TXN_PREFIX-${runtime_lock_digest#sha256:}"
+  [ ! -e "$runtime_txn" ] || fail
+  "$MKDIR" -m 700 "$runtime_txn" || fail
+  runtime_txn_intent="$runtime_txn/intent.json"
+  ( umask 077; runtime_lock_document > "$runtime_txn_intent" ) || fail
+  "$CHMOD" 400 "$runtime_txn_intent" || fail
+  sync_runtime_path "$runtime_txn_intent"
+  sync_runtime_path "$runtime_txn"
+  "$LINK" "$runtime_txn_intent" "$RUNTIME_LOCK" || fail
+  # RUNTIME_TEST_CHECKPOINT fixed-lock-linked
+  sync_runtime_path "$runtime_parent"
+  read_runtime_lock
+}
+
+complete_runtime_lock() {
+  read_runtime_lock
+  [ "$runtime_lock_digest" = "$runtime_expected_digest" ] || fail
+  runtime_owner_is_live || fail
+  read_runtime_create || fail
+  read_runtime_owner_record || fail
+  [ "$runtime_bound_container" = "$runtime_created_id" ] || fail
+  read_runtime_bound_container_twice "$runtime_bound_container"
+  [ "$runtime_bound_first_id" = "$runtime_bound_container" ] && [ "$runtime_container_running" = 'false' ] && [ "$runtime_container_status" = 'exited' ] || fail
+  runtime_completed_id=$runtime_container_id
+  runtime_completed_record=$runtime_bound_first
+  publish_completion_intent
+  # RUNTIME_TEST_CHECKPOINT normal-completion-intent-published
+  runtime_completed_exit=$runtime_container_exit_code
+  runtime_completed_digest=$runtime_completion_digest
+  runtime_completed_owner=$runtime_owner_digest
+  read_runtime_bound_container_twice "$runtime_completed_id"
+  [ "$runtime_bound_first" = "$runtime_completed_record" ] && [ "$runtime_container_status" = 'exited' ] && [ "$runtime_container_exit_code" = "$runtime_completed_exit" ] || fail
+  docker_host container rm "$runtime_completed_id" >/dev/null || fail
+  prove_runtime_absent "$runtime_completed_id"
+  # RUNTIME_TEST_CHECKPOINT normal-container-removed
+  runtime_owner_is_live || fail
+  runtime_allow_live='true'; remove_runtime_lock_link
+  # RUNTIME_TEST_CHECKPOINT normal-lock-unlinked
+  runtime_final_action='normal'; runtime_final_completion=$runtime_completed_digest; runtime_final_container=$runtime_completed_id
+  runtime_final_exit=$runtime_completed_exit; runtime_final_owner=$runtime_completed_owner; runtime_final_recovery='normal'
+  runtime_final_recovery_intent='absent'; runtime_final_result='removed'
+  if [ "$runtime_final_exit" = '0' ]; then runtime_final_business='succeeded'; else runtime_final_business='failed'; fi
+  prove_runtime_absent "$runtime_completed_id"
+  publish_runtime_final
+  # RUNTIME_TEST_CHECKPOINT normal-final-published
+}
+
+abort_runtime_before_create() {
+  runtime_allow_live='true'
+  remove_runtime_lock_link
+  "$UNLINK" "$runtime_txn/intent.json" || fail
+  "$RMDIR" "$runtime_txn" || fail
+  sync_runtime_path "$("$DIRNAME" "$RUNTIME_LOCK")"
+}
+
+case "${1:-}" in
+  recover-stale-runtime-lock)
+    shift
+    [ "$#" -eq 12 ] || fail
+    [ "$1" = '--action' ] && [ "$2" = 'recover-runtime-lock' ] &&
+      [ "$3" = '--execute' ] && [ "$4" = 'true' ] &&
+      [ "$5" = '--environment' ] && [ "$6" = 'preprod' ] &&
+      [ "$7" = '--project' ] && [ "$8" = 'booking-preprod' ] &&
+      [ "$9" = '--expected-lock-digest' ] || fail
+    runtime_expected_digest=${10}
+    [ "${11}" = '--recovery-id' ] || fail
+    runtime_recovery_id=${12}
+    case "$runtime_expected_digest" in sha256:????????????????????????????????????????????????????????????????) ;; *) fail ;; esac
+    runtime_expected_hex=${runtime_expected_digest#sha256:}
+    case "$runtime_expected_hex" in *[!0-9a-f]*) fail ;; esac
+    case "$runtime_recovery_id" in runtime-recovery-?*) ;; *) fail ;; esac
+    case "$runtime_recovery_id" in *[!A-Za-z0-9._-]*) fail ;; esac
+    runtime_trusted_recovery_environment
+    recover_runtime_lock "$runtime_expected_digest"
+    exit 0
+    ;;
+esac
 
 valid_release_id() {
   candidate=$1
@@ -173,17 +969,26 @@ if [ "$entrypoint" = 'recover-stale-fencing-lock' ]; then
   # name/ID without colliding with or deleting it.
   control_container_name='booking-preprod-lock-recovery'
 fi
+prepare_runtime_owner "$control_container_name"
 set -- \
-  run --rm --pull never --name "$control_container_name" \
+  container create --pull never --name "$control_container_name" \
+  --label "uk.happybooking.runtime-lock-digest=$runtime_lock_digest" \
   --network host --pid host --user 0:0 --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+  --tmpfs /root/.docker:rw,nosuid,nodev,noexec,size=1m \
   --env-file "$CONTROL_ENV" \
   --env BOOKING_DEPLOY_STATE_ROOT=/var/lib/happybooking/deploy-state \
   --env HOME=/root \
   --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \
+  --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= --env LD_LIBRARY_PATH= \
   --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+  --env DOCKER_CONTEXT= --env DOCKER_TLS= --env DOCKER_TLS_VERIFY= --env DOCKER_CERT_PATH= --env DOCKER_API_VERSION= \
+  --env DOCKER_AUTH_CONFIG= --env DOCKER_CUSTOM_HEADERS= --env DOCKER_CONTENT_TRUST= --env DOCKER_CONTENT_TRUST_SERVER= \
+  --env DOCKER_DEFAULT_PLATFORM= --env DOCKER_HIDE_LEGACY_COMMANDS= --env DOCKER_SCAN_SUGGEST= --env DOCKER_CLI_HINTS= \
+  --env BUILDKIT_HOST= --env COMPOSE_FILE= --env COMPOSE_PROJECT_NAME= --env COMPOSE_PROFILES= --env COMPOSE_PATH_SEPARATOR= \
+  --env COMPOSE_ENV_FILES= --env COMPOSE_DISABLE_ENV_FILE= --env COMPOSE_PARALLEL_LIMIT= --env COMPOSE_ANSI= \
+  --env COMPOSE_STATUS_STDOUT= --env COMPOSE_PROGRESS= \
   --mount type=bind,src=/var/lib/happybooking,dst=/var/lib/happybooking \
   --mount type=bind,src=/volume1/happybooking/booking-preprod,dst=/volume1/happybooking/booking-preprod,readonly \
   --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
@@ -201,14 +1006,14 @@ set -- \
 
 case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
   true)
-    printf '%s\n' "$HOST_DOCKER" "$@"
+    printf '%s\n' "$HOST_DOCKER" --host unix:///var/run/docker.sock --config "$HOST_DOCKER_CONFIG" "$@"
     exit 0
     ;;
   '') ;;
   *) fail ;;
 esac
 
-[ "$(id -u)" = '0' ] || fail
+[ "$("$ID" -u)" = "$EXPECTED_UID" ] || fail
 [ -x "$HOST_DOCKER" ] || fail
 [ -f "$HOST_COMPOSE" ] && [ -r "$HOST_COMPOSE" ] || fail
 [ -d "$STATE_ROOT" ] || fail
@@ -243,11 +1048,40 @@ execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollb
   [ -f /usr/local/libexec/happybooking/switch-preprod-ingress.mjs ] || fail
   ;;
 esac
+runtime_trusted_tool "$HOST_DOCKER"
+path_absent "$HOST_DOCKER_CONFIG" || fail
+runtime_config_parent=$("$READLINK" -f "$("$DIRNAME" "$HOST_DOCKER_CONFIG")") || fail
+runtime_trusted_directory "$runtime_config_parent"
+runtime_trusted_resolved_chain "$runtime_config_parent"
 
-mkdir "$RUNTIME_LOCK" 2>/dev/null || fail
-cleanup_runtime_lock() {
-  rmdir "$RUNTIME_LOCK" 2>/dev/null || true
-}
-trap cleanup_runtime_lock EXIT HUP INT TERM
-[ ! -e "$INSTALL_LOCK" ] || fail
-"$HOST_DOCKER" "$@"
+[ -r "$BOOT_ID_PATH" ] || fail
+runtime_conflicts_absent || fail
+runtime_prestart_absent
+runtime_expected_digest=$runtime_lock_digest
+acquire_runtime_lock
+if ! runtime_conflicts_absent; then abort_runtime_before_create; fail; fi
+runtime_create_status=0
+runtime_create_output=$(docker_host "$@") || runtime_create_status=$?
+runtime_created_id=$(runtime_label_ids "label=uk.happybooking.runtime-lock-digest=$runtime_lock_digest")
+[ -n "$runtime_created_id" ] || fail
+# RUNTIME_TEST_CHECKPOINT daemon-container-discovered
+publish_runtime_create
+# RUNTIME_TEST_CHECKPOINT create-receipt-published
+[ "$runtime_create_status" -eq 0 ] || fail
+[ "$runtime_create_output" = "$runtime_created_id" ] || fail
+read_runtime_bound_container_twice "$runtime_created_id"
+[ "$runtime_bound_first_id" = "$runtime_created_id" ] && [ "$runtime_container_status" = 'created' ] && [ "$runtime_container_running" = 'false' ] || fail
+# RUNTIME_TEST_CHECKPOINT container-inspected
+publish_runtime_owner
+# RUNTIME_TEST_CHECKPOINT owner-published
+read_runtime_bound_container_twice "$runtime_created_id"
+[ "$runtime_bound_first_id" = "$runtime_created_id" ] && [ "$runtime_container_status" = 'created' ] && [ "$runtime_container_running" = 'false' ] || fail
+runtime_attach_status=0
+docker_host container start --attach "$runtime_created_id" || runtime_attach_status=$?
+read_runtime_bound_container_twice "$runtime_created_id"
+[ "$runtime_bound_first_id" = "$runtime_created_id" ] && [ "$runtime_container_status" = 'exited' ] && [ "$runtime_container_running" = 'false' ] || fail
+runtime_status=$runtime_container_exit_code
+case "$runtime_status" in ''|*[!0-9]*) fail ;; esac
+[ "$runtime_attach_status" -eq 0 ] || [ "$runtime_attach_status" -eq "$runtime_status" ] || fail
+complete_runtime_lock
+exit "$runtime_status"

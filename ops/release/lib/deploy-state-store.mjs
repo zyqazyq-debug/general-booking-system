@@ -10,7 +10,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const RELEASE_ID = /^booking-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,12}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
-const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest',
+const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'telegramEgressReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest',
   'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest',
   'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
 const RECOVERY_KEYS = new Set(['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest',

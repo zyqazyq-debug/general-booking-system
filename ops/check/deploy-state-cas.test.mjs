@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { ContractError, EXIT, sha256 } from '../release/lib/contracts.mjs';
@@ -44,7 +44,7 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
   state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
-  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
   assert.throws(() => step(state, 'CANDIDATE_READY'), (error) => error.exitCode === EXIT.READINESS);
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   assert.throws(() => step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9') }), (error) => error.exitCode === EXIT.SINGLETON);
@@ -82,7 +82,7 @@ test('rollback before ingress switch restores the old singleton while retaining 
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
   state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
-  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
   state = step(state, 'ROLLBACK_PENDING');
@@ -114,7 +114,7 @@ test('expand migration remains rollback-compatible while a real contract migrati
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
   state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('6') });
-  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   assert.equal(state.contractMigrationApplied, false);
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
@@ -135,7 +135,7 @@ test('observation timing never blocks emergency rollback but only a completed wi
     state = step(state, 'MANIFEST_VERIFIED');
     state = step(state, 'STAGED');
     state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
-    state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+    state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
     state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
     state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
     state = step(state, 'SWITCHED', { switchReceiptDigest: D('1') });
@@ -154,7 +154,7 @@ test('observation timing never blocks emergency rollback but only a completed wi
     rollbackSingletonTransferReceiptDigest: D('5'), rolledBackProbeDigest: D('3') });
   assert.equal(qualified.rollbackRehearsalCompleted, true);
 
-  qualified = step(qualified, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7'), now: '2026-09-07T15:32:00.000Z' });
+  qualified = step(qualified, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7'), now: '2026-09-07T15:32:00.000Z' });
   qualified = step(qualified, 'CANDIDATE_READY', { candidateProbeDigest: D('8'), now: '2026-09-07T15:33:00.000Z' });
   qualified = step(qualified, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4'), now: '2026-09-07T15:34:00.000Z' });
   qualified = step(qualified, 'SWITCHED', { switchReceiptDigest: D('1'), now: '2026-09-07T15:35:00.000Z' });
@@ -494,7 +494,7 @@ test('EXPAND_MIGRATED rejects a canonical baseline receipt that is not the expan
     const expand = await runFencedAction({ ...commonAction, action: 'preprod-expand-migrate', 'action-id': 'expand-1' }, runtime);
     assert.ok(expand.resources.every((resource) => resource.previousReceiptDigest === current.receiptDigest));
     await assert.rejects(runManageDeployState({ action: 'transition', execute: 'true', environment: 'preprod', project: 'booking-preprod',
-      'approval-id': 'approval-1', 'expected-generation': '3', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
+      'approval-id': 'approval-1', 'expected-generation': '4', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
       'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', to: 'EXPAND_MIGRATED',
       'baseline-receipt-digest': first.receiptDigest, 'expand-migration-receipt-digest': expand.receiptDigest },
     { deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs: Date.parse('2026-09-09T10:05:00.000Z') }), /exact baseline predecessor chain/);
@@ -536,13 +536,14 @@ test('managed singleton transition consumes only a completed canonical executor 
   const root = await mkdtemp(join(tmpdir(), 'booking-state-executor-binding-'));
   const runtimeEnvFile = join(root, '.runtime.env');
   await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
-  const managerRuntime = (nowMs) => ({ deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs });
+  const managerRuntime = (nowMs) => ({ deployStateRoot: root, runtimeEnvFile, allowInsecureTestPaths: true, nowMs,
+    stageTransitionPlanBuilder: () => ({ executable: '/trusted/action', argv: ['mutate'], cwd: '/trusted/release',
+      readback: { executable: '/trusted/action', argv: ['readback'], verify: () => ({ exactIdentity: true }) } }),
+    stageTransitionCommandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) });
   let state = acquired();
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
   state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
-  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
-  state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
   const transitionArgs = (overrides = {}) => ({
     action: 'transition', execute: 'true', environment: 'preprod', project: 'booking-preprod', 'approval-id': 'approval-1',
@@ -552,6 +553,21 @@ test('managed singleton transition consumes only a completed canonical executor 
   });
   try {
     await initializeStateFile(statePath, state);
+    const bootstrapArgs = { action: 'preprod-prepare-telegram-egress', execute: 'true', environment: 'preprod', project: 'booking-preprod',
+      'approval-id': 'approval-1', 'expected-generation': '4', 'expected-fencing-epoch': '1', 'manifest-digest': CANDIDATE.manifestDigest,
+      'operation-id': 'op-1', 'lease-id': 'lease-1', 'holder-id': 'owner-1', 'resource-id': 'telegram:booking-preprod',
+      'action-id': 'egress-stage-1' };
+    const executorRuntime = { deployStateRoot: root, now: () => new Date('2026-09-07T15:34:00.000Z'),
+      planBuilder: () => ({ executable: '/trusted/action', argv: ['mutate'], cwd: '/trusted/release',
+        readback: { executable: '/trusted/action', argv: ['readback'], verify: () => ({ exactIdentity: true }) } }),
+      commandRunner: async () => ({ exitCode: 0, signal: null, overflow: false, stdout: '{}', stderr: '' }) };
+    const telegramEgressReceipt = await runFencedAction(bootstrapArgs, executorRuntime);
+    const stageReceipt = await runFencedAction({ ...bootstrapArgs, action: 'preprod-stage',
+      'resource-id': 'booking-preprod-edge', 'action-id': 'stage-1' }, executorRuntime);
+    state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: telegramEgressReceipt.receiptDigest,
+      stageReceiptDigest: stageReceipt.receiptDigest });
+    state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
     await assert.rejects(runManageDeployState(transitionArgs({ 'singleton-transfer-receipt-digest': D('4') }), {
       ...managerRuntime(Date.parse('2026-09-07T15:35:00.000Z')),
     }), /not present in the canonical store/);
@@ -630,9 +646,33 @@ test('managed singleton transition consumes only a completed canonical executor 
     assert.equal(rolledBack.evidence.rollbackReceiptDigest, rollbackIngress.receiptDigest);
     assert.equal(rolledBack.evidence.rollbackSingletonTransferReceiptDigest, rollbackSingletons.receiptDigest);
 
+    const restageEgress = await execute('preprod-prepare-telegram-egress', 'telegram:booking-preprod', 'restage-egress-1', 11,
+      CANDIDATE.manifestDigest, '2026-09-07T15:46:30.000Z');
     const restage = await execute('preprod-stage', 'booking-preprod-edge', 'restage-1', 11,
       CANDIDATE.manifestDigest, '2026-09-07T15:47:00.000Z');
-    const restarted = await manage('CANDIDATE_STARTED', 11, '2026-09-07T15:48:00.000Z', { 'stage-receipt-digest': restage.receiptDigest });
+    assert.match(restage.resources.find((resource) => resource.resourceId === 'booking-preprod-edge').previousReceiptDigest, /^sha256:/,
+      'ROLLED_BACK re-promotion preserves the existing edge predecessor chain');
+    assert.equal(restage.resources.find((resource) => resource.resourceId === 'telegram:booking-preprod').previousReceiptDigest,
+      restageEgress.receiptDigest, 'stage binds the fresh re-promotion egress receipt');
+    const restageReceiptPath = join(dirname(statePath), 'executor', 'receipts', '000000000001-preprod-stage-restage-1.json');
+    const edgeStatePath = join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json');
+    const telegramStatePath = join(resourceDirectory(statePath, 'telegram:booking-preprod'), 'resource-state.json');
+    const forgedBody = { ...restage, resources: restage.resources.map((resource) => resource.resourceId === 'booking-preprod-edge'
+      ? { ...resource, previousReceiptDigest: D('f') } : resource) };
+    delete forgedBody.receiptDigest;
+    const forged = { ...forgedBody, receiptDigest: sha256(forgedBody) };
+    const edgeState = JSON.parse(await readFile(edgeStatePath, 'utf8'));
+    const telegramState = JSON.parse(await readFile(telegramStatePath, 'utf8'));
+    await writeFile(restageReceiptPath, `${JSON.stringify(forged)}\n`);
+    await writeFile(edgeStatePath, `${JSON.stringify({ ...edgeState, receiptChainHead: forged.receiptDigest })}\n`);
+    await writeFile(telegramStatePath, `${JSON.stringify({ ...telegramState, receiptChainHead: forged.receiptDigest })}\n`);
+    await assert.rejects(manage('CANDIDATE_STARTED', 11, '2026-09-07T15:47:30.000Z', {
+      'stage-receipt-digest': forged.receiptDigest }), /Telegram egress predecessor is not current and canonical/);
+    await writeFile(restageReceiptPath, `${JSON.stringify(restage)}\n`);
+    await writeFile(edgeStatePath, `${JSON.stringify(edgeState)}\n`);
+    await writeFile(telegramStatePath, `${JSON.stringify(telegramState)}\n`);
+    const restarted = await manage('CANDIDATE_STARTED', 11, '2026-09-07T15:48:00.000Z', {
+      'stage-receipt-digest': restage.receiptDigest });
     assert.equal(restarted.evidence.expandMigrationReceiptDigest, D('e'), 'expand migration evidence survives the rehearsal rollback');
     assert.equal(restarted.evidence.rollbackReceiptDigest, rollbackIngress.receiptDigest,
       'first-pass rollback evidence remains rooted until terminal resource closure');
@@ -692,7 +732,7 @@ test('managed pre-switch rollback consumes singleton and probe receipts without 
   state = step(state, 'MANIFEST_VERIFIED');
   state = step(state, 'STAGED');
   state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
-  state = step(state, 'CANDIDATE_STARTED', { stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
   state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
   state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
   state = step(state, 'ROLLBACK_PENDING');

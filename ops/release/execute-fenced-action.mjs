@@ -39,7 +39,7 @@ const ACTIONS = Object.freeze({
   'preprod-attest-database-restore': { phases: ['FAILED'], primary: 'databaseRef', resources: ['databaseRef', 'dataNetwork'], kind: 'failed-database-attestation' },
   'preprod-restore-active-runtime': { phases: ['FAILED'], primary: 'edgeNetwork', resources: ['edgeNetwork', 'dataNetwork', 'databaseRef', 'telegram', 'ingressRef'], kind: 'failed-active-runtime-restore', identity: 'active' },
   'preprod-probe-recovered-active': { phases: ['FAILED'], primary: 'activeProbe', resources: ['activeProbe'], kind: 'release-probe', identity: 'active' },
-  'preprod-stage': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'edgeNetwork', resources: ['edgeNetwork'], kind: 'compose-stage' },
+  'preprod-stage': { phases: ['EXPAND_MIGRATED', 'ROLLED_BACK'], primary: 'edgeNetwork', resources: ['edgeNetwork', 'telegram'], kind: 'compose-stage' },
   'preprod-probe-candidate': { phases: ['CANDIDATE_STARTED'], primary: 'candidateProbe', resources: ['candidateProbe'], kind: 'release-probe' },
   'preprod-probe-active': { phases: ['CANDIDATE_READY'], primary: 'activeProbe', resources: ['activeProbe'], kind: 'release-probe', identity: 'active' },
   'preprod-probe-observation': { phases: ['OBSERVING'], primary: 'observationProbe', resources: ['observationProbe'], kind: 'release-probe', identity: 'active' },
@@ -445,8 +445,18 @@ function parseContainerImage(stdout, component) {
   return value;
 }
 
-function exactStringSet(values, expected) {
+function exactStringMultiset(values, expected) {
   return Array.isArray(values) && canonicalJson([...values].sort()) === canonicalJson([...expected].sort());
+}
+
+function expectedLegacyNetworkAliases(component, expected) {
+  const composeContainerName = `booking-preprod-${expected.service}-1`;
+  const shortContainerId = expected.id.slice(0, 12);
+  // Docker Compose emitted the gateway service alias twice in the frozen NAS
+  // inventory. Treat aliases as an exact multiset: order is irrelevant, but
+  // duplicate count is part of the one-time legacy identity contract.
+  const businessAliases = component === 'gateway' ? [expected.service, expected.service] : [expected.service];
+  return [composeContainerName, ...businessAliases, shortContainerId];
 }
 
 function environmentMap(values, component) {
@@ -489,9 +499,8 @@ export function verifyLegacyActiveRuntimeInspect(stdout, state, binding = LEGACY
       throw new ContractError(`${component} fixed legacy container identity or isolation drifted`, EXIT.IDENTITY);
     }
     for (const network of expectedNetworks) {
-      const aliasKey = network === state.resources.edgeNetwork ? 'edge' : 'data';
-      const expectedAliases = expected.networkAliases?.[aliasKey] || [expected.service];
-      if (!exactStringSet(value.NetworkSettings.Networks[network]?.Aliases, expectedAliases)) {
+      const expectedAliases = expectedLegacyNetworkAliases(component, expected);
+      if (!exactStringMultiset(value.NetworkSettings.Networks[network]?.Aliases, expectedAliases)) {
         throw new ContractError(`${component} fixed legacy network alias drifted`, EXIT.IDENTITY);
       }
     }
@@ -610,8 +619,8 @@ export function verifyLegacyNetworkTopology(networkStdout, supportingContainersS
     const networkNames = containerNetworks && typeof containerNetworks === 'object' ? Object.keys(containerNetworks) : [];
     if (!container || container.Name !== `/${expectedNames[service]}` || running !== true ||
         labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== service ||
-        !exactStringSet(networkNames, [state.resources.dataNetwork]) ||
-        !exactStringSet(containerNetworks[state.resources.dataNetwork]?.Aliases, [service])) {
+        !exactStringMultiset(networkNames, [state.resources.dataNetwork]) ||
+        !exactStringMultiset(containerNetworks[state.resources.dataNetwork]?.Aliases, [service])) {
       throw new ContractError(`fixed legacy ${service} network endpoint aliases or ownership drifted`, EXIT.IDENTITY);
     }
   }
@@ -632,11 +641,11 @@ export function verifyLegacyNetworkTopology(networkStdout, supportingContainersS
       (cloudflared.ReadonlyRootfs ?? cloudflared.HostConfig?.ReadonlyRootfs) !== true ||
       (cloudflared.Privileged ?? cloudflared.HostConfig?.Privileged) !== false ||
       canonicalJson(cloudflared.CapDrop ?? cloudflared.HostConfig?.CapDrop) !== canonicalJson(['ALL']) ||
-      !exactStringSet(cloudflared.SecurityOpt ?? cloudflared.HostConfig?.SecurityOpt, ['no-new-privileges:true']) ||
+      !exactStringMultiset(cloudflared.SecurityOpt ?? cloudflared.HostConfig?.SecurityOpt, ['no-new-privileges:true']) ||
       canonicalJson(cloudflared.Cmd ?? cloudflared.Config?.Cmd) !== canonicalJson(expectedCloudflaredCmd) ||
       canonicalJson(cloudflaredMounts) !== canonicalJson([expectedCloudflaredMount]) ||
-      !exactStringSet(cloudflaredNetworkNames, [state.resources.edgeNetwork]) ||
-      !exactStringSet(cloudflaredNetworks[state.resources.edgeNetwork]?.Aliases, [cloudflaredId.slice(0, 12)]) ||
+      !exactStringMultiset(cloudflaredNetworkNames, [state.resources.edgeNetwork]) ||
+      !exactStringMultiset(cloudflaredNetworks[state.resources.edgeNetwork]?.Aliases, [cloudflaredId.slice(0, 12)]) ||
       (cloudflaredPorts !== null && (typeof cloudflaredPorts !== 'object' || Object.keys(cloudflaredPorts).length !== 0))) {
     throw new ContractError('fixed legacy cloudflared identity, network, alias, or port binding drifted', EXIT.IDENTITY);
   }
@@ -1988,14 +1997,12 @@ const LEGACY_ACTIVE_RUNTIME_BINDING = Object.freeze({
     imageId: 'sha256:a1bebe8670c2dc5524c9cd3b0d91a3274d85365a6b252c3cdd9907c6b48695ee',
     image: 'booking-preprod-backend:booking-20260908T202714Z-317be4dec675',
     service: 'backend-green', configHash: 'beba82426cab283cdbaeac564dad4226c40d5a71b4910ef76f5e7eed407fa31d',
-    networkAliases: Object.freeze({ edge: Object.freeze(['backend-green']), data: Object.freeze(['backend-green']) }),
   }),
   gateway: Object.freeze({
     id: 'eb38bbd0b092d1cdc8c30e62faa400421d0764f5fc5f3997e3986f3a7b10800d',
     imageId: 'sha256:0a26e5415496cd1227d80833fa2a4bae5fdb41d558119ed2ec5d6df0b0fd5593',
     image: 'booking-preprod-gateway:booking-20260908T202714Z-317be4dec675',
     service: 'gateway-green', configHash: '67ca960d4f4dc4266ea8b003e22e26545a8f0418d3bad6e83a76be6bece8791e',
-    networkAliases: Object.freeze({ edge: Object.freeze(['gateway-green']) }),
   }),
   cloudflared: Object.freeze({
     name: 'booking-preprod-cloudflared',
@@ -2261,7 +2268,8 @@ function receiptRequestBody(receipt) {
     action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
     generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
     manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
-    runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest };
+    runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest,
+    ...(receipt.action === 'preprod-stage' ? { telegramEgressReceiptDigest: receipt.telegramEgressReceiptDigest } : {}) };
 }
 
 function assertFixedTelegramFailureReceipt(failed, state, releaseIdentity, binding, expectedResources) {
@@ -2588,7 +2596,8 @@ async function recoverPriorActionByDesiredReadback({ statePath, state, args, rel
       action: args.action, actionId: prior.actionId, operationId: state.operationId, approvalId: prior.approvalId,
       generation: prior.generation, fencingEpoch: prior.fencingEpoch, leaseId: prior.leaseId, holderId: prior.holderId,
       manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
-      runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: prior.commandDigest };
+      runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: prior.commandDigest,
+      ...(args.action === 'preprod-stage' ? { telegramEgressReceiptDigest: requestBody.telegramEgressReceiptDigest } : {}) };
     if (prior.requestDigest !== sha256(priorRequest)) {
       throw new ContractError('prior-fence partial action request digest is invalid', EXIT.IDENTITY);
     }
@@ -2801,6 +2810,35 @@ async function verifyCurrentExternalState(plan, context) {
   return { verification, readbackOutputDigest: sha256(readback.stdout) };
 }
 
+// Called by the state manager while it still owns the deployment-state lock.
+// Rebuild the trusted stage plan and inspect live state; never trust the
+// verification object embedded in a previously published receipt.
+export async function verifyStageRuntimeForTransition(statePath, state, receipt, runtime = {}) {
+  if (receipt.action !== 'preprod-stage' || receipt.status !== 'pass' || receipt.generation !== state.generation ||
+      receipt.fencingEpoch !== state.fencingEpoch || receipt.operationId !== state.operationId) {
+    throw new ContractError('candidate start requires a current-generation stage receipt', EXIT.READINESS);
+  }
+  const actionArgs = {
+    action: 'preprod-stage', 'action-id': receipt.actionId, environment: state.environment, project: state.project,
+    'approval-id': state.approvalId, 'expected-generation': String(state.generation),
+    'expected-fencing-epoch': String(state.fencingEpoch), 'manifest-digest': state.candidate?.manifestDigest,
+    'operation-id': state.operationId, 'lease-id': state.lease?.leaseId, 'holder-id': state.lease?.holderId,
+    'resource-id': state.resources.edgeNetwork,
+  };
+  const planBuilder = runtime.stageTransitionPlanBuilder || runtime.planBuilder || buildPlan;
+  const plan = await planBuilder(state, actionArgs, { ...runtime, statePath });
+  const runner = runtime.stageTransitionCommandRunner || runtime.commandRunner || defaultCommandRunner;
+  const revalidateLease = (reserveMs = 500) => {
+    const observedAt = runtime.now ? runtime.now() : new Date(runtime.nowMs ?? Date.now());
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime()) || !state.lease ||
+        Date.parse(state.lease.expiresAt) - observedAt.getTime() - reserveMs < 1) {
+      throw new ContractError('lease has insufficient remaining time for stage transition readback', EXIT.SINGLETON);
+    }
+    return { observedAt, timeoutMs: Date.parse(state.lease.expiresAt) - observedAt.getTime() - reserveMs };
+  };
+  return verifyCurrentExternalState(plan, { runner, env: plan.env || runtime.env || process.env, revalidateLease, statePath });
+}
+
 async function verifyPublishedIngressState(plan, context, receipt) {
   const leaseWindow = await passRegistryGate(plan, context.revalidateLease);
   const readback = await context.runner(plan.readback.executable, plan.readback.argv, {
@@ -2815,6 +2853,61 @@ async function verifyPublishedIngressState(plan, context, receipt) {
     throw new ContractError('ingress pass recovery readback drifted from the published proof', EXIT.INGRESS);
   }
   return { verification: { runtime: parsed }, readbackOutputDigest: sha256(readback.stdout) };
+}
+
+async function currentTelegramEgressPredecessor(statePath, state, releaseIdentity, args) {
+  const telegramResourceId = `telegram:${state.project}`;
+  let resource;
+  try { resource = JSON.parse(await readFile(join(resourceDirectory(statePath, telegramResourceId), 'resource-state.json'), 'utf8')); }
+  catch { throw new ContractError('stage requires a completed current Telegram egress resource', EXIT.READINESS); }
+  const pending = resource?.pendingAction;
+  const currentStagePending = pending !== null && pending?.action === 'preprod-stage' && pending.actionId === args['action-id'] &&
+    pending.fencingEpoch === state.fencingEpoch && pending.generation === state.generation && pending.approvalId === state.approvalId &&
+    pending.leaseId === state.lease?.leaseId && pending.holderId === state.lease?.holderId;
+  if ((pending !== null && !currentStagePending) || !DIGEST.test(resource?.receiptChainHead || '') ||
+      resource.environment !== state.environment || resource.project !== state.project || resource.resourceId !== telegramResourceId ||
+      resource.highestAcceptedFencingEpoch !== state.fencingEpoch || resource.operationId !== state.operationId ||
+      resource.manifestDigest !== releaseIdentity.manifestDigest) {
+    throw new ContractError('stage Telegram egress resource is not current and completed', EXIT.READINESS);
+  }
+  const current = await readCanonicalExecutorReceiptByDigest(statePath, resource.receiptChainHead);
+  let predecessorDigest;
+  if (current.receipt.action === 'preprod-prepare-telegram-egress') {
+    predecessorDigest = current.acceptedReceipt.receiptDigest;
+  } else if (pending === null && current.receipt.action === 'preprod-stage' && current.receipt.actionId === args['action-id'] &&
+      current.receipt.schema === schemaForAction('preprod-stage').receipt && current.receipt.status === 'pass' &&
+      current.receipt.operationId === state.operationId && current.receipt.generation === state.generation &&
+      current.receipt.fencingEpoch === state.fencingEpoch && current.receipt.approvalId === state.approvalId &&
+      current.receipt.leaseId === state.lease?.leaseId && current.receipt.holderId === state.lease?.holderId &&
+      current.receipt.manifestDigest === releaseIdentity.manifestDigest &&
+      canonicalJson(current.receipt.releaseIdentity) === canonicalJson(releaseIdentity) &&
+      canonicalJson(current.receipt.resourceIds) === canonicalJson([state.resources.edgeNetwork, telegramResourceId])) {
+    predecessorDigest = current.receipt.telegramEgressReceiptDigest;
+    const telegramVector = current.receipt.resources?.find((entry) => entry.resourceId === telegramResourceId);
+    if (current.acceptedReceipt.receiptDigest !== resource.receiptChainHead || telegramVector?.previousReceiptDigest !== predecessorDigest) {
+      throw new ContractError('stage replay does not preserve its Telegram predecessor vector', EXIT.READINESS);
+    }
+  } else {
+    throw new ContractError('stage Telegram resource head is neither fresh egress nor the same stage replay', EXIT.READINESS);
+  }
+  const { receipt, acceptedReceipt } = await readCanonicalExecutorReceiptByDigest(statePath, predecessorDigest);
+  const requestBody = {
+    schema: schemaForAction(receipt.action).request, environment: receipt.environment, project: receipt.project,
+    action: receipt.action, actionId: receipt.actionId, operationId: receipt.operationId, approvalId: receipt.approvalId,
+    generation: receipt.generation, fencingEpoch: receipt.fencingEpoch, leaseId: receipt.leaseId, holderId: receipt.holderId,
+    manifestDigest: receipt.manifestDigest, releaseIdentity: receipt.releaseIdentity, resourceIds: receipt.resourceIds,
+    runtimeEnvDigest: receipt.runtimeEnvDigest, commandDigest: receipt.commandDigest,
+  };
+  if (acceptedReceipt.receiptDigest !== predecessorDigest || receipt.action !== 'preprod-prepare-telegram-egress' ||
+      receipt.status !== 'pass' || receipt.operationId !== state.operationId || receipt.approvalId !== state.approvalId ||
+      receipt.generation !== state.generation || receipt.fencingEpoch !== state.fencingEpoch ||
+      receipt.leaseId !== state.lease?.leaseId || receipt.holderId !== state.lease?.holderId ||
+      receipt.manifestDigest !== releaseIdentity.manifestDigest || canonicalJson(receipt.releaseIdentity) !== canonicalJson(releaseIdentity) ||
+      canonicalJson(receipt.resourceIds) !== canonicalJson([telegramResourceId]) ||
+      receipt.runtimeEnvDigest !== state.runtimeEnvDigest || receipt.requestDigest !== sha256(requestBody)) {
+    throw new ContractError('stage Telegram egress receipt is not bound to the current operation generation and fence', EXIT.READINESS);
+  }
+  return predecessorDigest;
 }
 
 export async function runFencedAction(args, runtime = {}) {
@@ -2848,12 +2941,14 @@ export async function runFencedAction(args, runtime = {}) {
       }
       rootedWebhookReplay = true;
     }
+    const telegramEgressReceiptDigest = args.action === 'preprod-stage'
+      ? await currentTelegramEgressPredecessor(statePath, state, releaseIdentity, args) : null;
     const plan = await (runtime.planBuilder || buildPlan)(state, args, { ...runtime, statePath });
     const requestBody = { schema: schemaForAction(args.action).request, environment: state.environment, project: state.project,
       action: args.action, actionId: args['action-id'], operationId: state.operationId, approvalId: state.approvalId,
       generation: state.generation, fencingEpoch: state.fencingEpoch, leaseId: state.lease.leaseId, holderId: state.lease.holderId,
       manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds, runtimeEnvDigest: state.runtimeEnvDigest,
-      commandDigest: commandIdentity(plan) };
+      commandDigest: commandIdentity(plan), ...(telegramEgressReceiptDigest ? { telegramEgressReceiptDigest } : {}) };
     const requestDigest = sha256(requestBody);
     const priorReceipt = await readExecutorReceipt(statePath, state.fencingEpoch, args.action, args['action-id']);
     if (priorReceipt && (priorReceipt.schema !== schemaForAction(args.action).receipt ||
@@ -3346,7 +3441,8 @@ export async function runFencedAction(args, runtime = {}) {
                     action: args.action, actionId: pending.actionId, operationId: state.operationId, approvalId: pending.approvalId,
                     generation: pending.generation, fencingEpoch: pending.fencingEpoch, leaseId: pending.leaseId,
                     holderId: pending.holderId, manifestDigest: releaseIdentity.manifestDigest, releaseIdentity, resourceIds,
-                    runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest };
+                    runtimeEnvDigest: state.runtimeEnvDigest, commandDigest: pending.commandDigest,
+                    ...(args.action === 'preprod-stage' ? { telegramEgressReceiptDigest: requestBody.telegramEgressReceiptDigest } : {}) };
                   if (pending.requestDigest !== sha256(priorRequest)) {
                     throw new ContractError(`resource ${resource.resourceId} prior pending request is invalid`, EXIT.IDENTITY);
                   }
@@ -3623,6 +3719,8 @@ export async function runFencedAction(args, runtime = {}) {
         ? state.candidate?.manifestDigest
         : spec.identity === 'rollback' && state.phase === 'ROLLBACK_PENDING'
         ? (state.candidate || state.active)?.manifestDigest
+        : args.action === 'preprod-prepare-telegram-egress' && state.phase === 'ROLLED_BACK'
+        ? state.active?.manifestDigest
         : (['preprod-stage', 'preprod-transfer-singletons', 'preprod-switch-ingress'].includes(args.action) && state.candidate &&
           state.active.manifestDigest !== state.candidate.manifestDigest ? state.active.manifestDigest : null);
       const resourceStatesBeforeAction = [];

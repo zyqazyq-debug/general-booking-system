@@ -41,7 +41,7 @@ function leaseInput(state, now = '2026-09-10T10:01:00.000Z') {
 }
 
 function evidence() {
-  return { baselineReceiptDigest: null, expandMigrationReceiptDigest: null, stageReceiptDigest: null, candidateProbeDigest: null,
+  return { baselineReceiptDigest: null, expandMigrationReceiptDigest: null, telegramEgressReceiptDigest: null, stageReceiptDigest: null, candidateProbeDigest: null,
     rollbackPreSwitchProbeDigest: null, singletonTransferReceiptDigest: null, switchReceiptDigest: null, webhookReceiptDigest: null,
     observationReceiptDigest: null, rollbackReceiptDigest: null, rollbackSingletonTransferReceiptDigest: null, rolledBackProbeDigest: null };
 }
@@ -152,6 +152,9 @@ test('JSON schemas and schemaForAction enforce exact legacy/recovery/local-ingre
   const v3 = initialDeployState(DEPLOYMENT, '2026-09-10T10:00:00.000Z');
   assert.equal(validateState(v2), true, canonicalJson(validateState.errors));
   assert.equal(validateState(v3), true, canonicalJson(validateState.errors));
+  const { telegramEgressReceiptDigest: _telegramEgressReceiptDigest, ...evidenceWithoutTelegramEgress } = v3.evidence;
+  assert.equal(validateState({ ...v3, evidence: evidenceWithoutTelegramEgress }), false);
+  assert.equal(validateState({ ...v3, evidence: { ...v3.evidence, telegramEgressReceiptDigest: 'not-a-digest' } }), false);
   assert.equal(validateState({ ...v2, recovery: null }), false);
   assert.equal(validateState({ ...v2, phase: 'FAILED_RECOVERED' }), false);
 
@@ -182,7 +185,7 @@ test('JSON schemas and schemaForAction enforce exact legacy/recovery/local-ingre
   assert.equal(validateExternal(ingressExternal), true, canonicalJson(validateExternal.errors));
   assert.equal(validateExternal({ ...ingressExternal, resourceIds: ['ingress:booking-preprod'] }), false);
   assert.equal(validateExternal({ ...ingressExternal, schema: 'booking.external-action-receipt/v1' }), false);
-  assert.deepEqual(schemaForAction('preprod-stage'), { request: 'booking.fenced-action-request/v1', receipt: 'booking.external-action-receipt/v1' });
+  assert.deepEqual(schemaForAction('preprod-stage'), { request: 'booking.fenced-action-request/v4', receipt: 'booking.external-action-receipt/v4' });
   assert.deepEqual(schemaForAction('preprod-restore-active-runtime'), { request: 'booking.fenced-action-request/v2', receipt: 'booking.external-action-receipt/v2' });
   assert.deepEqual(schemaForAction('preprod-switch-ingress'), { request: 'booking.fenced-action-request/v3', receipt: 'booking.external-action-receipt/v3' });
   assert.deepEqual(schemaForAction('preprod-rollback-ingress'), { request: 'booking.fenced-action-request/v3', receipt: 'booking.external-action-receipt/v3' });

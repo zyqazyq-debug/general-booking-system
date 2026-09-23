@@ -46,7 +46,7 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ROOT_KEYS = new Set(['schema', 'environment', 'project', 'resources', 'runtimeEnvDigest', 'generation', 'fencingEpoch', 'phase', 'operationId', 'approvalId', 'lease', 'active', 'candidate', 'rollback', 'evidence', 'receiptChainHead', 'contractMigrationApplied', 'rollbackRehearsalCompleted', 'updatedAt']);
 const V3_ROOT_KEYS = new Set([...ROOT_KEYS, 'recovery', 'observationWindowMinutes', 'observationStartedAt']);
 const RECOVERY_KEYS = new Set(['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest', 'activeProbeDigest', 'priorFailedStateDigest']);
-const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest', 'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
+const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'telegramEgressReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest', 'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
 const POST_SWITCH_PHASES = new Set(['SWITCHED', 'OBSERVING', 'COMMITTED', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN']);
 export const DEFAULT_OBSERVATION_WINDOW_MINUTES = 30;
 export const MAX_OBSERVATION_WINDOW_MINUTES = 1440;
@@ -309,10 +309,13 @@ export function transitionDeployState(state, input) {
     if (input.baselineReceiptDigest) next.evidence.baselineReceiptDigest = input.baselineReceiptDigest;
   }
   if (input.to === 'CANDIDATE_STARTED') {
-    if (!DIGEST.test(input.stageReceiptDigest || '')) throw new ContractError('candidate start requires a fenced stage receipt', EXIT.READINESS);
+    if (!DIGEST.test(input.stageReceiptDigest || '') || !DIGEST.test(input.telegramEgressReceiptDigest || '')) {
+      throw new ContractError('candidate start requires fenced Telegram egress and stage receipt evidence', EXIT.READINESS);
+    }
     if (!next.evidence.expandMigrationReceiptDigest) {
       throw new ContractError('candidate cannot start before the expand migration receipt is rooted', EXIT.DATABASE);
     }
+    next.evidence.telegramEgressReceiptDigest = input.telegramEgressReceiptDigest;
     next.evidence.stageReceiptDigest = input.stageReceiptDigest;
     if (state.phase === 'ROLLED_BACK') {
       next.observationStartedAt = null;
@@ -370,6 +373,8 @@ export function transitionDeployState(state, input) {
     if (postSwitch) next.evidence.rollbackReceiptDigest = input.rollbackReceiptDigest;
     next.evidence.rollbackSingletonTransferReceiptDigest = input.rollbackSingletonTransferReceiptDigest;
     next.evidence.rolledBackProbeDigest = input.rolledBackProbeDigest;
+    next.evidence.telegramEgressReceiptDigest = null;
+    next.evidence.stageReceiptDigest = null;
     const failedCandidate = structuredClone(next.candidate || next.active);
     next.active = structuredClone(next.rollback);
     next.candidate = failedCandidate;

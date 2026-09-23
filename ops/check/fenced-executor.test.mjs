@@ -89,7 +89,7 @@ function stagedState(expiresAt = '2026-09-09T16:00:00.000Z') {
 function switchedState() {
   let state = stagedState();
   state = transitionDeployState(state, { expectedGeneration: 4, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:03:10.000Z', to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
+    now: '2026-09-09T15:03:10.000Z', to: 'CANDIDATE_STARTED', telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
   state = transitionDeployState(state, { expectedGeneration: 5, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
     now: '2026-09-09T15:03:20.000Z', to: 'CANDIDATE_READY', candidateProbeDigest: `sha256:${'9'.repeat(64)}` });
   state = transitionDeployState(state, { expectedGeneration: 6, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
@@ -102,7 +102,7 @@ function switchedState() {
 function candidateReadyState() {
   let state = stagedState();
   state = transitionDeployState(state, { expectedGeneration: 4, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:03:10.000Z', to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
+    now: '2026-09-09T15:03:10.000Z', to: 'CANDIDATE_STARTED', telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
   return transitionDeployState(state, { expectedGeneration: 5, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
     now: '2026-09-09T15:03:20.000Z', to: 'CANDIDATE_READY', candidateProbeDigest: `sha256:${'9'.repeat(64)}` });
 }
@@ -200,7 +200,18 @@ async function fixture(expiresAt) {
   const root = await mkdtemp(join(tmpdir(), 'booking-fenced-executor-'));
   const statePath = await canonicalStatePath({ environment: 'preprod', project: 'booking-preprod', deployStateRoot: root });
   await initializeStateFile(statePath, stagedState(expiresAt));
-  return { root, statePath };
+  const telegramEgressReceipt = await runFencedAction(args({ action: 'preprod-prepare-telegram-egress',
+    'resource-id': 'telegram:booking-preprod', 'action-id': 'egress-current-1' }), {
+    deployStateRoot: root, now: at('2026-09-09T15:03:30.000Z'), planBuilder, commandRunner: successRunner,
+  });
+  return { root, statePath, telegramEgressReceipt };
+}
+
+async function prepareTelegramEgress(root, overrides = {}, now = '2026-09-09T15:04:30.000Z', commandRunner = successRunner) {
+  return runFencedAction(args({ action: 'preprod-prepare-telegram-egress',
+    'resource-id': 'telegram:booking-preprod', 'action-id': 'egress-refresh', ...overrides }), {
+    deployStateRoot: root, now: at(now), planBuilder, commandRunner,
+  });
 }
 
 async function fixtureFromState(state) {
@@ -374,14 +385,17 @@ function baselineReceipt(action) {
 }
 
 test('fenced executor persists epochs before execution, verifies readback, and emits an immutable receipt', async () => {
-  const { root, statePath } = await fixture();
+  const { root, statePath, telegramEgressReceipt } = await fixture();
   let calls = 0;
   try {
     const receipt = await runFencedAction(args(), { deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'), planBuilder, commandRunner: async (...input) => { calls += 1; return successRunner(...input); } });
     assert.equal(receipt.status, 'pass');
-    assert.equal(receipt.schema, 'booking.external-action-receipt/v1');
+    assert.equal(receipt.schema, 'booking.external-action-receipt/v4');
+    assert.equal(receipt.telegramEgressReceiptDigest, telegramEgressReceipt.receiptDigest);
     assert.equal(receipt.fencingEpoch, 1);
-    assert.deepEqual(receipt.resourceIds, ['booking-preprod-edge']);
+    assert.deepEqual(receipt.resourceIds, ['booking-preprod-edge', 'telegram:booking-preprod']);
+    assert.equal(receipt.resources.find((resource) => resource.resourceId === 'telegram:booking-preprod').previousReceiptDigest,
+      telegramEgressReceipt.receiptDigest);
     const { receiptDigest, ...body } = receipt;
     assert.equal(receiptDigest, sha256(body));
     assert.equal(calls, 2);
@@ -650,7 +664,7 @@ test('concrete singleton transfer proves manifest-bound Telegram getMe identity 
   state = acquireLease(state, { expectedGeneration: 0, expectedFencingEpoch: 0, candidate: CANDIDATE, operationId: 'op-1', approvalId: 'approval-1',
     leaseId: 'lease-1', holderId: 'owner-1', now: '2026-09-09T15:01:00.000Z', expiresAt: '2026-09-09T16:00:00.000Z' });
   for (const [to, extra] of [['MANIFEST_VERIFIED', {}], ['STAGED', {}], ['EXPAND_MIGRATED', { expandMigrationReceiptDigest: `sha256:${'1'.repeat(64)}` }],
-    ['CANDIDATE_STARTED', { stageReceiptDigest: `sha256:${'2'.repeat(64)}` }], ['CANDIDATE_READY', { candidateProbeDigest: `sha256:${'3'.repeat(64)}` }]]) {
+    ['CANDIDATE_STARTED', { telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'2'.repeat(64)}` }], ['CANDIDATE_READY', { candidateProbeDigest: `sha256:${'3'.repeat(64)}` }]]) {
     state = transitionDeployState(state, { expectedGeneration: state.generation, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
       now: '2026-09-09T15:03:00.000Z', to, manifestDigest: CANDIDATE.manifestDigest, ...extra });
   }
@@ -758,7 +772,7 @@ test('concrete ingress plan derives first and second promotion sequence plus imm
     now: '2026-09-09T15:04:50.000Z', to: 'ROLLED_BACK', rollbackReceiptDigest: `sha256:${'1'.repeat(64)}`,
     rollbackSingletonTransferReceiptDigest: `sha256:${'2'.repeat(64)}`, rolledBackProbeDigest: `sha256:${'3'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 11, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
-    now: '2026-09-09T15:05:00.000Z', to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'4'.repeat(64)}` });
+    now: '2026-09-09T15:05:00.000Z', to: 'CANDIDATE_STARTED', telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'4'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 12, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
     now: '2026-09-09T15:05:10.000Z', to: 'CANDIDATE_READY', candidateProbeDigest: `sha256:${'5'.repeat(64)}` });
   secondPromotion = transitionDeployState(secondPromotion, { expectedGeneration: 13, expectedFencingEpoch: 1, leaseId: 'lease-1', holderId: 'owner-1',
@@ -1146,7 +1160,7 @@ test('completed candidate-stage receipt replay re-inspects containers and reject
   } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
 });
 
-test('a completed stage survives same-holder renewal, rejects env drift and cannot use the removed state-only abort path', async () => {
+test('a completed stage is rejected after same-holder renewal and cannot use the removed state-only abort path', async () => {
   const { root } = await fixture();
   const runtimeEnvFile = join(root, '.runtime.env');
   await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
@@ -1167,15 +1181,9 @@ test('a completed stage survives same-holder renewal, rejects env drift and cann
     const renewed = await runManageDeployState({ ...stateArgs, action: 'renew', 'expected-generation': '4',
       'expected-fencing-epoch': '1', 'lease-duration-ms': '1800000' }, managerRuntime(Date.parse('2026-09-09T15:40:00.000Z')));
     assert.equal(renewed.generation, 5);
-    await writeFile(runtimeEnvFile, 'FIXTURE_ONLY=drifted\n', { mode: 0o600 });
     await assert.rejects(runManageDeployState({ ...stateArgs, action: 'transition', 'expected-generation': '5',
       'expected-fencing-epoch': '1', to: 'CANDIDATE_STARTED', 'stage-receipt-digest': receipt.receiptDigest },
-    managerRuntime(Date.parse('2026-09-09T15:41:00.000Z'))), /runtime environment digest drifted/);
-    await writeFile(runtimeEnvFile, RUNTIME_ENV_CONTENT, { mode: 0o600 });
-    const transitioned = await runManageDeployState({ ...stateArgs, action: 'transition', 'expected-generation': '5',
-      'expected-fencing-epoch': '1', to: 'CANDIDATE_STARTED', 'stage-receipt-digest': receipt.receiptDigest },
-    managerRuntime(Date.parse('2026-09-09T15:41:00.000Z')));
-    assert.equal(transitioned.phase, 'CANDIDATE_STARTED');
+    managerRuntime(Date.parse('2026-09-09T15:41:00.000Z'))), /current-generation stage receipt/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -1481,8 +1489,10 @@ test('runtime env digest is part of the fenced request and bot control values ca
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-env-digest' }), { ...runtime, now: at('2026-09-09T15:06:00.000Z') }),
       /runtime environment digest drifted from the operation binding/);
     await writeFile(join(releaseRoot, '.runtime.env'), RUNTIME_ENV_CONTENT, { mode: 0o600 });
+    await prepareTelegramEgress(root, { 'action-id': 'wrong-bot' }, '2026-09-09T15:06:30.000Z');
     await assert.rejects(runFencedAction(args({ 'action-id': 'stage-wrong-bot' }), { ...runtime,
-      env: { ...MIGRATION_ENV, BOOKING_TELEGRAM_BOT_NAME: 'different_preprod_bot' } }), /conflicts with canonical release identity/);
+      now: at('2026-09-09T15:07:00.000Z'), env: { ...MIGRATION_ENV, BOOKING_TELEGRAM_BOT_NAME: 'different_preprod_bot' } }),
+    /conflicts with canonical release identity/);
   } finally { await rm(root, { recursive: true, force: true }); await rm(releaseRoot, { recursive: true, force: true }); }
 });
 
@@ -1582,7 +1592,7 @@ test('post-switch observation executor invokes the fixed public business-smoke c
 test('candidate probe rejects post-stage runtime isolation drift before any HTTP probe', async () => {
   const state = transitionDeployState(stagedState(), { expectedGeneration: 4, expectedFencingEpoch: 1,
     leaseId: 'lease-1', holderId: 'owner-1', now: '2026-09-09T15:03:10.000Z',
-    to: 'CANDIDATE_STARTED', stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
+    to: 'CANDIDATE_STARTED', telegramEgressReceiptDigest: `sha256:${'e'.repeat(64)}`, stageReceiptDigest: `sha256:${'8'.repeat(64)}` });
   const { root } = await fixtureFromState(state);
   const releaseRoot = await concreteReleaseRoot();
   let probeCalls = 0;
@@ -2087,15 +2097,15 @@ test('takeover raises the resource epoch and fences the old operator', async () 
   const { root, statePath } = await fixture('2026-09-09T15:10:00.000Z');
   let calls = 0;
   try {
-    await runFencedAction(args(), { deployStateRoot: root, now: at('2026-09-09T15:05:00.000Z'), planBuilder, commandRunner: async () => { calls += 1; return successRunner(); } });
     await mutateStateFile(statePath, (state) => takeoverExpiredLease(state, { expectedGeneration: 4, expectedFencingEpoch: 1, approvalId: 'approval-2',
       leaseId: 'lease-2', holderId: 'owner-2', now: '2026-09-09T15:11:00.000Z', expiresAt: '2026-09-09T16:11:00.000Z' }));
     await assert.rejects(runFencedAction(args({ 'action-id': 'old-after-takeover' }), { deployStateRoot: root, now: at('2026-09-09T15:12:00.000Z'), planBuilder, commandRunner: async () => { calls += 1; return successRunner(); } }), /generation mismatch/);
-    assert.equal(calls, 2);
-    const receipt = await runFencedAction(args({ 'approval-id': 'approval-2', 'expected-generation': '5', 'expected-fencing-epoch': '2',
-      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'new-owner-stage' }), { deployStateRoot: root, now: at('2026-09-09T15:12:00.000Z'), planBuilder, commandRunner: async () => { calls += 1; return successRunner(); } });
+    assert.equal(calls, 0);
+    const receipt = await prepareTelegramEgress(root, { 'approval-id': 'approval-2', 'expected-generation': '5', 'expected-fencing-epoch': '2',
+      'lease-id': 'lease-2', 'holder-id': 'owner-2', 'action-id': 'egress-takeover' }, '2026-09-09T15:11:30.000Z',
+    async () => { calls += 1; return successRunner(); });
     assert.equal(receipt.fencingEpoch, 2);
-    const resource = JSON.parse(await readFile(join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json'), 'utf8'));
+    const resource = JSON.parse(await readFile(join(resourceDirectory(statePath, 'telegram:booking-preprod'), 'resource-state.json'), 'utf8'));
     assert.equal(resource.highestAcceptedFencingEpoch, 2);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -2109,7 +2119,8 @@ test('failed or interrupted actions leave a durable receipt and unresolved pendi
     assert.equal(failed.status, 'fail');
     const resource = JSON.parse(await readFile(join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json'), 'utf8'));
     assert.equal(resource.pendingAction.actionId, 'stage-1');
-    await assert.rejects(runFencedAction(args({ 'action-id': 'stage-after-failure' }), { deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder, commandRunner: successRunner }), /unresolved pending action/);
+    await assert.rejects(runFencedAction(args({ 'action-id': 'stage-after-failure' }), { deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder, commandRunner: successRunner }),
+      /stage Telegram egress resource is not current and completed/);
     let repeatedMutations = 0;
     const recovered = await runFencedAction(args(), { deployStateRoot: root, now: at('2026-09-09T15:06:00.000Z'), planBuilder,
       commandRunner: async (_executable, argv) => { if (argv.includes('up')) repeatedMutations += 1; return successRunner(); } });
@@ -2145,8 +2156,10 @@ test('same-fence MUTATING without dispatch evidence consumes exactly one command
     const groupPath = join(dirname(statePath), 'executor', 'action-groups',
       '000000000001-preprod-stage-stage-before-dispatch-crash.json');
     const resourcePath = join(resourceDirectory(statePath, 'booking-preprod-edge'), 'resource-state.json');
+    const telegramResourcePath = join(resourceDirectory(statePath, 'telegram:booking-preprod'), 'resource-state.json');
     const group = JSON.parse(await readFile(groupPath, 'utf8'));
     const resource = JSON.parse(await readFile(resourcePath, 'utf8'));
+    const telegramResource = JSON.parse(await readFile(telegramResourcePath, 'utf8'));
     group.phase = 'MUTATING';
     group.completedResourceIds = [];
     group.receiptDigest = null;
@@ -2157,8 +2170,11 @@ test('same-fence MUTATING without dispatch evidence consumes exactly one command
       approvalId: receipt.approvalId, leaseId: receipt.leaseId, holderId: receipt.holderId, generation: receipt.generation,
       fencingEpoch: receipt.fencingEpoch, commandDigest: receipt.commandDigest, groupDigest: group.groupDigest };
     resource.receiptChainHead = receipt.resources[0].previousReceiptDigest;
+    telegramResource.pendingAction = { ...resource.pendingAction };
+    telegramResource.receiptChainHead = receipt.telegramEgressReceiptDigest;
     await writeFile(groupPath, `${JSON.stringify(group)}\n`);
     await writeFile(resourcePath, `${JSON.stringify(resource)}\n`);
+    await writeFile(telegramResourcePath, `${JSON.stringify(telegramResource)}\n`);
     await unlink(receiptPath);
     desired = false;
     mutations = 0;

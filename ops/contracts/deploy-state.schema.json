@@ -111,10 +111,11 @@
     "nullableDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
     "evidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["baselineReceiptDigest", "expandMigrationReceiptDigest", "stageReceiptDigest", "candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "webhookReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
+      "required": ["baselineReceiptDigest", "expandMigrationReceiptDigest", "telegramEgressReceiptDigest", "stageReceiptDigest", "candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "webhookReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
       "properties": {
         "baselineReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "expandMigrationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "telegramEgressReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "stageReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "candidateProbeDigest": { "$ref": "#/$defs/nullableDigest" },
         "rollbackPreSwitchProbeDigest": { "$ref": "#/$defs/nullableDigest" },

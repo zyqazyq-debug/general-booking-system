@@ -13,6 +13,10 @@ STATE_PROJECT='/var/lib/happybooking/deploy-state/preprod/booking-preprod'
 INSTALL_PARENT='/usr/local/libexec'
 ACTIVE_ROOT='/usr/local/libexec/happybooking'
 RUNTIME_LOCK='/usr/local/libexec/.happybooking-control-plane-runtime.lock'
+INSTALL_LOCK='/usr/local/libexec/.happybooking-control-plane-install.lock'
+INSTALL_JOURNAL='/usr/local/libexec/.happybooking-control-plane-install.journal.json'
+MIGRATION_LOCK='/usr/local/libexec/.happybooking-legacy-active-migration.lock'
+MIGRATION_JOURNAL='/usr/local/libexec/.happybooking-legacy-active-migration.journal.json'
 COSIGN='/usr/local/bin/cosign'
 COSIGN_TRUST_ROOT='/usr/local/bin'
 APPROVER_KEY='/etc/happybooking/trust/control-plane-approver.pub'
@@ -22,6 +26,8 @@ APPROVER_TRUST_ROOT='/etc/happybooking'
 HOST_IDENTITY='/etc/machine-id'
 HOST_IDENTITY_TRUST_ROOT='/etc'
 SELF='/usr/local/libexec/run-booking-preprod-control-plane-installer'
+HOST_DOCKER_ENDPOINT='unix:///var/run/docker.sock'
+HOST_DOCKER_CONFIG='/usr/local/libexec/.happybooking-host-docker-empty'
 EXPECTED_UID='0'
 EXPECTED_GID='0'
 SHA256SUM='/usr/bin/sha256sum'
@@ -49,6 +55,10 @@ case "${BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_ROOT:-}" in
     INSTALL_PARENT="$test_root/usr/local/libexec"
     ACTIVE_ROOT="$INSTALL_PARENT/happybooking"
     RUNTIME_LOCK="$INSTALL_PARENT/.happybooking-control-plane-runtime.lock"
+    INSTALL_LOCK="$INSTALL_PARENT/.happybooking-control-plane-install.lock"
+    INSTALL_JOURNAL="$INSTALL_PARENT/.happybooking-control-plane-install.journal.json"
+    MIGRATION_LOCK="$INSTALL_PARENT/.happybooking-legacy-active-migration.lock"
+    MIGRATION_JOURNAL="$INSTALL_PARENT/.happybooking-legacy-active-migration.journal.json"
     COSIGN="$test_root/usr/local/bin/cosign"
     COSIGN_TRUST_ROOT="$test_root/usr/local/bin"
     APPROVER_KEY="$test_root/etc/happybooking/trust/control-plane-approver.pub"
@@ -57,12 +67,23 @@ case "${BOOKING_CONTROL_PLANE_BOOTSTRAP_TEST_ROOT:-}" in
     HOST_IDENTITY="$test_root/etc/machine-id"
     HOST_IDENTITY_TRUST_ROOT="$test_root/etc"
     SELF="$INSTALL_PARENT/run-booking-preprod-control-plane-installer"
+    HOST_DOCKER_CONFIG="$INSTALL_PARENT/.happybooking-host-docker-empty"
     EXPECTED_UID=$(id -u)
     EXPECTED_GID=$(id -g)
     BOOTSTRAP_TEST='true'
     ;;
   *) fail ;;
 esac
+
+# The host client must never inherit a caller-selected daemon, context, TLS
+# identity, API downgrade, registry configuration, platform, or dynamic-loader
+# path. Global CLI flags repeat the endpoint/config binding at every invocation.
+DOCKER_HOST=$HOST_DOCKER_ENDPOINT
+DOCKER_CONFIG=$HOST_DOCKER_CONFIG
+unset DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION \
+  DOCKER_AUTH_CONFIG DOCKER_CUSTOM_HEADERS DOCKER_CONTENT_TRUST \
+  DOCKER_CONTENT_TRUST_SERVER DOCKER_DEFAULT_PLATFORM LD_PRELOAD LD_LIBRARY_PATH
+export DOCKER_HOST DOCKER_CONFIG
 
 not_writable_by_group_or_other() {
   mode=$1
@@ -95,6 +116,28 @@ trusted_chain() {
     [ "$parent" != "$current" ] || fail
     current=$parent
   done
+}
+
+host_docker_boundary() {
+  [ "$DOCKER_HOST" = "$HOST_DOCKER_ENDPOINT" ] || fail
+  [ "$DOCKER_CONFIG" = "$HOST_DOCKER_CONFIG" ] || fail
+  [ "$(dirname "$HOST_DOCKER_CONFIG")" = "$INSTALL_PARENT" ] || fail
+  path_absent "$HOST_DOCKER_CONFIG"
+  trusted_item "$INSTALL_PARENT"
+}
+
+path_absent() {
+  [ ! -e "$1" ] && [ ! -L "$1" ] || fail
+}
+
+host_docker() {
+  host_docker_boundary
+  "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"
+}
+
+host_docker_exec() {
+  host_docker_boundary
+  exec "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"
 }
 
 json_string() {
@@ -168,6 +211,13 @@ case "$action" in
 esac
 for used_key in $seen; do case "$action_allowed" in *" $used_key "*) ;; *) fail ;; esac; done
 valid_install_id "$install_id" || fail
+case "$action" in
+  legacy-migrate|legacy-recover|legacy-rollback)
+    path_absent "$RUNTIME_LOCK"
+    path_absent "$INSTALL_LOCK"
+    path_absent "$INSTALL_JOURNAL"
+    ;;
+esac
 installer="$BUNDLE_ROOT/$install_id/installer.mjs"
 migrator="$BUNDLE_ROOT/$install_id/payload/control-plane/ops/release/migrate-booking-preprod-legacy-active-root.mjs"
 approval_dir="$APPROVAL_ROOT/$install_id"
@@ -192,6 +242,7 @@ if [ "$BOOTSTRAP_TEST" = 'false' ]; then
   trusted_chain "$STAT" '/usr/bin'
   trusted_chain "$READLINK" '/usr/bin'
 fi
+host_docker_boundary
 
 tuple_digest=$(json_string "$approval_tuple" 'tupleDigest') || fail
 [ "$tuple_digest" = "$(canonical_body_digest "$approval_tuple" 'tupleDigest')" ] || fail
@@ -227,8 +278,8 @@ legacy-inventory|legacy-migrate|legacy-recover|legacy-rollback)
     --workdir "$BUNDLE_ROOT/$install_id" --entrypoint /usr/local/bin/node \
     "$IMAGE" "$installer" --action bundle-inventory --install-id "$install_id" --git-sha "$git_sha" --approval-id "$approval_id"
   case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-    true) printf '%s\n' LEGACY_BUNDLE_PREFLIGHT "$HOST_DOCKER" "$@" ;;
-    '') [ "$(id -u)" = '0' ] || fail; [ -x "$HOST_DOCKER" ] || fail; "$HOST_DOCKER" "$@" >/dev/null || fail ;;
+    true) printf '%s\n' LEGACY_BUNDLE_PREFLIGHT "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@" ;;
+    '') [ "$(id -u)" = '0' ] || fail; [ -x "$HOST_DOCKER" ] || fail; host_docker "$@" >/dev/null || fail ;;
     *) fail ;;
   esac
 
@@ -279,12 +330,12 @@ legacy-inventory|legacy-migrate|legacy-recover|legacy-rollback)
       --mount type=bind,src="$RECEIPT_ROOT",dst="$RECEIPT_ROOT",readonly \
       --workdir "$BUNDLE_ROOT/$install_id" --entrypoint /usr/local/bin/node "$IMAGE" "$migrator" $migration_args
     case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-      true) printf '%s\n' LEGACY_MIGRATION "$HOST_DOCKER" "$@"; exit 0 ;;
+      true) printf '%s\n' LEGACY_MIGRATION "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"; exit 0 ;;
       '') ;;
       *) fail ;;
     esac
     [ "$(id -u)" = '0' ] && [ -x "$HOST_DOCKER" ] || fail
-    exec "$HOST_DOCKER" "$@"
+    host_docker_exec "$@"
   fi
   legacy_pending='true'
   ;;
@@ -305,13 +356,13 @@ if [ "$action" = 'active-inventory' ]; then
     --workdir "$BUNDLE_ROOT/$install_id" --entrypoint /usr/local/bin/node \
     "$IMAGE" "$installer" "$@"
   case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-    true) printf '%s\n' "$HOST_DOCKER" "$@"; exit 0 ;;
+    true) printf '%s\n' "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"; exit 0 ;;
     '') ;;
     *) fail ;;
   esac
   [ "$(id -u)" = '0' ] || fail
   [ -x "$HOST_DOCKER" ] || fail
-  exec "$HOST_DOCKER" "$@"
+  host_docker_exec "$@"
 fi
 
 trusted_item "$approver_receipt"
@@ -378,8 +429,8 @@ true)
     --mount type=bind,src="$APPROVER_KEY_ANCHOR",dst="$APPROVER_KEY_ANCHOR",readonly --mount type=bind,src="$HOST_IDENTITY",dst="$HOST_IDENTITY",readonly \
     --workdir "$BUNDLE_ROOT/$install_id" --entrypoint /usr/local/bin/node "$IMAGE" "$installer" $approval_check_args
   case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-    true) printf '%s\n' LEGACY_APPROVAL_PREFLIGHT "$HOST_DOCKER" "$@" ;;
-    '') "$HOST_DOCKER" "$@" >/dev/null || fail ;;
+    true) printf '%s\n' LEGACY_APPROVAL_PREFLIGHT "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@" ;;
+    '') host_docker "$@" >/dev/null || fail ;;
     *) fail ;;
   esac
   case "$action" in
@@ -389,8 +440,11 @@ true)
   esac
   set -- run --rm --pull never --name "$migration_name" --network none --pid host --user 0:0 --read-only --cap-drop ALL --cap-add DAC_OVERRIDE \
     --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
+    --tmpfs /root/.docker:ro,nosuid,nodev,noexec,size=64k \
     --env HOME=/root --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \
-    --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+    --env LD_LIBRARY_PATH= --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+    --env DOCKER_CONTEXT= --env DOCKER_TLS= --env DOCKER_TLS_VERIFY= --env DOCKER_CERT_PATH= --env DOCKER_API_VERSION= \
+    --env DOCKER_AUTH_CONFIG= --env DOCKER_CUSTOM_HEADERS= --env DOCKER_CONTENT_TRUST= --env DOCKER_CONTENT_TRUST_SERVER= --env DOCKER_DEFAULT_PLATFORM= \
     --mount type=bind,src="$BUNDLE_ROOT/$install_id",dst="$BUNDLE_ROOT/$install_id",readonly \
     --mount type=bind,src="$INSTALL_PARENT",dst="$INSTALL_PARENT" \
     --mount type=bind,src="$RECEIPT_ROOT",dst="$RECEIPT_ROOT" \
@@ -399,12 +453,12 @@ true)
     --mount type=bind,src="$HOST_DOCKER",dst="$HOST_DOCKER",readonly \
     --workdir "$BUNDLE_ROOT/$install_id" --entrypoint /usr/local/bin/node "$IMAGE" "$migrator" $migration_args
   case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-    true) printf '%s\n' LEGACY_MIGRATION "$HOST_DOCKER" "$@"; exit 0 ;;
+    true) printf '%s\n' LEGACY_MIGRATION "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"; exit 0 ;;
     '') ;;
     *) fail ;;
   esac
   [ "$(id -u)" = '0' ] && [ -x "$HOST_DOCKER" ] && [ -S /var/run/docker.sock ] || fail
-  exec "$HOST_DOCKER" "$@"
+  host_docker_exec "$@"
   ;;
 esac
 
@@ -421,9 +475,12 @@ set -- run --rm --pull never --name "$installer_container_name" \
   --network none --pid host --user 0:0 --read-only \
   --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+  --tmpfs /root/.docker:ro,nosuid,nodev,noexec,size=64k \
   --env HOME=/root --env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   --env NODE_OPTIONS= --env NODE_PATH= --env LD_PRELOAD= \
-  --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+  --env LD_LIBRARY_PATH= --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_CONFIG=/root/.docker \
+  --env DOCKER_CONTEXT= --env DOCKER_TLS= --env DOCKER_TLS_VERIFY= --env DOCKER_CERT_PATH= --env DOCKER_API_VERSION= \
+  --env DOCKER_AUTH_CONFIG= --env DOCKER_CUSTOM_HEADERS= --env DOCKER_CONTENT_TRUST= --env DOCKER_CONTENT_TRUST_SERVER= --env DOCKER_DEFAULT_PLATFORM= \
   --mount type=bind,src="$INSTALL_PARENT",dst="$INSTALL_PARENT" \
   --mount type=bind,src=/volume1/happybooking/booking-preprod/.g4/control-plane-install,dst=/volume1/happybooking/booking-preprod/.g4/control-plane-install,readonly \
   --mount type=bind,src="$RECEIPT_ROOT",dst="$RECEIPT_ROOT" \
@@ -438,7 +495,7 @@ set -- run --rm --pull never --name "$installer_container_name" \
   "$IMAGE" "$installer" "$@"
 
 case "${BOOKING_CONTROL_PLANE_DRY_RUN:-}" in
-  true) printf '%s\n' "$HOST_DOCKER" "$@"; exit 0 ;;
+  true) printf '%s\n' "$HOST_DOCKER" --host "$HOST_DOCKER_ENDPOINT" --config "$HOST_DOCKER_CONFIG" "$@"; exit 0 ;;
   '') ;;
   *) fail ;;
 esac
@@ -450,5 +507,7 @@ esac
 [ -S /var/run/docker.sock ] || fail
 [ -d "$INSTALL_PARENT" ] && [ -d "$RECEIPT_ROOT" ] && [ -d "$STATE_PROJECT" ] || fail
 [ -f "$installer" ] && [ -x "$installer" ] || fail
-[ ! -e "$RUNTIME_LOCK" ] || fail
-exec "$HOST_DOCKER" "$@"
+path_absent "$RUNTIME_LOCK"
+path_absent "$MIGRATION_LOCK"
+path_absent "$MIGRATION_JOURNAL"
+host_docker_exec "$@"

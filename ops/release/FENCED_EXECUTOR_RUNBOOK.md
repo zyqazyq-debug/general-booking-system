@@ -151,6 +151,32 @@ group/other writable. The Cosign binary receives the same checks through
 `/usr/local/bin`. The fixed Synology utility paths are `/usr/bin/sha256sum`,
 `/usr/bin/stat`, and `/usr/bin/readlink`; each is checked through the trusted
 `/usr/bin` directory before use.
+
+Every host-side Docker invocation made by this installer bootstrap, including
+every early-return inventory path, both legacy preflights, and each terminal
+installer or migrator launch, goes through the shared `host_docker_boundary`.
+Returning preflights use `host_docker`; terminal launches use
+`host_docker_exec`, which preserves process replacement and signal ownership.
+Both modes are pinned to
+`unix:///var/run/docker.sock` and the deliberately nonexistent empty config
+path `/usr/local/libexec/.happybooking-host-docker-empty`. The launcher passes
+both as explicit global Docker CLI options as well as fixed environment values,
+and rejects a file, directory, or symlink at the config path before the first
+call and again immediately before every later call. It clears inherited Docker
+context, TLS/certificate, API-version, registry-auth, custom-header,
+content-trust, default-platform, `LD_PRELOAD`, and `LD_LIBRARY_PATH` variables.
+The root-owned, non-writable `/usr/local/libexec` parent prevents a caller from
+creating the checked config path between the check and execution. These host
+client constraints do not alter the explicitly constructed Docker environment
+inside the installer and migrator containers. Any installer or migrator
+container that receives the Docker socket additionally mounts an empty,
+read-only `tmpfs` over `/root/.docker`, fixes `DOCKER_HOST` and `DOCKER_CONFIG`,
+and explicitly blanks context, TLS/certificate, API-version, registry-auth,
+custom-header, content-trust, default-platform and dynamic-loader variables.
+The mount masks every `/root/.docker` byte in the pinned image and cannot be
+populated by the container, so image-layer client configuration is not an
+unproved input to the nested Docker boundary.
+
 Changing the bootstrap `IMAGE`, executing a copied or symlinked launcher,
 widening a launcher/parent/mount-root mode, replacing the tuple, or substituting
 the signature therefore stops before Docker. The bootstrap test-root facility
@@ -294,6 +320,151 @@ launcher race, while direct ad-hoc Docker execution remains prohibited. Install,
 rollback and recovery reject active, rollback, transaction trees, or any nested
 tree path that is a mountpoint or on a different device from
 `/usr/local/libexec`.
+
+The installer also refuses both
+`/usr/local/libexec/.happybooking-legacy-active-migration.lock` and
+`/usr/local/libexec/.happybooking-legacy-active-migration.journal.json` before
+publishing its install lock, immediately after that publication, and before
+each active-tree rename in install, rollback, or recovery. The host bootstrap
+performs the same fixed-path fail-fast check before launching a mutating
+installer container. Before any `legacy-migrate`, `legacy-recover`, or
+`legacy-rollback` Docker preflight or terminal launch, that bootstrap also
+requires the fixed runtime lock, installer lock, and installer journal to be
+absent. Every host-side absence check rejects both an existing object and a
+dangling symbolic link. Conversely, the migrator checks the install lock and
+install journal before acquiring its migration lock and repeats that production
+quiescence proof immediately afterward. Therefore neither side may mutate
+`/usr/local/libexec/happybooking` while the other's transaction is active; a
+residual lock or journal is a recovery/forensic stop, never a condition to
+ignore or delete opportunistically.
+
+The launcher and runtime recovery also refuse both
+`/usr/local/libexec/.happybooking-legacy-active-migration.lock` and
+`/usr/local/libexec/.happybooking-legacy-active-migration.journal.json` before
+proceeding, and the normal launcher repeats that check after publishing its
+runtime lock but before Docker execution. The migrator repeats its quiescence
+proof immediately after acquiring its migration lock; if a runtime lock won the
+race, it creates no journal or stage, performs no rename, and removes its
+pre-journal migration lock while failing closed.
+
+The v2 runtime lock is one root-owned canonical mode `0400` file at the fixed
+path. It is the second hard link to
+`/usr/local/libexec/.happybooking-control-plane-runtime-txn-<lock-hex>/intent.json`;
+both names must resolve to the same device/inode and have link count two while
+the lock is active. The intent digest binds the host PID, kernel boot ID,
+`/proc/<pid>/stat` start ticks, fixed container identity, pinned image digest,
+and canonical request digest. Acquisition creates and fsyncs the mode `0700`
+transaction directory and its canonical mode `0400` intent, then uses the fixed
+`/usr/bin/link` (`link(2)`) to publish the fixed lock with no overwrite or
+symlink-following destination path. The deployed Synology `link`, `stat`,
+`readlink`, `sha256sum`, and `sync -f` behavior must be read back before this
+bundle is accepted. After publication, signals or process death intentionally
+leave the complete intent and transaction evidence for explicit recovery; there
+is no exit-trap unlink. An unpublished transaction directory is inert and never
+authorizes cleanup.
+
+Before acquisition the launcher twice proves that both the fixed container name
+and every container carrying the runtime-lock label key are absent. The launcher
+then creates, but does not start, the fixed-name Docker container. Docker CLI
+stdout is not identity evidence: the launcher enumerates the exact lock-digest
+label through the daemon and exclusively publishes canonical `create.json`
+with that full 64-hex daemon-issued ID before it accepts the client result. A
+nonzero, empty, multiline, or mismatching create result therefore leaves a
+recoverable receipt and container instead of an unbound container. It next
+performs two full-ID-first inspections requiring the fixed name, pinned image,
+exact runtime-lock label, `created:false`, and stable ID. Only then does it
+exclusively publish canonical `owner.json`, binding the create digest and full
+ID, and start with `docker container start --attach <full-id>`. After attach,
+two reads must agree on that same ID, name, image, label, `exited:false`, and
+exit code before completion is durable. A renamed container, same-name
+replacement, extra label match, impossible status/running pair, or unavailable
+daemon freezes the transaction.
+
+Runtime recovery is a separate root-only launcher action and is never implicit:
+
+```sh
+/usr/local/libexec/happybooking/run-booking-preprod-control-plane \
+  recover-stale-runtime-lock --action recover-runtime-lock --execute true \
+  --environment preprod --project booking-preprod \
+  --expected-lock-digest sha256:<64-lowercase-hex> \
+  --recovery-id runtime-recovery-<approved-identity>
+```
+
+Before any host Docker call, the launcher fixes `DOCKER_HOST` to the local Unix
+socket, fixes `DOCKER_CONFIG` to an absent child below a root-controlled
+non-writable directory, fixes `HOME=/root`, removes inherited Docker
+context/TLS/API/auth/header/content-trust/default-platform/build/Compose and
+loader-path variables, and still passes explicit `--host` and `--config` flags
+through one fixed wrapper. The runtime container masks `/root/.docker` with an
+empty read-only-root-compatible `tmpfs` and explicitly clears the same Docker
+and Compose variables after loading the root-only env file. Legacy runtime
+test-root environment variables are rejected rather than interpreted by the
+production launcher. Recovery verifies fixed paths for every hash, stat,
+readlink, sync, link, awk, cat, chmod, dirname, id, mkdir, rmdir, sed, unlink,
+and Docker tool it uses. Tool files and controlled lock/receipt artifacts
+require root ownership; lock and receipt artifacts additionally require group
+`0` and exact modes. Resolved parent directories may use a nonzero group but
+must be root-owned and neither group- nor other-writable.
+
+Recovery first treats an owner receipt as a full-ID binding and performs two
+matching full-ID reads. Without an owner it requires a valid create receipt and
+requires exact lock-digest label enumeration to return that same single full
+ID; absence, multiplicity, or a different ID freezes recovery. It then requires
+two read-only PID proofs and two Docker daemon/full-ID proofs. A live or reused
+owner identity, renamed or running container, same-name replacement,
+image/label mismatch, unavailable daemon, non-canonical JSON, changed artifact,
+or wrong recovery ID is a stop condition. Only the exact stopped container full
+ID may be removed.
+
+Every runtime record is canonical one-line JSON with exactly one terminal LF,
+mode `0400`, and a digest over its explicitly defined body. Exclusive publication
+uses a deterministic root-only same-directory staging directory, file and
+directory fsync, `link(2)`, device/inode and link-count readback, source unlink,
+and parent fsync. Replay may repair only an empty stage or its single recognized
+private `record.json` with mode `0600` or `0400`, root ownership and link count
+one; an extra entry, foreign link, other mode, symlink, or different published
+record freezes the transaction and is never overwritten.
+
+Recovery first publishes immutable `recovery-intent.json` with
+`status=prepared`, binding the lock, create and owner digests, recovery ID,
+observed exit code, and exact stopped container ID or `absent`. It may then
+remove only that full ID, prove twice that the full ID, exact label and fixed
+name are absent, retire only the fixed hard link after another PID/conflict
+proof, and repeat the two-round Docker absence proof immediately before final
+publication. The normal completion path likewise publishes
+`completion-intent.json`, locks the stable observed exit code, removes only its
+full ID, and uses the same absence sequence. Even replay of an existing final
+receipt performs a fresh Docker absence proof.
+
+Canonical `final.json` v3 separates cleanup evidence from business outcome:
+`cleanupStatus=pass` means only that the bound container is absent and the lock
+was safely retired; `businessOutcome=succeeded|failed|unknown` plus
+`observedExitCode` preserves the workload result. Cleanup PASS must never be
+used as a business-success or release-gate signal. Repeating the identical
+request converges every tested crash from stage creation through file/stage
+fsync, record link and parent fsync, source unlink, prepared intent, container
+removal, fixed-lock unlink, and final publication. A different recovery ID
+cannot adopt a prepared recovery. Fault-injection tests exercise these
+boundaries, but remain engineering evidence rather than NAS installation or
+production-release evidence.
+
+A directory at the fixed runtime-lock path is a legacy v1 forensic signature,
+not a v2 lock and never automatic cleanup input. The launcher stops before any
+Docker call or unlink. If a v1 directory and a digest-named v2 transaction are
+both present, this is a coordinated dual-lock stop, not an ordering hint: do not
+rename, delete, or feed either artifact to v2 recovery. Capture one root-readable
+inventory containing `lstat`/no-follow type, owner, mode, device, inode and link
+count for the fixed path and every matching v2 transaction; hash each canonical
+intent/owner/completion/final byte stream; enumerate full Docker IDs for the
+fixed name and every runtime-lock label; and bind that complete inventory digest
+to the incident approval and operator signature. The signed inventory must be
+reviewed under the v1 forensic procedure and yield a separately approved v1
+disposition receipt. Only after a fresh no-follow inventory proves the v1 path
+absent, with the v2 intent digest and full-ID Docker inventory unchanged, may a
+new recovery approval and recovery ID authorize the exact v2 command above.
+There is no supported manual-delete shortcut. The currently recorded NAS
+inspection found no v1 directory, but that historical observation is not
+authority to skip this gate on a future run.
 
 After a durable `PREPARED` journal, installation copies into a version-named
 staging directory beside `/usr/local/libexec/happybooking`, normalizes directories
@@ -443,9 +614,11 @@ file. Application containers consume their separately mounted runtime env file
 through Compose.
 
 The fixed container name `booking-preprod-control-plane` is also a fail-closed
-concurrency signal. A residual container makes the next `docker run` fail with
-a name conflict. The launcher never removes or replaces that container; collect
-its state and resolve it through the forensic recovery procedure.
+concurrency signal. A residual container makes the next `docker container
+create` fail with a name conflict. The normal completion path removes only the
+owner record's matching full container ID after a durable completion intent;
+any other residual container is never replaced and must be resolved through the
+forensic recovery procedure.
 
 On Synology the executor derives:
 
@@ -777,7 +950,10 @@ the incomplete new namespace and never acquires a deploy lease.
    return singleton to legacy, freshly probe rollback identity, and enter
    `ROLLED_BACK` with all three receipts. Verify candidate worker absent, legacy
    compatible with the additive migration, and production unchanged.
-7. Re-promote the same immutable candidate only through fresh receipts: stage to
+7. Re-promote the same immutable candidate only through fresh receipts. First
+   execute `preprod-prepare-telegram-egress` again from controlled `ROLLED_BACK`
+   and accept a fresh operation/fence/container-bound Telegram egress receipt;
+   the receipt from the first promotion is not reusable. Then stage to
    `CANDIDATE_STARTED`; candidate probe to `CANDIDATE_READY`; legacy-active probe
    and singleton to `SINGLETON_TRANSFERRED`; ingress switch to `SWITCHED`;
    webhook to `OBSERVING`; then a second bounded observation window and fresh

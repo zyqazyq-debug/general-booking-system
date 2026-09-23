@@ -16,6 +16,8 @@ const APPROVAL_ROOT = '/volume1/happybooking/booking-preprod/.g4/control-plane-i
 const LOCK_PATH = '/usr/local/libexec/.happybooking-control-plane-install.lock';
 const JOURNAL_PATH = '/usr/local/libexec/.happybooking-control-plane-install.journal.json';
 const RUNTIME_LOCK_PATH = '/usr/local/libexec/.happybooking-control-plane-runtime.lock';
+const MIGRATION_LOCK_PATH = '/usr/local/libexec/.happybooking-legacy-active-migration.lock';
+const MIGRATION_JOURNAL_PATH = '/usr/local/libexec/.happybooking-legacy-active-migration.journal.json';
 const DEPLOY_STATE_PATH = '/var/lib/happybooking/deploy-state/preprod/booking-preprod/deploy-state.json';
 const DOCKER = '/var/packages/ContainerManager/target/usr/bin/docker';
 const INSTALLER_CONTAINER = 'booking-preprod-control-plane-installer';
@@ -321,13 +323,20 @@ async function publishReceipt(path, body, uid, runtime) {
   await syncDirectory(dirname(path), runtime); await checkpoint(runtime, 'receipt:linked');
   await unlink(temp); await syncDirectory(dirname(path), runtime); return receipt;
 }
-async function durableRename(from, to, runtime, point) {
+async function durableRename(from, to, runtime, point, paths) {
+  await assertMigrationQuiescent(paths);
   await rename(from, to); await syncDirectory(dirname(from), runtime);
   if (dirname(to) !== dirname(from)) await syncDirectory(dirname(to), runtime);
   await checkpoint(runtime, point);
 }
 
+async function assertMigrationQuiescent(paths) {
+  if (await exists(paths.migrationLockPath)) throw new InstallError('legacy active migration lock exists');
+  if (await exists(paths.migrationJournalPath)) throw new InstallError('legacy active migration journal exists');
+}
+
 async function assertQuiescent(paths, runtime, now) {
+  await assertMigrationQuiescent(paths);
   if (runtime.assertQuiescent) return runtime.assertQuiescent();
   if (await exists(paths.runtimeLockPath)) throw new InstallError('control-plane runtime lock exists');
   if (await exists(`${paths.deployStatePath}.lock`)) throw new InstallError('deployment state lock exists');
@@ -368,6 +377,7 @@ function defaultPaths(runtime) {
   return { installRoot: INSTALL_ROOT, rollbackRoot: ROLLBACK_ROOT, bundleRoot: BUNDLE_ROOT, receiptRoot: RECEIPT_ROOT,
     approvalRoot: APPROVAL_ROOT, approverPublicKeyPath: APPROVER_PUBLIC_KEY, approverPublicKeyAnchorPath: APPROVER_PUBLIC_KEY_ANCHOR,
     hostIdentityPath: HOST_IDENTITY_PATH, lockPath: LOCK_PATH, journalPath: JOURNAL_PATH, runtimeLockPath: RUNTIME_LOCK_PATH,
+    migrationLockPath: MIGRATION_LOCK_PATH, migrationJournalPath: MIGRATION_JOURNAL_PATH,
     deployStatePath: DEPLOY_STATE_PATH, ...(runtime.paths || {}) };
 }
 async function treeDigest(path, settings) { return await exists(path) ? (await inventory(path, { uid: settings.uid, enforceMode: settings.enforceMode })).digest : null; }
@@ -748,10 +758,10 @@ async function recoverInstall(paths, journal, settings, runtime) {
     await syncDirectory(dirname(paths.installRoot), runtime); await writeJournal(paths, journal, settings, runtime, 'COMPLETE');
     return { status: 'completed', receipt };
   }
-  if (active === journal.newDigest) await durableRename(paths.installRoot, failed, runtime, 'recover:new-quarantined');
-  if (await treeDigest(paths.installRoot, settings) === null && await treeDigest(paths.rollbackRoot, settings) === journal.oldActiveDigest) await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:active-restored');
+  if (active === journal.newDigest) await durableRename(paths.installRoot, failed, runtime, 'recover:new-quarantined', paths);
+  if (await treeDigest(paths.installRoot, settings) === null && await treeDigest(paths.rollbackRoot, settings) === journal.oldActiveDigest) await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:active-restored', paths);
   if (journal.oldRollbackDigest) {
-    if (await treeDigest(paths.rollbackRoot, settings) === null && retiredDigest === journal.oldRollbackDigest) await durableRename(retired, paths.rollbackRoot, runtime, 'recover:rollback-restored');
+    if (await treeDigest(paths.rollbackRoot, settings) === null && retiredDigest === journal.oldRollbackDigest) await durableRename(retired, paths.rollbackRoot, runtime, 'recover:rollback-restored', paths);
   } else if (await exists(paths.rollbackRoot)) throw new InstallError('unexpected rollback tree while restoring no-rollback state');
   if (await exists(stage)) await rm(stage, { recursive: true }); if (await exists(failed)) await rm(failed, { recursive: true }); if (await exists(receiptTemp)) await unlink(receiptTemp);
   await syncDirectory(dirname(paths.installRoot), runtime);
@@ -776,19 +786,19 @@ async function recoverRollback(paths, journal, settings, runtime) {
     await writeJournal(paths, journal, settings, runtime, 'COMPLETE'); return { status: 'completed', receipt };
   }
   if (active === journal.oldRollbackDigest && rollback === journal.oldActiveDigest) {
-    await durableRename(paths.installRoot, temp, runtime, 'recover:rollback-active-quarantined');
-    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-active-restored');
-    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored');
+    await durableRename(paths.installRoot, temp, runtime, 'recover:rollback-active-quarantined', paths);
+    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-active-restored', paths);
+    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored', paths);
   } else if (active === null && rollback === journal.oldActiveDigest && tempDigest === journal.oldRollbackDigest) {
-    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-active-restored');
-    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored');
+    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-active-restored', paths);
+    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored', paths);
   } else if (active === journal.oldActiveDigest && rollback === null && tempDigest === journal.oldRollbackDigest) {
-    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored');
+    await durableRename(temp, paths.rollbackRoot, runtime, 'recover:rollback-target-restored', paths);
   } else if (active === null && rollback === journal.oldActiveDigest && swapDigest === journal.oldRollbackDigest) {
-    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-mid-active');
-    await durableRename(swap, paths.rollbackRoot, runtime, 'recover:rollback-mid-target');
+    await durableRename(paths.rollbackRoot, paths.installRoot, runtime, 'recover:rollback-mid-active', paths);
+    await durableRename(swap, paths.rollbackRoot, runtime, 'recover:rollback-mid-target', paths);
   } else if (active === journal.oldActiveDigest && rollback === null && swapDigest === journal.oldRollbackDigest) {
-    await durableRename(swap, paths.rollbackRoot, runtime, 'recover:rollback-first-target');
+    await durableRename(swap, paths.rollbackRoot, runtime, 'recover:rollback-first-target', paths);
   }
   active = await treeDigest(paths.installRoot, settings); rollback = await treeDigest(paths.rollbackRoot, settings);
   if (active !== journal.oldActiveDigest || rollback !== journal.oldRollbackDigest) throw new InstallError('pre-rollback trees were not restored');
@@ -799,7 +809,8 @@ async function recoverRollback(paths, journal, settings, runtime) {
 export async function runControlPlaneInstaller(input, runtime = {}) {
   const args = parseArgs(input); const paths = defaultPaths(runtime); const now = runtime.now || new Date().toISOString();
   const settings = { uid: runtime.expectedUid === undefined ? 0 : runtime.expectedUid, enforceMode: runtime.enforceMode === undefined ? true : runtime.enforceMode };
-  if (dirname(paths.rollbackRoot) !== dirname(paths.installRoot) || dirname(paths.lockPath) !== dirname(paths.installRoot) || dirname(paths.journalPath) !== dirname(paths.installRoot)) throw new InstallError('fixed targets must share one parent');
+  if (dirname(paths.rollbackRoot) !== dirname(paths.installRoot) || dirname(paths.lockPath) !== dirname(paths.installRoot) || dirname(paths.journalPath) !== dirname(paths.installRoot) ||
+      dirname(paths.migrationLockPath) !== dirname(paths.installRoot) || dirname(paths.migrationJournalPath) !== dirname(paths.installRoot)) throw new InstallError('fixed targets must share one parent');
   if (!['bundle-inventory', 'approval-check'].includes(args.action)) {
     await assertDirectory(dirname(paths.installRoot), settings.uid, 'install parent', settings.enforceMode);
   }
@@ -934,6 +945,7 @@ export async function runControlPlaneInstaller(input, runtime = {}) {
     if (current.digest !== receipt.inventoryDigest) throw new InstallError('active tree does not match install receipt');
     return { schema: 'booking.preprod-control-plane-readback/v2', status: 'pass', receiptDigest, installId: receipt.installId, gitSha: receipt.gitSha, approvalId: receipt.approvalId, inventoryDigest: current.digest };
   }
+  await checkpoint(runtime, 'quiescence:before-install-lock');
   validateIdentity(args); const transactionId = randomUUID(); const processIdentity = await currentProcessIdentity(runtime, now, args.action);
   await publishInstallLock(paths, { action: args.action, transactionId, installId: args['install-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], ...processIdentity }, settings, runtime);
   let preserve = false;
@@ -962,10 +974,10 @@ export async function runControlPlaneInstaller(input, runtime = {}) {
       if (staged.digest !== bundle.inventory.digest) throw new InstallError('post-copy inventory changed');
       await smokeStage(stage, runtime);
       await assertQuiescent(paths, runtime, now); await assertNotMountpoints(paths, runtime, [stage, retiredName ? join(dirname(paths.installRoot), retiredName) : null].filter(Boolean));
-      if (oldRollbackDigest) await durableRename(paths.rollbackRoot, join(dirname(paths.installRoot), retiredName), runtime, 'rename:old-retired');
+      if (oldRollbackDigest) await durableRename(paths.rollbackRoot, join(dirname(paths.installRoot), retiredName), runtime, 'rename:old-retired', paths);
       await writeJournal(paths, journal, settings, runtime, 'OLD_RETIRED');
-      await durableRename(paths.installRoot, paths.rollbackRoot, runtime, 'rename:active-moved'); await writeJournal(paths, journal, settings, runtime, 'ACTIVE_MOVED');
-      await durableRename(stage, paths.installRoot, runtime, 'rename:new-active'); await writeJournal(paths, journal, settings, runtime, 'NEW_ACTIVE');
+      await durableRename(paths.installRoot, paths.rollbackRoot, runtime, 'rename:active-moved', paths); await writeJournal(paths, journal, settings, runtime, 'ACTIVE_MOVED');
+      await durableRename(stage, paths.installRoot, runtime, 'rename:new-active', paths); await writeJournal(paths, journal, settings, runtime, 'NEW_ACTIVE');
       const body = { schema: 'booking.preprod-control-plane-install-receipt/v3', status: 'pass', action: 'install', environment: 'preprod', project: 'booking-preprod', transactionId, installId: args['install-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], sourceArchiveDigest: declaration.sourceArchiveDigest, installerDigest: declaration.installerDigest, bundleDeclarationDigest: bundle.declarationDigest, trackedAllowlistDigest: declaration.trackedAllowlistDigest, payloadMapDigest: declaration.payloadMapDigest, archiveCommandDigest: declaration.archiveCommandDigest, ...approval, inventoryDigest: staged.digest, oldActiveInventoryDigest: oldActive.digest, rollbackInventoryDigest: oldActive.digest, installedAt: now };
       const receipt = await publishReceipt(join(paths.receiptRoot, `control-plane-install-${args['install-id']}.json`), body, settings.uid, runtime); journal.receiptDigest = receipt.receiptDigest;
       await checkpoint(runtime, 'receipt:published'); await writeJournal(paths, journal, settings, runtime, 'RECEIPT_PUBLISHED');
@@ -983,9 +995,9 @@ export async function runControlPlaneInstaller(input, runtime = {}) {
     if ((await stat(paths.installRoot)).dev !== (await stat(dirname(paths.installRoot))).dev || (await stat(paths.rollbackRoot)).dev !== (await stat(dirname(paths.installRoot))).dev) throw new InstallError('active or rollback is a different filesystem/mountpoint');
     const swapName = `.happybooking-control-plane-retired-${transactionId}`;
     const journal = { schema: 'booking.preprod-control-plane-transaction/v2', action: 'rollback', transactionId, installId: args['install-id'], rollbackId: args['rollback-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], phase: 'PREPARED', swapName, oldActiveDigest: active.digest, oldRollbackDigest: rollback.digest, targetInstallReceiptDigest: targetInstallReceipt.receiptDigest, receiptDigest: null, updatedAt: now };
-    await writeJournal(paths, journal, settings, runtime, 'PREPARED'); await durableRename(paths.rollbackRoot, join(dirname(paths.installRoot), swapName), runtime, 'rename:rollback-retired'); await writeJournal(paths, journal, settings, runtime, 'OLD_RETIRED');
-    await durableRename(paths.installRoot, paths.rollbackRoot, runtime, 'rename:rollback-active-moved'); await writeJournal(paths, journal, settings, runtime, 'ACTIVE_MOVED');
-    await durableRename(join(dirname(paths.installRoot), swapName), paths.installRoot, runtime, 'rename:rollback-new-active'); await writeJournal(paths, journal, settings, runtime, 'NEW_ACTIVE');
+    await writeJournal(paths, journal, settings, runtime, 'PREPARED'); await durableRename(paths.rollbackRoot, join(dirname(paths.installRoot), swapName), runtime, 'rename:rollback-retired', paths); await writeJournal(paths, journal, settings, runtime, 'OLD_RETIRED');
+    await durableRename(paths.installRoot, paths.rollbackRoot, runtime, 'rename:rollback-active-moved', paths); await writeJournal(paths, journal, settings, runtime, 'ACTIVE_MOVED');
+    await durableRename(join(dirname(paths.installRoot), swapName), paths.installRoot, runtime, 'rename:rollback-new-active', paths); await writeJournal(paths, journal, settings, runtime, 'NEW_ACTIVE');
     const body = { schema: 'booking.preprod-control-plane-install-receipt/v3', status: 'pass', action: 'rollback', environment: 'preprod', project: 'booking-preprod', transactionId, installId: args['install-id'], rollbackId: args['rollback-id'], gitSha: args['git-sha'], approvalId: args['approval-id'], targetInstallReceiptDigest: targetInstallReceipt.receiptDigest, inventoryDigest: rollback.digest, oldActiveInventoryDigest: active.digest, rollbackInventoryDigest: active.digest, rolledBackAt: now };
     const receipt = await publishReceipt(join(paths.receiptRoot, `control-plane-rollback-${args['rollback-id']}.json`), body, settings.uid, runtime); journal.receiptDigest = receipt.receiptDigest;
     await checkpoint(runtime, 'receipt:published'); await writeJournal(paths, journal, settings, runtime, 'RECEIPT_PUBLISHED'); await writeJournal(paths, journal, settings, runtime, 'COMPLETE');
