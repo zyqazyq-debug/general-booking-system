@@ -109,11 +109,11 @@ function legacyNetworkFixture(binding, fixedContainers = { backend: { running: t
   ];
   const dataContainer = (id, service) => ({ Id: id, Name: `/booking-preprod-${service}-1`, Running: true,
     Labels: { 'com.docker.compose.project': 'booking-preprod', 'com.docker.compose.service': service },
-    Networks: { [RESOURCES.dataNetwork]: { Aliases: [service] } } });
+    Networks: { [RESOURCES.dataNetwork]: { Aliases: [`booking-preprod-${service}-1`, service, id.slice(0, 12)] } } });
   const cloudflared = { Id: cloudflaredId, Name: `/${binding.cloudflared.name}`, Image: binding.cloudflared.imageId,
     ConfigImage: binding.cloudflared.image, User: binding.cloudflared.user, Running: true, PortBindings: {}, Labels: null,
     ReadonlyRootfs: true, Privileged: false, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges:true'],
-    Cmd: binding.cloudflared.cmd || ['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run'],
+    Cmd: binding.cloudflared.cmd || ['tunnel', '--no-autoupdate', 'run', '--token-file', '/run/secrets/tunnel-token'],
     Mounts: [{ Type: 'bind', Source: '/etc/happybooking/secrets/cloudflare-preprod-tunnel-token',
       Destination: '/run/secrets/tunnel-token', RW: false, Propagation: 'rprivate' }],
     Networks: { [RESOURCES.edgeNetwork]: { Aliases: [cloudflaredId.slice(0, 12)] } } };
@@ -350,6 +350,23 @@ test('fixed legacy runtime inspect binds exact containers, security configuratio
   topology.supportingContainers[0].Networks['booking-preprod-data'].Aliases.push('rogue-alias');
   assert.throws(() => verifyLegacyNetworkTopology(JSON.stringify(topology.networks), JSON.stringify(topology.supportingContainers),
     { project: 'booking-preprod', resources: RESOURCES }, stopped, binding), /aliases or ownership drifted/);
+  for (const serviceIndex of [0, 1]) {
+    for (const mutate of [
+      (aliases) => aliases.pop(),
+      (aliases) => aliases.push(aliases[1]),
+    ]) {
+      const drifted = legacyNetworkFixture(binding, stopped);
+      mutate(drifted.supportingContainers[serviceIndex].Networks['booking-preprod-data'].Aliases);
+      assert.throws(() => verifyLegacyNetworkTopology(JSON.stringify(drifted.networks),
+        JSON.stringify(drifted.supportingContainers), { project: 'booking-preprod', resources: RESOURCES }, stopped, binding),
+      /aliases or ownership drifted/);
+    }
+  }
+  const wrongCommand = legacyNetworkFixture(binding, stopped);
+  wrongCommand.supportingContainers[2].Cmd = ['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run'];
+  assert.throws(() => verifyLegacyNetworkTopology(JSON.stringify(wrongCommand.networks),
+    JSON.stringify(wrongCommand.supportingContainers), { project: 'booking-preprod', resources: RESOURCES }, stopped, binding),
+  /cloudflared identity, network, alias, or port binding drifted/);
 });
 
 test('legacy topology rejects phase disagreement and cloudflared identity or isolation drift', () => {

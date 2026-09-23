@@ -115,6 +115,37 @@ test('legacy v2 evidence compatibility accepts only the exact pre-Telegram shape
     /stageReceiptDigest is invalid/);
 });
 
+test('deploy state schema admits only pre-switch or post-switch FAILED shapes in v2 and v3', () => {
+  const ajv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(ajv);
+  const validateState = ajv.compile(deployStateSchema);
+  const idleV3 = initialDeployState(DEPLOYMENT, '2026-09-10T10:00:00.000Z');
+  const acquiredV3 = acquireLease(idleV3, leaseInput(idleV3));
+  const failedV3 = transitionDeployState(acquiredV3, { expectedGeneration: acquiredV3.generation,
+    expectedFencingEpoch: acquiredV3.fencingEpoch, leaseId: acquiredV3.lease.leaseId, holderId: acquiredV3.lease.holderId,
+    now: '2026-09-10T10:02:00.000Z', to: 'FAILED' });
+  const failedV2 = structuredClone(failedV3);
+  failedV2.schema = 'booking.deploy-state/v2';
+  delete failedV2.evidence.telegramEgressReceiptDigest;
+  delete failedV2.recovery;
+  delete failedV2.observationWindowMinutes;
+  delete failedV2.observationStartedAt;
+
+  for (const preSwitch of [failedV2, failedV3]) {
+    const postSwitch = { ...preSwitch, active: CANDIDATE, candidate: null,
+      evidence: { ...preSwitch.evidence, switchReceiptDigest: D('1') } };
+    assert.equal(validateState(preSwitch), true, canonicalJson(validateState.errors));
+    assert.equal(validateState(postSwitch), true, canonicalJson(validateState.errors));
+    assert.equal(validateState({ ...preSwitch, rollback: null }), false, 'FAILED requires rollback identity');
+    assert.equal(validateState({ ...preSwitch, candidate: null }), false, 'pre-switch FAILED requires candidate identity');
+    assert.equal(validateState({ ...preSwitch, evidence: { ...preSwitch.evidence, switchReceiptDigest: D('1') } }), false,
+      'pre-switch FAILED rejects switch evidence');
+    assert.equal(validateState({ ...postSwitch, evidence: { ...postSwitch.evidence, switchReceiptDigest: null } }), false,
+      'post-switch FAILED requires switch evidence');
+    assert.equal(validateState({ ...postSwitch, candidate: ACTIVE }), false, 'post-switch FAILED rejects candidate identity');
+  }
+});
+
 for (const terminalPhase of ['COMMITTED', 'ROLLED_BACK']) {
   test(`legacy v2 ${terminalPhase} closes through a v1 receipt into a v3 IDLE chain head`, async (t) => {
     const root = await mkdtemp(join(tmpdir(), `booking-v2-${terminalPhase.toLowerCase()}-`));

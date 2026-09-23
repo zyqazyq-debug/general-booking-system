@@ -140,7 +140,13 @@ export function validateDeployState(state) {
   if (state.candidate !== null) validateIdentity(state.candidate, 'state.candidate');
   if (state.rollback !== null) validateIdentity(state.rollback, 'state.rollback');
   if (state.candidate && state.candidate.slot === state.active.slot) throw new ContractError('candidate must use the inactive slot');
-  if (state.rollback && !POST_SWITCH_PHASES.has(state.phase) && !sameIdentity(state.rollback, state.active)) {
+  if (state.phase === 'FAILED') {
+    const preSwitch = state.rollback !== null && state.candidate !== null && state.evidence?.switchReceiptDigest === null &&
+      sameIdentity(state.active, state.rollback);
+    const postSwitch = state.rollback !== null && state.candidate === null && DIGEST.test(state.evidence?.switchReceiptDigest || '') &&
+      !sameIdentity(state.active, state.rollback);
+    if (!preSwitch && !postSwitch) throw new ContractError('failed state must retain a valid pre-switch or post-switch rollback identity');
+  } else if (state.rollback && !POST_SWITCH_PHASES.has(state.phase) && !sameIdentity(state.rollback, state.active)) {
     throw new ContractError('pre-switch rollback identity must equal active identity');
   }
   validateEvidence(state.evidence, state.schema);

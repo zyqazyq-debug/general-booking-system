@@ -68,6 +68,44 @@ test('full switch and rollback lifecycle preserves immutable rollback identity',
   assert.equal(state.rollbackRehearsalCompleted, false);
 });
 
+test('FAILED preserves distinct pre-switch and post-switch rollback identities', () => {
+  let state = acquired();
+  state = step(state, 'MANIFEST_VERIFIED');
+  const preSwitchFailed = step(state, 'FAILED');
+  assert.deepEqual(validateDeployState(preSwitchFailed).active, ACTIVE);
+  assert.deepEqual(preSwitchFailed.candidate, CANDIDATE);
+  assert.equal(preSwitchFailed.evidence.switchReceiptDigest, null);
+
+  state = step(state, 'STAGED');
+  state = step(state, 'EXPAND_MIGRATED', { expandMigrationReceiptDigest: D('e') });
+  state = step(state, 'CANDIDATE_STARTED', { telegramEgressReceiptDigest: D('6'), stageReceiptDigest: D('7') });
+  state = step(state, 'CANDIDATE_READY', { candidateProbeDigest: D('8') });
+  state = step(state, 'SINGLETON_TRANSFERRED', { rollbackPreSwitchProbeDigest: D('9'), singletonTransferReceiptDigest: D('4') });
+  state = step(state, 'SWITCHED', { switchReceiptDigest: D('1') });
+  const rollbackPending = step(state, 'ROLLBACK_PENDING');
+  const postSwitchFailed = step(rollbackPending, 'FAILED');
+  assert.deepEqual(validateDeployState(postSwitchFailed).active, CANDIDATE);
+  assert.deepEqual(postSwitchFailed.rollback, ACTIVE);
+  assert.equal(postSwitchFailed.candidate, null);
+  assert.equal(postSwitchFailed.evidence.switchReceiptDigest, D('1'));
+
+  const rollbackForbidden = step(state, 'AUTOMATIC_ROLLBACK_FORBIDDEN');
+  assert.equal(step(rollbackForbidden, 'FAILED').phase, 'FAILED');
+
+  assert.throws(() => validateDeployState({ ...postSwitchFailed, evidence: { ...postSwitchFailed.evidence, switchReceiptDigest: null } }),
+    /failed state must retain a valid pre-switch or post-switch rollback identity/);
+  assert.throws(() => validateDeployState({ ...postSwitchFailed, candidate: ACTIVE }),
+    /failed state must retain a valid pre-switch or post-switch rollback identity/);
+  assert.throws(() => validateDeployState({ ...postSwitchFailed, rollback: CANDIDATE }),
+    /failed state must retain a valid pre-switch or post-switch rollback identity/);
+  assert.throws(() => validateDeployState({ ...postSwitchFailed, rollback: null }),
+    /failed state must retain a valid pre-switch or post-switch rollback identity/);
+  assert.throws(() => validateDeployState({ ...preSwitchFailed, evidence: { ...preSwitchFailed.evidence, switchReceiptDigest: D('1') } }),
+    /failed state must retain a valid pre-switch or post-switch rollback identity/);
+  assert.throws(() => validateDeployState({ ...postSwitchFailed, phase: 'FAILED_RECOVERED' }),
+    /pre-switch rollback identity must equal active identity/);
+});
+
 test('stale generation, stale fence, wrong lease, and expired lease all fail closed', () => {
   const state = acquired();
   const base = { expectedGeneration: state.generation, expectedFencingEpoch: state.fencingEpoch, leaseId: 'lease-1', holderId: 'owner-1', now: '2026-09-07T15:30:00.000Z', to: 'MANIFEST_VERIFIED', manifestDigest: CANDIDATE.manifestDigest };

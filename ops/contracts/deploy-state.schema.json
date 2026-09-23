@@ -96,6 +96,29 @@
       "if": { "properties": { "phase": { "const": "FAILED_RECOVERED" } } },
       "then": { "required": ["recovery"], "properties": { "recovery": { "type": "object" } } },
       "else": { "properties": { "recovery": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "phase": { "const": "FAILED" } } },
+      "then": {
+        "type": "object",
+        "properties": { "rollback": { "$ref": "#/$defs/releaseIdentity" } },
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "candidate": { "$ref": "#/$defs/releaseIdentity" },
+              "evidence": { "type": "object", "properties": { "switchReceiptDigest": { "type": "null" } } }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "candidate": { "type": "null" },
+              "evidence": { "type": "object", "properties": { "switchReceiptDigest": { "$ref": "#/$defs/digest" } } }
+            }
+          }
+        ]
+      }
     }
   ],
   "$defs": {

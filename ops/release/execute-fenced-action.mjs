@@ -620,7 +620,8 @@ export function verifyLegacyNetworkTopology(networkStdout, supportingContainersS
     if (!container || container.Name !== `/${expectedNames[service]}` || running !== true ||
         labels?.['com.docker.compose.project'] !== state.project || labels?.['com.docker.compose.service'] !== service ||
         !exactStringMultiset(networkNames, [state.resources.dataNetwork]) ||
-        !exactStringMultiset(containerNetworks[state.resources.dataNetwork]?.Aliases, [service])) {
+        !exactStringMultiset(containerNetworks[state.resources.dataNetwork]?.Aliases,
+          [expectedNames[service], service, containerId.slice(0, 12)])) {
       throw new ContractError(`fixed legacy ${service} network endpoint aliases or ownership drifted`, EXIT.IDENTITY);
     }
   }
@@ -631,7 +632,7 @@ export function verifyLegacyNetworkTopology(networkStdout, supportingContainersS
   const cloudflaredPorts = cloudflared?.PortBindings ?? cloudflared?.HostConfig?.PortBindings;
   const cloudflaredMounts = (cloudflared?.Mounts || []).map((mount) => ({ type: mount.Type, source: mount.Source || '',
     destination: mount.Destination, rw: mount.RW, propagation: mount.Propagation || '' }));
-  const expectedCloudflaredCmd = binding.cloudflared.cmd || ['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run'];
+  const expectedCloudflaredCmd = binding.cloudflared.cmd || ['tunnel', '--no-autoupdate', 'run', '--token-file', '/run/secrets/tunnel-token'];
   const expectedCloudflaredMount = binding.cloudflared.tokenMount || { type: 'bind',
     source: '/etc/happybooking/secrets/cloudflare-preprod-tunnel-token', destination: '/run/secrets/tunnel-token', rw: false, propagation: 'rprivate' };
   if (!cloudflared || cloudflared.Name !== `/${binding.cloudflared.name}` || cloudflared.Image !== binding.cloudflared.imageId ||
@@ -2035,7 +2036,7 @@ const LEGACY_ACTIVE_RUNTIME_BINDING = Object.freeze({
     imageId: 'sha256:c1d35f78a5f68601e349d12fed690bc5cb3a0d64d0d25dd7297d415aa399c179',
     image: 'cloudflare/cloudflared@sha256:6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0',
     user: '65532:65532',
-    cmd: Object.freeze(['tunnel', '--no-autoupdate', '--token-file', '/run/secrets/tunnel-token', 'run']),
+    cmd: Object.freeze(['tunnel', '--no-autoupdate', 'run', '--token-file', '/run/secrets/tunnel-token']),
     tokenMount: Object.freeze({ type: 'bind', source: '/etc/happybooking/secrets/cloudflare-preprod-tunnel-token',
       destination: '/run/secrets/tunnel-token', rw: false, propagation: 'rprivate' }),
   }),
