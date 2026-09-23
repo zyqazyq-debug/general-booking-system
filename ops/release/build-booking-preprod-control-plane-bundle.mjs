@@ -34,6 +34,7 @@ export const FIXED_CONTROL_PLANE_SOURCES = Object.freeze([
   'ops/release/generate-sbom.mjs',
   'ops/release/generate-schema-diff-receipt.mjs',
   'ops/release/install-booking-preprod-control-plane.mjs',
+  'ops/release/legacy-preprod-rollback.compose.yml',
   'ops/release/lib/artifacts.mjs',
   'ops/release/lib/contracts.mjs',
   'ops/release/lib/deploy-state-store.mjs',

@@ -41,6 +41,10 @@ test('builder self-validation keeps installer and migration mutex artifacts unde
   assert.match(source, /migrationJournalPath:\s*join\(installParent, '\.happybooking-legacy-active-migration\.journal\.json'\)/);
 });
 
+test('builder ships the digest-bound legacy rollback compose consumed by recovery', () => {
+  assert.ok(FIXED_CONTROL_PLANE_SOURCES.includes('ops/release/legacy-preprod-rollback.compose.yml'));
+});
+
 test('builder uses exact clean HEAD committed bytes and emits an installer-verified approval tuple', { skip: process.platform === 'win32' }, async (t) => {
   const f = await committedFixture(); t.after(() => rm(f.root, { recursive: true, force: true }));
   const installId = `booking-control-20260913T010203Z-${f.sha.slice(0, 12)}`; const approvalId = 'approval.g4.control-plane.test';
