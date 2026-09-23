@@ -47,6 +47,7 @@ const ROOT_KEYS = new Set(['schema', 'environment', 'project', 'resources', 'run
 const V3_ROOT_KEYS = new Set([...ROOT_KEYS, 'recovery', 'observationWindowMinutes', 'observationStartedAt']);
 const RECOVERY_KEYS = new Set(['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest', 'activeProbeDigest', 'priorFailedStateDigest']);
 const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'telegramEgressReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest', 'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest', 'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
+const LEGACY_V2_EVIDENCE_KEYS = new Set([...EVIDENCE_KEYS].filter((key) => key !== 'telegramEgressReceiptDigest'));
 const POST_SWITCH_PHASES = new Set(['SWITCHED', 'OBSERVING', 'COMMITTED', 'ROLLBACK_PENDING', 'AUTOMATIC_ROLLBACK_FORBIDDEN']);
 export const DEFAULT_OBSERVATION_WINDOW_MINUTES = 30;
 export const MAX_OBSERVATION_WINDOW_MINUTES = 1440;
@@ -108,8 +109,8 @@ function isLegacyOldActive(identity) {
     identity.manifestDigest === LEGACY_OLD_BINDING.manifestRawDigest;
 }
 
-function validateEvidence(evidence) {
-  exactKeys(evidence, EVIDENCE_KEYS, 'state.evidence');
+function validateEvidence(evidence, schema) {
+  exactKeys(evidence, schema === 'booking.deploy-state/v2' ? LEGACY_V2_EVIDENCE_KEYS : EVIDENCE_KEYS, 'state.evidence');
   for (const [key, value] of Object.entries(evidence)) {
     if (value !== null && !DIGEST.test(value)) throw new ContractError(`state.evidence.${key} is invalid`);
   }
@@ -142,7 +143,7 @@ export function validateDeployState(state) {
   if (state.rollback && !POST_SWITCH_PHASES.has(state.phase) && !sameIdentity(state.rollback, state.active)) {
     throw new ContractError('pre-switch rollback identity must equal active identity');
   }
-  validateEvidence(state.evidence);
+  validateEvidence(state.evidence, state.schema);
   if (state.receiptChainHead !== null && !DIGEST.test(state.receiptChainHead)) throw new ContractError('state.receiptChainHead is invalid');
   requireIso(state.updatedAt, 'state.updatedAt');
   if (typeof state.contractMigrationApplied !== 'boolean') throw new ContractError('state.contractMigrationApplied must be boolean');
@@ -242,6 +243,7 @@ export function acquireLease(state, input) {
     operationId: input.operationId, approvalId: input.approvalId,
     lease: { leaseId: input.leaseId, holderId: input.holderId, fencingEpoch: nextEpoch, acquiredAt: input.now, expiresAt: input.expiresAt },
     candidate: structuredClone(input.candidate), rollback: structuredClone(state.active), runtimeEnvDigest, updatedAt: input.now,
+    evidence: { telegramEgressReceiptDigest: null, ...structuredClone(state.evidence) },
     recovery: null, observationWindowMinutes, observationStartedAt: null,
   });
 }
@@ -390,6 +392,12 @@ export function transitionDeployState(state, input) {
       throw new ContractError('failed recovery requires database, Telegram, active runtime, public probe, and prior failed-state evidence', EXIT.IDENTITY);
     }
     next.schema = 'booking.deploy-state/v3';
+    // The only legacy v2 evidence shape admitted by validation predates the
+    // Telegram egress receipt field.  Recovery cannot invent that evidence;
+    // make its absence explicit at the v3 migration boundary.
+    if (!Object.hasOwn(next.evidence, 'telegramEgressReceiptDigest')) {
+      next.evidence.telegramEgressReceiptDigest = null;
+    }
     next.observationWindowMinutes = requireObservationWindow(
       input.observationWindowMinutes ?? DEFAULT_OBSERVATION_WINDOW_MINUTES,
       'observationWindowMinutes',

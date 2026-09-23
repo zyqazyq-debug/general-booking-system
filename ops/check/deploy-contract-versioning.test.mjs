@@ -28,6 +28,7 @@ const RECOVERY = { databaseRestoreReceiptDigest: D('1'), telegramAbortReceiptDig
 function legacyV2Idle() {
   const state = initialDeployState(DEPLOYMENT, '2026-09-10T10:00:00.000Z');
   state.schema = 'booking.deploy-state/v2';
+  delete state.evidence.telegramEgressReceiptDigest;
   delete state.recovery;
   delete state.observationWindowMinutes;
   delete state.observationStartedAt;
@@ -44,6 +45,11 @@ function evidence() {
   return { baselineReceiptDigest: null, expandMigrationReceiptDigest: null, telegramEgressReceiptDigest: null, stageReceiptDigest: null, candidateProbeDigest: null,
     rollbackPreSwitchProbeDigest: null, singletonTransferReceiptDigest: null, switchReceiptDigest: null, webhookReceiptDigest: null,
     observationReceiptDigest: null, rollbackReceiptDigest: null, rollbackSingletonTransferReceiptDigest: null, rolledBackProbeDigest: null };
+}
+
+function legacyEvidenceWithoutTelegram() {
+  const { telegramEgressReceiptDigest: _removed, ...legacy } = evidence();
+  return legacy;
 }
 
 function deployReceipt({ generation, previousReceiptDigest = null, activeIdentity = ACTIVE, schema = 'booking.deploy-receipt/v1',
@@ -73,6 +79,7 @@ test('deploy state v2 remains frozen while acquire and failed recovery upgrade t
 
   const runningV2 = structuredClone(acquiredV3);
   runningV2.schema = 'booking.deploy-state/v2';
+  delete runningV2.evidence.telegramEgressReceiptDigest;
   delete runningV2.recovery;
   delete runningV2.observationWindowMinutes;
   delete runningV2.observationStartedAt;
@@ -83,12 +90,29 @@ test('deploy state v2 remains frozen while acquire and failed recovery upgrade t
   const failedV2 = transitionDeployState(runningV2, { expectedGeneration: 1, expectedFencingEpoch: 1,
     leaseId: 'lease-versioning', holderId: 'holder-versioning', now: '2026-09-10T10:03:00.000Z', to: 'FAILED' });
   assert.equal(failedV2.schema, 'booking.deploy-state/v2');
-  const originalDigest = sha256(failedV2);
-  const recovered = transitionDeployState(failedV2, { expectedGeneration: 2, expectedFencingEpoch: 1,
+  const legacyFailedV2 = { ...failedV2, evidence: legacyEvidenceWithoutTelegram() };
+  validateDeployState(legacyFailedV2);
+  const originalDigest = sha256(legacyFailedV2);
+  const recovered = transitionDeployState(legacyFailedV2, { expectedGeneration: 2, expectedFencingEpoch: 1,
     leaseId: 'lease-versioning', holderId: 'holder-versioning', now: '2026-09-10T10:04:00.000Z', to: 'FAILED_RECOVERED',
     ...RECOVERY, priorFailedStateDigest: originalDigest });
   assert.equal(recovered.schema, 'booking.deploy-state/v3');
+  assert.equal(recovered.evidence.telegramEgressReceiptDigest, null);
   assert.equal(recovered.recovery.priorFailedStateDigest, originalDigest);
+});
+
+test('legacy v2 evidence compatibility accepts only the exact pre-Telegram shape', () => {
+  const legacy = { ...legacyV2Idle(), evidence: legacyEvidenceWithoutTelegram() };
+  assert.equal(validateDeployState(legacy), legacy);
+  assert.throws(() => validateDeployState({ ...legacy, evidence: evidence() }), /telegramEgressReceiptDigest is not allowed/);
+  assert.throws(() => validateDeployState({ ...legacy, schema: 'booking.deploy-state/v3', recovery: null,
+    observationWindowMinutes: 30, observationStartedAt: null }), /telegramEgressReceiptDigest is required/);
+  const { rollbackPreSwitchProbeDigest: _removed, ...tooOld } = legacy.evidence;
+  assert.throws(() => validateDeployState({ ...legacy, evidence: tooOld }), /rollbackPreSwitchProbeDigest is required/);
+  assert.throws(() => validateDeployState({ ...legacy, evidence: { ...legacy.evidence, unknownReceiptDigest: null } }),
+    /telegramEgressReceiptDigest is required|unknownReceiptDigest is not allowed/);
+  assert.throws(() => validateDeployState({ ...legacy, evidence: { ...legacy.evidence, stageReceiptDigest: 'not-a-digest' } }),
+    /stageReceiptDigest is invalid/);
 });
 
 for (const terminalPhase of ['COMMITTED', 'ROLLED_BACK']) {
@@ -152,6 +176,11 @@ test('JSON schemas and schemaForAction enforce exact legacy/recovery/local-ingre
   const v3 = initialDeployState(DEPLOYMENT, '2026-09-10T10:00:00.000Z');
   assert.equal(validateState(v2), true, canonicalJson(validateState.errors));
   assert.equal(validateState(v3), true, canonicalJson(validateState.errors));
+  const legacyV2Evidence = { ...v2, evidence: legacyEvidenceWithoutTelegram() };
+  assert.equal(validateState(legacyV2Evidence), true, canonicalJson(validateState.errors));
+  assert.equal(validateState({ ...v3, evidence: legacyEvidenceWithoutTelegram() }), false);
+  const { rollbackPreSwitchProbeDigest: _tooOldRemoved, ...tooOldEvidence } = legacyV2Evidence.evidence;
+  assert.equal(validateState({ ...v2, evidence: tooOldEvidence }), false);
   const { telegramEgressReceiptDigest: _telegramEgressReceiptDigest, ...evidenceWithoutTelegramEgress } = v3.evidence;
   assert.equal(validateState({ ...v3, evidence: evidenceWithoutTelegramEgress }), false);
   assert.equal(validateState({ ...v3, evidence: { ...v3.evidence, telegramEgressReceiptDigest: 'not-a-digest' } }), false);
@@ -274,6 +303,19 @@ test('manual deploy receipt validator keeps v1 and v2 semantics disjoint', () =>
   assert.equal(validateDeployReceipt(v2), v2);
   assert.throws(() => validateDeployReceipt({ ...v1, schema: 'booking.deploy-receipt/v2' }), /recovery is required/);
   assert.throws(() => validateDeployReceipt({ ...v2, schema: 'booking.deploy-receipt/v1' }), /recovery is not allowed/);
+  const legacyV1Body = { ...v1, evidence: legacyEvidenceWithoutTelegram() };
+  delete legacyV1Body.receiptDigest;
+  const legacyV1 = { ...legacyV1Body, receiptDigest: sha256(legacyV1Body) };
+  assert.equal(validateDeployReceipt(legacyV1), legacyV1);
+  const legacyV2Body = { ...v2, evidence: legacyEvidenceWithoutTelegram() };
+  delete legacyV2Body.receiptDigest;
+  assert.throws(() => validateDeployReceipt({ ...legacyV2Body, receiptDigest: sha256(legacyV2Body) }),
+    /telegramEgressReceiptDigest is required/);
+  const { rollbackPreSwitchProbeDigest: _removed, ...tooOld } = legacyV1.evidence;
+  const tooOldBody = { ...legacyV1, evidence: tooOld };
+  delete tooOldBody.receiptDigest;
+  assert.throws(() => validateDeployReceipt({ ...tooOldBody, receiptDigest: sha256(tooOldBody) }),
+    /telegramEgressReceiptDigest is required/);
 });
 
 test('executor immutable store rejects an action/receipt-version mismatch before publication', async (t) => {

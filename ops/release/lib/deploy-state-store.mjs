@@ -13,6 +13,7 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const EVIDENCE_KEYS = new Set(['baselineReceiptDigest', 'expandMigrationReceiptDigest', 'telegramEgressReceiptDigest', 'stageReceiptDigest', 'candidateProbeDigest',
   'rollbackPreSwitchProbeDigest', 'singletonTransferReceiptDigest', 'switchReceiptDigest', 'webhookReceiptDigest',
   'observationReceiptDigest', 'rollbackReceiptDigest', 'rollbackSingletonTransferReceiptDigest', 'rolledBackProbeDigest']);
+const LEGACY_V1_RECEIPT_EVIDENCE_KEYS = new Set([...EVIDENCE_KEYS].filter((key) => key !== 'telegramEgressReceiptDigest'));
 const RECOVERY_KEYS = new Set(['databaseRestoreReceiptDigest', 'telegramAbortReceiptDigest', 'activeRuntimeRestoreReceiptDigest',
   'activeProbeDigest', 'priorFailedStateDigest']);
 const RECEIPT_KEYS = new Set(['schema', 'environment', 'project', 'generation', 'fencingEpoch', 'operationId', 'approvalId',
@@ -66,7 +67,12 @@ export function validateDeployReceipt(receipt) {
     throw new ContractError('deployment receipt digest field is invalid', EXIT.IDENTITY);
   }
   validateReleaseIdentity(receipt.activeIdentity);
-  validateDigestObject(receipt.evidence, EVIDENCE_KEYS, 'deployment receipt evidence', true);
+  const evidenceKeys = receipt.evidence && typeof receipt.evidence === 'object' && !Array.isArray(receipt.evidence)
+    ? new Set(Object.keys(receipt.evidence)) : null;
+  const isExactLegacyV1Evidence = isV1 && evidenceKeys?.size === LEGACY_V1_RECEIPT_EVIDENCE_KEYS.size &&
+    [...LEGACY_V1_RECEIPT_EVIDENCE_KEYS].every((key) => evidenceKeys.has(key));
+  validateDigestObject(receipt.evidence, isExactLegacyV1Evidence ? LEGACY_V1_RECEIPT_EVIDENCE_KEYS : EVIDENCE_KEYS,
+    'deployment receipt evidence', true);
   if (isV2) validateDigestObject(receipt.recovery, RECOVERY_KEYS, 'deployment receipt recovery');
   const { receiptDigest, ...body } = receipt;
   if (sha256(body) !== receiptDigest) throw new ContractError('deployment receipt integrity check failed', EXIT.IDENTITY);

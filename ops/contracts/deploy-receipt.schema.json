@@ -17,7 +17,7 @@
     "previousReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
     "terminalStateDigest": { "$ref": "#/$defs/digest" },
     "activeIdentity": { "$ref": "deploy-state.schema.json#/$defs/releaseIdentity" },
-    "evidence": { "$ref": "deploy-state.schema.json#/$defs/evidence" },
+    "evidence": { "$ref": "deploy-state.schema.json#/$defs/evidenceCompat" },
     "recovery": { "$ref": "#/$defs/recovery" },
     "receiptDigest": { "$ref": "#/$defs/digest" }
   },
@@ -34,6 +34,7 @@
       "properties": {
         "schema": { "const": "booking.deploy-receipt/v2" },
         "terminalPhase": { "const": "FAILED_RECOVERED" },
+        "evidence": { "$ref": "deploy-state.schema.json#/$defs/evidence" },
         "recovery": { "$ref": "#/$defs/recovery" }
       }
     }

@@ -47,7 +47,7 @@
     "active": { "$ref": "#/$defs/releaseIdentity" },
     "candidate": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/releaseIdentity" }] },
     "rollback": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/releaseIdentity" }] },
-    "evidence": { "$ref": "#/$defs/evidence" },
+    "evidence": { "$ref": "#/$defs/evidenceCompat" },
     "receiptChainHead": { "$ref": "#/$defs/nullableDigest" },
     "contractMigrationApplied": { "type": "boolean" },
     "rollbackRehearsalCompleted": { "type": "boolean" },
@@ -76,6 +76,7 @@
       "properties": {
         "schema": { "const": "booking.deploy-state/v2" },
         "phase": { "enum": ["IDLE", "LOCKED", "MANIFEST_VERIFIED", "STAGED", "EXPAND_MIGRATED", "CANDIDATE_STARTED", "CANDIDATE_READY", "SINGLETON_TRANSFERRED", "SWITCHED", "OBSERVING", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "AUTOMATIC_ROLLBACK_FORBIDDEN", "FAILED"] },
+        "evidence": { "$ref": "#/$defs/legacyV2Evidence" },
         "recovery": false
       }
     },
@@ -83,6 +84,7 @@
       "required": ["recovery", "observationWindowMinutes", "observationStartedAt"],
       "properties": {
         "schema": { "const": "booking.deploy-state/v3" },
+        "evidence": { "$ref": "#/$defs/evidence" },
         "recovery": {},
         "observationWindowMinutes": {},
         "observationStartedAt": {}
@@ -127,6 +129,30 @@
         "rollbackSingletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
         "rolledBackProbeDigest": { "$ref": "#/$defs/nullableDigest" }
       }
+    },
+    "legacyV2Evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["baselineReceiptDigest", "expandMigrationReceiptDigest", "stageReceiptDigest", "candidateProbeDigest", "rollbackPreSwitchProbeDigest", "singletonTransferReceiptDigest", "switchReceiptDigest", "webhookReceiptDigest", "observationReceiptDigest", "rollbackReceiptDigest", "rollbackSingletonTransferReceiptDigest", "rolledBackProbeDigest"],
+      "properties": {
+        "baselineReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "expandMigrationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "stageReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "candidateProbeDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackPreSwitchProbeDigest": { "$ref": "#/$defs/nullableDigest" },
+        "singletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "switchReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "webhookReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "observationReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rollbackSingletonTransferReceiptDigest": { "$ref": "#/$defs/nullableDigest" },
+        "rolledBackProbeDigest": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "evidenceCompat": {
+      "oneOf": [
+        { "$ref": "#/$defs/evidence" },
+        { "$ref": "#/$defs/legacyV2Evidence" }
+      ]
     }
   }
 }

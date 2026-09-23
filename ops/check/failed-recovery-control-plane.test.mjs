@@ -114,6 +114,7 @@ async function installTelegramFailureFixture(t) {
   // Mirror the deployed op06 contract exactly: v2 FAILED has no recovery key.
   // The successful FAILED -> FAILED_RECOVERED CAS is the migration boundary.
   state.schema = 'booking.deploy-state/v2';
+  delete state.evidence.telegramEgressReceiptDigest;
   delete state.recovery;
   delete state.observationWindowMinutes;
   delete state.observationStartedAt;
