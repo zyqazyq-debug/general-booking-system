@@ -793,8 +793,9 @@ function sameReleaseIdentity(left, right) {
     left.manifestDigest === right.manifestDigest);
 }
 
-function assertCandidateRollbackCompatibility(state, releaseIdentity, manifest) {
-  const promotedCandidate = state.rollback && sameReleaseIdentity(releaseIdentity, state.active);
+export function assertCandidateRollbackCompatibility(state, releaseIdentity, manifest) {
+  const promotedCandidate = state.rollback && !sameReleaseIdentity(state.active, state.rollback) &&
+    sameReleaseIdentity(releaseIdentity, state.active);
   const pendingCandidate = state.candidate && sameReleaseIdentity(releaseIdentity, state.candidate);
   if (!promotedCandidate && !pendingCandidate) return;
   const rollbackTarget = state.rollback || state.active;

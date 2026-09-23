@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { LEGACY_SUPPORTING_INSPECT_FORMAT, runFencedAction, verifyLegacyActiveRuntimeInspect,
+import { assertCandidateRollbackCompatibility, LEGACY_SUPPORTING_INSPECT_FORMAT, runFencedAction, verifyLegacyActiveRuntimeInspect,
   verifyLegacyDockerStartOutput, verifyLegacyNetworkTopology } from '../release/execute-fenced-action.mjs';
 import { canonicalStatePath, initializeStateFile, mutateStateFile } from '../release/lib/deploy-state-store.mjs';
 import { resourceDirectory } from '../release/lib/fenced-resource-store.mjs';
@@ -29,6 +29,16 @@ function failedFenceThree() {
   return takeoverExpiredLease(state, { expectedGeneration: 3, expectedFencingEpoch: 2, approvalId: 'approval-f3',
     leaseId: 'lease-f3', holderId: 'holder', now: '2026-09-10T10:05:00.000Z', expiresAt: '2026-09-10T10:06:00.000Z' });
 }
+
+test('failed legacy active equal to rollback is not mistaken for the promoted candidate', () => {
+  const legacyManifest = { contracts: { rollbackCompatibleRelease: null } };
+  assert.doesNotThrow(() => assertCandidateRollbackCompatibility({ active: ACTIVE, rollback: ACTIVE, candidate: CANDIDATE },
+    ACTIVE, legacyManifest));
+  assert.throws(() => assertCandidateRollbackCompatibility({ active: ACTIVE, rollback: ACTIVE, candidate: CANDIDATE },
+    CANDIDATE, legacyManifest), /canonical rollback target release/);
+  assert.throws(() => assertCandidateRollbackCompatibility({ active: CANDIDATE, rollback: ACTIVE, candidate: null },
+    CANDIDATE, legacyManifest), /canonical rollback target release/);
+});
 
 function args(state, actionId) {
   return { action: 'preprod-restore-active-runtime', execute: 'true', environment: 'preprod', project: 'booking-preprod',
