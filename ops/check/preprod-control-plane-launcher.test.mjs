@@ -452,6 +452,8 @@ const INGRESS_MOUNTS = [
   'type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly',
 ];
 
+const LEGACY_NGINX_MOUNT = 'type=bind,src=/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/source/frontend/nginx.preprod.conf,dst=/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/source/frontend/nginx.preprod.conf,readonly';
+
 const BACKUP_RW_MOUNTS = [
   'type=bind,src=/volume1/happybooking/booking-preprod/.g4/backups,dst=/volume1/happybooking/booking-preprod/.g4/backups',
   'type=bind,src=/volume1/happybooking/booking-preprod/.g4/receipts,dst=/volume1/happybooking/booking-preprod/.g4/receipts',
@@ -546,6 +548,18 @@ test('only forward and rollback ingress receive the self-contained local alias h
     const argv = result.stdout.trim().split(/\r?\n/);
     assert.deepEqual(mounts(argv), [...BASE_MOUNTS, ...INGRESS_MOUNTS]);
   }
+});
+
+test('only fixed active-runtime recovery receives the read-only legacy Nginx source', () => {
+  const actionArgs = (action) => ['execute-fenced-action', '--action', action, ...common,
+    '--operation-id', 'op-1', '--lease-id', 'lease-1', '--holder-id', 'owner-1',
+    '--resource-id', 'booking-preprod-edge', '--action-id', 'recovery-1'];
+  const restored = dryRun(actionArgs('preprod-restore-active-runtime'));
+  assert.equal(restored.status, 0, restored.stderr);
+  assert.deepEqual(mounts(restored.stdout.trim().split(/\r?\n/)), [...BASE_MOUNTS, LEGACY_NGINX_MOUNT]);
+  const other = dryRun(actionArgs('preprod-stage'));
+  assert.equal(other.status, 0, other.stderr);
+  assert.deepEqual(mounts(other.stdout.trim().split(/\r?\n/)), BASE_MOUNTS);
 });
 
 test('init, baseline, migration, staging, and webhook plans have no Cloudflare token dependency', () => {

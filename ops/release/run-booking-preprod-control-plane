@@ -945,9 +945,13 @@ esac
 
 ingress_mounts=''
 evidence_mounts=''
+legacy_nginx_mount=''
 case "$entrypoint:$action" in
   execute-fenced-action:preprod-switch-ingress|execute-fenced-action:preprod-rollback-ingress)
   ingress_mounts=' --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress,dst=/usr/local/libexec/happybooking/switch-preprod-ingress,readonly --mount type=bind,src=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,dst=/usr/local/libexec/happybooking/switch-preprod-ingress.mjs,readonly'
+  ;;
+  execute-fenced-action:preprod-restore-active-runtime)
+  legacy_nginx_mount=' --mount type=bind,src=/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/source/frontend/nginx.preprod.conf,dst=/volume1/homes/realzyq/booking-preprod/releases/booking-20260908T202714Z-317be4dec675/source/frontend/nginx.preprod.conf,readonly'
   ;;
 esac
 case "$entrypoint" in
@@ -1001,6 +1005,7 @@ set -- \
   --mount type=bind,src=/etc/happybooking/secrets/booking-preprod-control-plane.env,dst=/etc/happybooking/secrets/booking-preprod-control-plane.env,readonly \
   $ingress_mounts \
   $evidence_mounts \
+  $legacy_nginx_mount \
   --workdir "$CONTROL_ROOT" --entrypoint /usr/local/bin/node \
   "$IMAGE" "$script" "$@"
 
